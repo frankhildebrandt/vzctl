@@ -1,0 +1,378 @@
+# Guest-Agent Protocol v1
+
+Status: Alpha, wire contract frozen for protocol version `1`<br>
+Issue: [#13](https://github.com/frankhildebrandt/vzctl/issues/13)<br>
+Architecture: [ADR 0002](../adr/0002-process-ownership.md)
+
+## Scope
+
+This document specifies the control-plane protocol between one macOS VM helper
+and the `vzctl-agent` inside its guest. It covers transport, framing,
+authentication, commands, deadlines, cancellation and stable errors.
+
+The agent binary and image integration are #14. Helper↔agent E2E wiring is #15.
+Clock correction is #16; v1 only reserves the `time_hint` message shape.
+
+## Ownership and transport
+
+- The per-VM **helper owns the vsock client** and the
+  `VZVirtioSocketDevice` associated with its `VZVirtualMachine`, as required by
+  ADR 0002.
+- The guest agent listens on virtio-vsock. The Alpha default port is `21950`;
+  an override, if used, is part of the per-VM configuration and must match on
+  both sides.
+- This protocol is never exposed on TCP, UDP or a Unix socket. SSH is only a
+  diagnostic fallback outside this protocol.
+- One connection may carry multiple requests. Request IDs make responses
+  correlatable; responses may arrive out of order.
+- The supervisor never opens an agent connection and never receives the auth
+  token. It sees agent state only through sanitized helper reports; see
+  [Supervisor visibility](#supervisor-visibility).
+
+## Framing
+
+Each message is exactly one frame:
+
+```text
++----------------------+------------------------------+
+| length: u32 little   | payload: length bytes        |
+| endian, 4 bytes      | UTF-8 encoded JSON object    |
++----------------------+------------------------------+
+```
+
+- `length` is the payload byte count and does not include the four-byte prefix.
+- The receiver reads exactly four bytes, decodes an unsigned 32-bit
+  little-endian integer, then reads exactly `length` bytes.
+- The payload must be valid UTF-8 and exactly one JSON object. A UTF-8 BOM,
+  trailing bytes and multiple JSON values are invalid.
+- Empty frames and frames larger than `1,048,576` bytes are invalid.
+- A short prefix/payload at EOF is a protocol error. If an `id` can be decoded,
+  the receiver returns `proto`; otherwise it closes the connection.
+- There is no delimiter, compression or binary attachment in v1. Binary input
+  is base64 in JSON and counts toward the frame limit.
+
+## Message envelope
+
+Every request after connection setup has this shape:
+
+```json
+{
+  "v": 1,
+  "id": "01K1B8JX6B6R1R4CFA9G2X3TQY",
+  "method": "ping",
+  "params": {}
+}
+```
+
+- `v` must be integer `1`.
+- `id` is a non-empty string of at most 128 UTF-8 bytes and must be unique
+  among in-flight requests on the connection.
+- `method` is a case-sensitive ASCII string.
+- `params` is a JSON object. Unknown fields are ignored unless they change
+  security semantics; wrong types produce `proto`.
+
+A successful response is:
+
+```json
+{
+  "v": 1,
+  "id": "01K1B8JX6B6R1R4CFA9G2X3TQY",
+  "ok": true,
+  "result": {"pong": true}
+}
+```
+
+An error response is:
+
+```json
+{
+  "v": 1,
+  "id": "01K1B8JX6B6R1R4CFA9G2X3TQY",
+  "ok": false,
+  "error": {
+    "code": "unsupported",
+    "message": "method is not supported",
+    "details": {"method": "logs"}
+  }
+}
+```
+
+Exactly one of `result` or `error` is present. `message` is diagnostic and not
+stable API; clients branch only on `error.code`. `details` is optional.
+
+## Version handshake and authentication
+
+The first frame on every new connection must be `hello`; no other command is
+accepted before it succeeds:
+
+```json
+{
+  "v": 1,
+  "id": "hello-1",
+  "method": "hello",
+  "params": {
+    "token": "base64url-without-padding",
+    "helper_version": "0.1.0"
+  }
+}
+```
+
+Success:
+
+```json
+{
+  "v": 1,
+  "id": "hello-1",
+  "ok": true,
+  "result": {
+    "v": 1,
+    "agent_version": "0.1.0",
+    "capabilities": ["ping", "version", "exec", "report_ip", "health", "time_hint"]
+  }
+}
+```
+
+Rules:
+
+1. The token is unique per VM and contains at least 256 random bits. The
+   canonical encoding is unpadded base64url.
+2. Provision it through the VM's local NoCloud seed, preferably `user-data`
+   `write_files`, into a file readable only by the agent service account. It
+   must never be committed to Git, embedded in a sealed base or logged.
+3. The host-side copy is stored in the per-VM private state/bundle with mode
+   `0600` or stricter. It is transmitted to the agent only in `hello` over this
+   VM's vsock connection.
+4. The agent compares tokens in constant time. On mismatch it sends `auth`
+   when possible and immediately closes the connection. It applies a bounded
+   retry delay; the helper does not retry in a tight loop.
+5. Unsupported `v` returns `proto` with `details.supported_versions: [1]` and
+   closes the connection.
+6. Until `hello` succeeds, all non-`hello` requests return `auth` and the
+   connection closes.
+
+Token rotation is stop-and-reprovision in Alpha: stop the VM, generate a new
+token, replace both private host state and the NoCloud guest file, then boot.
+Any mismatch aborts all pending agent work and marks the helper state
+`auth_failed`; there is no silent fallback to the old token. Live rotation and
+a `rotate_token` method are not part of v1.
+
+## Alpha methods
+
+`hello` and `cancel` are protocol-control methods. The command methods are:
+
+| Method | Params | Result | Default / maximum |
+|---|---|---|---|
+| `ping` | optional `nonce` string | `pong: true`, optional echoed `nonce` | 1 s / 5 s |
+| `version` | `{}` | `agent_version`, `v`, `capabilities` | 1 s / 5 s |
+| `exec` | `cmd`, optional `cwd`, `env`, `stdin_b64`, `timeout_ms` | `exit`, `stdout`, `stderr`, `truncated` | 30 s / 600 s |
+| `report_ip` | `{}` | `interfaces` array | 2 s / 10 s |
+| `health` | `{}` | `status`, `uptime_ms`, `checks` | 2 s / 10 s |
+| `time_hint` | `host_unix_ms`, `reason` | `observed_guest_unix_ms`, `offset_ms`, `action` | 2 s / 5 s |
+
+All time values are integer milliseconds. A caller may choose a shorter
+deadline. Values above the maximum return `proto`; zero and negative values are
+invalid.
+
+### `exec`
+
+Request:
+
+```json
+{
+  "v": 1,
+  "id": "exec-42",
+  "method": "exec",
+  "params": {
+    "cmd": ["uname", "-a"],
+    "cwd": "/tmp",
+    "env": {"LANG": "C.UTF-8"},
+    "timeout_ms": 5000
+  }
+}
+```
+
+Success:
+
+```json
+{
+  "v": 1,
+  "id": "exec-42",
+  "ok": true,
+  "result": {
+    "exit": 0,
+    "stdout": "Linux guest 6.8.0 ...\n",
+    "stderr": "",
+    "truncated": false
+  }
+}
+```
+
+`cmd` is a non-empty array of strings and maps directly to executable plus
+argv. The agent must not join it into a shell command. `env` augments a small,
+sanitized service environment; it does not replace protected agent variables.
+`stdin_b64`, when present, is capped at 256 KiB decoded.
+
+Exit zero is success. A non-zero exit, signal, launch failure or invalid `cwd`
+returns `exec_failed`; its details contain `exit` (integer or `null`), optional
+`signal`, `stdout`, `stderr` and `truncated`.
+
+Stdout and stderr are captured separately and capped at 256 KiB each. Once a
+stream reaches its cap the agent continues draining it, discards excess bytes
+and sets `truncated: true`, preventing a child-process pipe deadlock.
+
+### `report_ip`
+
+```json
+{
+  "v": 1,
+  "id": "ip-1",
+  "ok": true,
+  "result": {
+    "interfaces": [
+      {
+        "name": "enp0s1",
+        "mac": "02:00:00:00:00:10",
+        "addresses": ["10.90.1.10/24"]
+      }
+    ]
+  }
+}
+```
+
+Only active, non-loopback interface addresses are reported. Link-local
+addresses may be included and must be identifiable by their CIDR. Attachment
+matching is a helper/E2E concern in #15.
+
+G0 reserves each subnet's `.0` for the host bridge/gateway/DNS UDP listener,
+`.2` for the router and `.10+` for guests. This is context for validation only:
+`report_ip` does not configure networking or implement DNS/vmnet, and `.0`
+must not be accepted as a guest address.
+
+### `health`
+
+`status` is `ok` or `degraded`. `checks` is an object whose values contain at
+least `ok: boolean` and may include a diagnostic `message`. Health must not
+expose secrets, arbitrary files or process environments.
+
+### `time_hint`
+
+```json
+{
+  "v": 1,
+  "id": "time-1",
+  "method": "time_hint",
+  "params": {
+    "host_unix_ms": 1785387600000,
+    "reason": "wake"
+  }
+}
+```
+
+`reason` is one of `handshake`, `wake` or `manual`. In this spec slice the
+agent only measures and responds:
+
+```json
+{
+  "v": 1,
+  "id": "time-1",
+  "ok": true,
+  "result": {
+    "observed_guest_unix_ms": 1785387599700,
+    "offset_ms": 300,
+    "action": "none"
+  }
+}
+```
+
+Changing the guest clock, thresholds and any narrowly scoped privilege belong
+to #16. The v1 agent is not privileged by default.
+
+## Deadlines and cancellation
+
+- Connect timeout: 5 seconds. Handshake timeout: 2 seconds.
+- A method deadline starts after the complete request frame has been written.
+  The helper owns the authoritative wall-clock deadline; `exec.timeout_ms` is
+  also enforced inside the guest.
+- At deadline, the helper sends `cancel` when the connection is usable and
+  completes the original request locally as `timeout`. It does not wait
+  indefinitely for cancellation acknowledgement.
+- `cancel` params are `{"id":"<target-request-id>"}`. Success is
+  `{"cancelled":true}`; an already completed or unknown ID returns
+  `{"cancelled":false}`.
+- On accepted cancellation the target operation is terminated, its child
+  process group is stopped for `exec`, pipes are drained, and the target
+  request returns `timeout` with `details.reason: "cancelled"`.
+- Closing the connection cancels all its in-flight work. No operation survives
+  reconnect and no response is replayed. Callers may retry only operations they
+  know are safe to repeat.
+- IDs may be reused only after the prior response or connection close.
+
+Cancellation example:
+
+```json
+{"v":1,"id":"cancel-1","method":"cancel","params":{"id":"exec-42"}}
+```
+
+```json
+{"v":1,"id":"cancel-1","ok":true,"result":{"cancelled":true}}
+```
+
+```json
+{"v":1,"id":"exec-42","ok":false,"error":{"code":"timeout","message":"request cancelled","details":{"reason":"cancelled"}}}
+```
+
+## Stable error codes
+
+These strings are stable for all protocol-v1 implementations:
+
+| Code | Meaning | Retry guidance |
+|---|---|---|
+| `auth` | Missing/invalid token or command before handshake | Do not retry until token/config is repaired or rotated |
+| `timeout` | Deadline exceeded or accepted cancellation | Retry only if the operation is safe to repeat |
+| `exec_failed` | Process launch, non-zero exit or signal | Do not retry blindly; inspect structured details |
+| `unsupported` | Valid request for an unknown/unavailable method | Do not retry without capability/version change |
+| `proto` | Invalid framing, JSON, envelope, version or parameters | Fix client/request; connection may be closed |
+| `internal` | Unexpected agent failure not attributable to the request | Bounded retry; surface diagnostics |
+
+Implementations may add fields to `details`, but must not invent new v1 error
+codes. A method-specific failure must map to the closest code above.
+
+## Supervisor visibility
+
+The helper reduces agent observations to a report such as:
+
+```json
+{
+  "vm_id": "demo/web",
+  "agent": {
+    "state": "ready",
+    "protocol": 1,
+    "version": "0.1.0",
+    "last_seen_at": "2026-07-30T07:00:00Z",
+    "health": "ok"
+  }
+}
+```
+
+Allowed states are `connecting`, `ready`, `degraded`, `auth_failed` and
+`unavailable`. IP data may be forwarded separately after `report_ip`. Tokens,
+raw handshake messages, command argv, stdout and stderr are never forwarded in
+state/heartbeat reports.
+
+The supervisor treats this as indirect, ephemeral helper-owned state. A helper
+disconnect makes the state unavailable/stale; the supervisor must not infer
+that the guest stopped. Alpha persistence and E2E wiring remain #15.
+
+## Security requirements
+
+- No shell-string `exec`; only array argv is accepted. Shell behavior requires
+  an explicit argv such as `["/bin/sh", "-c", "..."]` from an authorized
+  caller and should be rejected by higher-level policy by default.
+- The service runs as a dedicated unprivileged account. No root, sudo,
+  `CAP_SYS_ADMIN` or broad filesystem access by default.
+- Apply the frame, stdin and output limits before allocating unbounded buffers.
+- Do not log tokens, environment values, stdin, stdout or stderr by default.
+- Compare tokens in constant time and rate-limit failed handshakes.
+- Treat all guest output as untrusted data when forwarding it to CLI/UI/logs.
+- vsock isolation and the per-VM token are both required; neither replaces the
+  other.
