@@ -1,7 +1,9 @@
 # vzctl daemon/helper (P0)
 
 `vz-supervisor` owns durable state and accepts newline-framed JSON-RPC over its
-user-only UDS. `vz-helper` owns exactly one `VZVirtualMachine` per process, per
+user-only UDS. Er broadcastet den versionierten
+[Event Stream v1](../docs/specs/events-v1.md) an `events.subscribe`-Clients.
+`vz-helper` owns exactly one `VZVirtualMachine` per process, per
 [ADR 0002](../docs/adr/0002-process-ownership.md).
 
 ## Build and sign

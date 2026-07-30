@@ -1,11 +1,14 @@
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
 const DEFAULT_DNS_PORT: u16 = 15353;
@@ -28,6 +31,11 @@ enum OutputFormat {
 struct DoctorOptions {
     format: OutputFormat,
     min_free_gib: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct EventsOptions {
+    filter: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +125,7 @@ fn main() -> ExitCode {
             }
         },
         Some("apply") => apply_stub(args),
+        Some("events") => events_command(args),
         Some(other) => {
             eprintln!("unknown command: {other}");
             ExitCode::from(EXIT_USAGE)
@@ -134,6 +143,7 @@ Commands:
                       Check host baseline and supervisor health
   version [--format human|json]
   apply [--resume|--abort]   (stub — see ADR 0003)
+  events subscribe [--filter 'vm.*,apply.*']
   help
 
 Stable exit codes:
@@ -209,12 +219,230 @@ fn apply_stub(args: impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::from(EXIT_INVALID_INPUT);
     }
 
+    let mode = if resume {
+        "resume"
+    } else if abort {
+        "abort"
+    } else {
+        "apply"
+    };
+    if let Err(error) = emit_apply_stub(mode) {
+        eprintln!("warning: apply events not emitted: {error}");
+    }
+
     eprintln!(
         "apply is not implemented yet; journal/reconcile remains tracked by ADR 0003 \
          (future blockers: exit {EXIT_INCOMPLETE_JOURNAL}=incomplete journal, \
          exit {EXIT_LEASE_HELD}=lease held)"
     );
     ExitCode::from(EXIT_UNAVAILABLE)
+}
+
+fn events_command(mut args: impl Iterator<Item = String>) -> ExitCode {
+    match args.next().as_deref() {
+        Some("subscribe") => match parse_events_options(args) {
+            Ok(options) => events_subscribe(options),
+            Err((message, code)) => {
+                eprintln!("{message}");
+                ExitCode::from(code)
+            }
+        },
+        Some(command) => {
+            eprintln!("unknown events command: {command}");
+            ExitCode::from(EXIT_USAGE)
+        }
+        None => {
+            eprintln!("usage: vzctl events subscribe [--filter 'vm.*,apply.*']");
+            ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
+fn parse_events_options(args: impl Iterator<Item = String>) -> Result<EventsOptions, (String, u8)> {
+    let mut filter = None;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--filter" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| ("--filter requires a pattern".to_string(), EXIT_USAGE))?;
+                if !valid_event_filter(&value) {
+                    return Err((format!("invalid event filter: {value}"), EXIT_INVALID_INPUT));
+                }
+                filter = Some(value);
+            }
+            _ => {
+                return Err((
+                    format!("unknown events subscribe option: {arg}"),
+                    EXIT_USAGE,
+                ))
+            }
+        }
+    }
+    Ok(EventsOptions { filter })
+}
+
+fn valid_event_filter(expression: &str) -> bool {
+    let patterns = expression.split(',').map(str::trim).collect::<Vec<_>>();
+    !patterns.is_empty()
+        && patterns.iter().all(|pattern| {
+            !pattern.is_empty()
+                && pattern.matches('*').count() <= 1
+                && (!pattern.contains('*') || pattern.ends_with('*'))
+        })
+}
+
+fn events_subscribe(options: EventsOptions) -> ExitCode {
+    let path = supervisor_socket_path();
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            eprintln!("supervisor socket {}: {error}", path.display());
+            return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+        }
+    };
+    let timeout = Some(Duration::from_secs(2));
+    if let Err(error) = stream.set_write_timeout(timeout) {
+        eprintln!("supervisor write timeout setup: {error}");
+        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+    }
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "events.subscribe",
+        "params": {
+            "filter": options.filter,
+        },
+        "id": 1
+    });
+    if let Err(error) = writeln!(stream, "{request}") {
+        eprintln!("subscribe request: {error}");
+        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    if let Err(error) = reader.read_line(&mut response) {
+        eprintln!("subscribe response: {error}");
+        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+    }
+    let response: Value = match serde_json::from_str(&response) {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("invalid subscribe response: {error}");
+            return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+        }
+    };
+    if response["result"]["ok"] != true || response["result"]["v"] != 1 {
+        eprintln!("subscribe rejected: {response}");
+        return ExitCode::from(EXIT_INVALID_INPUT);
+    }
+
+    if let Err(error) = reader
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(250)))
+    {
+        eprintln!("supervisor read timeout setup: {error}");
+        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+    }
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let signal_flag = Arc::clone(&interrupted);
+    if let Err(error) = ctrlc::set_handler(move || {
+        signal_flag.store(true, Ordering::SeqCst);
+    }) {
+        eprintln!("cannot install Ctrl-C handler: {error}");
+        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+    }
+
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    loop {
+        if interrupted.load(Ordering::SeqCst) {
+            return ExitCode::SUCCESS;
+        }
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) if interrupted.load(Ordering::SeqCst) => return ExitCode::SUCCESS,
+            Ok(0) => {
+                eprintln!("supervisor closed the event stream");
+                return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+            }
+            Ok(_) => {
+                let event: Value = match serde_json::from_str(&line) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        eprintln!("invalid event JSON: {error}");
+                        return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+                    }
+                };
+                if event["v"] != 1
+                    || !event["ts"].is_string()
+                    || !event["type"].is_string()
+                    || !event["data"].is_object()
+                {
+                    eprintln!("invalid event envelope");
+                    return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+                }
+                if let Err(error) = output
+                    .write_all(line.as_bytes())
+                    .and_then(|_| output.flush())
+                {
+                    eprintln!("event output: {error}");
+                    return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => {
+                eprintln!("event stream: {error}");
+                return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
+            }
+        }
+    }
+}
+
+fn emit_apply_stub(mode: &str) -> Result<(), String> {
+    let path = supervisor_socket_path();
+    let mut stream =
+        UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let timeout = Some(Duration::from_secs(2));
+    stream
+        .set_read_timeout(timeout)
+        .map_err(|error| format!("read timeout setup: {error}"))?;
+    stream
+        .set_write_timeout(timeout)
+        .map_err(|error| format!("write timeout setup: {error}"))?;
+    let epoch_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "apply.stub",
+        "params": {
+            "invocation_id": format!("{}-{epoch_millis}", std::process::id()),
+            "mode": mode,
+        },
+        "id": 1
+    });
+    writeln!(stream, "{request}").map_err(|error| format!("apply event request: {error}"))?;
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .map_err(|error| format!("apply event response: {error}"))?;
+    let value: Value =
+        serde_json::from_str(&response).map_err(|error| format!("invalid response: {error}"))?;
+    if value["result"]["ok"] == true {
+        Ok(())
+    } else {
+        Err(format!("supervisor rejected apply events: {value}"))
+    }
 }
 
 fn parse_doctor_options(args: impl Iterator<Item = String>) -> Result<DoctorOptions, String> {
@@ -1020,6 +1248,25 @@ mod tests {
         assert_eq!(EXIT_SUPERVISOR_UNHEALTHY, 10);
         assert_eq!(EXIT_HOST_UNSUPPORTED, 11);
         assert_eq!(EXIT_UNAVAILABLE, 12);
+    }
+
+    #[test]
+    fn event_options_parse_filter_list() {
+        let args = ["--filter", "vm.*,apply.*"].into_iter().map(str::to_string);
+        assert_eq!(
+            parse_events_options(args).unwrap(),
+            EventsOptions {
+                filter: Some("vm.*,apply.*".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn event_filter_accepts_exact_and_suffix_wildcards() {
+        assert!(valid_event_filter("vm.*, apply.failed"));
+        assert!(valid_event_filter("*"));
+        assert!(!valid_event_filter("vm.*.failed"));
+        assert!(!valid_event_filter("vm.,"));
     }
 
     #[test]

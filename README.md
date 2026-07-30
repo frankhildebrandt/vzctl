@@ -2,13 +2,14 @@
 
 macOS Virtualization.framework–based **devstack supervisor**: Git-native multi-VM environments, custom networks, Hypervisor-DNS, linked clones, Docker context.
 
-> Status: **P0 scaffolding** (G0–G3 gates closed). See [`docs/planing/`](docs/planing/).
+> Status: **P1 Alpha** (CLI/Event-Verträge stehen). See [`docs/planing/`](docs/planing/).
 
 ## Quick start
 
 ```bash
 # CLI
 cargo run -p vzctl -- doctor
+cargo run -p vzctl -- events subscribe --filter 'vm.*,apply.*'
 
 # Daemon stubs (macOS 26+)
 cd daemon && swift build
@@ -27,7 +28,7 @@ standardmäßig unter `~/Library/Application Support/vzctl/`;
 
 | Path | Role |
 |---|---|
-| `crates/vzctl` | Rust CLI (`doctor`, `apply` stub) |
+| `crates/vzctl` | Rust CLI (`doctor`, `events subscribe`, `apply` stub) |
 | `daemon/` | Swift `vz-supervisor` + `vz-helper` (ADR 0002) |
 | `docs/adr/` | Accepted ADRs (macOS 26, process ownership, apply) |
 | `docs/spikes/g0-network.md` | G0 network/DNS/crash spike |
@@ -43,6 +44,8 @@ standardmäßig unter `~/Library/Application Support/vzctl/`;
 | [ADR 0002](docs/adr/0002-process-ownership.md) | Supervisor vs Helper |
 | [ADR 0003](docs/adr/0003-apply-state.md) | Apply / Journal |
 | [`vzctl doctor`](docs/doctor.md) | Checks, Konfiguration und Exitcodes |
+| [CLI Contract v1](docs/specs/cli-contract-v1.md) | JSON, stdout/stderr und Exitcodes |
+| [Event Stream v1](docs/specs/events-v1.md) | NDJSON-Envelope, Typen und Filter |
 
 ## License
 

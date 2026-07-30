@@ -28,7 +28,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#1](https://github.com/frankhildebrandt/vzctl/issues/1) | G0 Netzwerk-/DNS-/Crash-Spike | G0 | **closed** (Go) |
 | [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | **closed** |
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | **closed** (Live Sleep/Base-Raw residual) |
-| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | open |
+| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; CLI surface rest open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | open |
 | [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (G0 Bind ✅) |
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | open (G0 Reach ✅) |
@@ -51,6 +51,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Agent Time-Sync | [p0-agent-time-sync.md](../spikes/p0-agent-time-sync.md) |
 | [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | [doctor.md](../doctor.md) |
 | [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | CLI Contract v1 | [cli-contract-v1.md](../specs/cli-contract-v1.md) |
+| [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event Stream v1 | [events-v1.md](../specs/events-v1.md) |
 
 ## P0 Foundation (complete)
 
@@ -73,10 +74,10 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 
 | # | Story | Status |
 |---|---|---|
-| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | active |
+| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | Contract-DoD complete; CLI surface rest |
 | [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | **complete** (CLI Contract v1 + Golden Tests) |
-| [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | ← **next** |
-| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | Alternative nächster P1-Slice |
+| [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | **closed** (UDS + NDJSON + Filter) |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | ← **next** |
 
 ## Label-Schema
 

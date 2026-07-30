@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P1 / #17** — #19 versioniertes Event-Schema und `events subscribe` auf dem
-abgeschlossenen CLI-v1-Contract aus #18 aufbauen. Alternativer nächster
-P1-Slice: #21 Base Seal / APFS Linked Clones.
+**P1 / #21** — nach den abgeschlossenen CLI-Verträgen #18/#19 als Nächstes
+Base Seal, APFS Linked Clones und Identity-Reset umsetzen. Der weitere
+commandspezifische CLI-Surface bleibt unter #17 nachvollziehbar.

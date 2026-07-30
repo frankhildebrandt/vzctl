@@ -32,6 +32,7 @@ final class SupervisorServer: @unchecked Sendable {
     private var ownsSocket = false
     private let database: StateDatabase
     private var helpers: [String: HelperRecord] = [:]
+    private var subscribers: [UUID: EventSubscriber] = [:]
 
     init(stateDirectory: URL) throws {
         try FileManager.default.createDirectory(
@@ -76,8 +77,26 @@ final class SupervisorServer: @unchecked Sendable {
                     if stateLock.withLock({ listener < 0 }) { break }
                     throw SupervisorError.system("accept", errno)
                 }
-                handle(client)
-                Darwin.close(client)
+                var noSigPipe: Int32 = 1
+                setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_NOSIGPIPE,
+                    &noSigPipe,
+                    socklen_t(MemoryLayout<Int32>.size)
+                )
+                var sendTimeout = timeval(tv_sec: 2, tv_usec: 0)
+                setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_SNDTIMEO,
+                    &sendTimeout,
+                    socklen_t(MemoryLayout<timeval>.size)
+                )
+                DispatchQueue.global().async { [self] in
+                    handle(client)
+                    Darwin.close(client)
+                }
             }
         } catch {
             stop()
@@ -87,12 +106,14 @@ final class SupervisorServer: @unchecked Sendable {
     }
 
     func stop() {
-        let state = stateLock.withLock { () -> (Int32, Bool) in
+        let state = stateLock.withLock { () -> (Int32, Bool, [Int32]) in
             let current = listener
             let shouldUnlink = ownsSocket
+            let clients = subscribers.values.map(\.fd)
             listener = -1
             ownsSocket = false
-            return (current, shouldUnlink)
+            subscribers.removeAll()
+            return (current, shouldUnlink, clients)
         }
         if state.0 >= 0 {
             Darwin.shutdown(state.0, SHUT_RDWR)
@@ -100,6 +121,9 @@ final class SupervisorServer: @unchecked Sendable {
         }
         if state.1 {
             Darwin.unlink(socketPath)
+        }
+        for client in state.2 {
+            Darwin.shutdown(client, SHUT_RDWR)
         }
     }
 
@@ -117,6 +141,12 @@ final class SupervisorServer: @unchecked Sendable {
                 let line = pending[..<newline]
                 pending.removeSubrange(...newline)
                 guard !line.isEmpty else { continue }
+                if let request = try? JSONRPCFraming.decode(JSONRPCRequest.self, from: Data(line)),
+                   request.method == "events.subscribe"
+                {
+                    subscribe(client, request: request)
+                    return
+                }
                 let response = response(for: Data(line))
                 guard let encoded = try? JSONRPCFraming.encode(response) else { return }
                 if !writeAll(encoded, to: client) { return }
@@ -176,6 +206,15 @@ final class SupervisorServer: @unchecked Sendable {
             stateLock.withLock {
                 helpers[record.vmID] = record
             }
+            emit(
+                type: "vm.state",
+                data: [
+                    "vm_id": .string(record.vmID),
+                    "state": .string(record.state),
+                    "pid": .number(Double(record.pid)),
+                    "bundle": .string(record.bundle),
+                ]
+            )
             return JSONRPCResponse(
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
@@ -193,6 +232,42 @@ final class SupervisorServer: @unchecked Sendable {
                     id: request.id ?? .null
                 )
             }
+            emit(type: "vm.clock_corrected", data: params)
+            return JSONRPCResponse(
+                result: .object(["ok": .bool(true)]),
+                id: request.id ?? .null
+            )
+        case "apply.stub":
+            guard case let .object(params)? = request.params,
+                  case let .string(invocationID)? = params["invocation_id"],
+                  case let .string(mode)? = params["mode"],
+                  !invocationID.isEmpty,
+                  ["apply", "resume", "abort"].contains(mode)
+            else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -32602, message: "Invalid apply event params"),
+                    id: request.id ?? .null
+                )
+            }
+            let common: [String: JSONValue] = [
+                "invocation_id": .string(invocationID),
+                "mode": .string(mode),
+            ]
+            emit(type: "apply.started", data: common)
+            emit(
+                type: "apply.step",
+                data: common.merging([
+                    "step": .string("reconcile"),
+                    "status": .string("unavailable"),
+                ]) { _, new in new }
+            )
+            emit(
+                type: "apply.failed",
+                data: common.merging([
+                    "exit_code": .number(12),
+                    "error": .string("not_implemented"),
+                ]) { _, new in new }
+            )
             return JSONRPCResponse(
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
@@ -202,6 +277,75 @@ final class SupervisorServer: @unchecked Sendable {
                 error: JSONRPCError(code: -32601, message: "Method not found"),
                 id: request.id ?? .null
             )
+        }
+    }
+
+    private func subscribe(_ client: Int32, request: JSONRPCRequest) {
+        let expression: String?
+        if request.params == nil {
+            expression = nil
+        } else if case let .object(params)? = request.params {
+            if params["filter"] == nil || params["filter"] == .null {
+                expression = nil
+            } else if case let .string(filter)? = params["filter"] {
+                expression = filter
+            } else {
+                writeSubscriptionError(client, request: request)
+                return
+            }
+        } else {
+            writeSubscriptionError(client, request: request)
+            return
+        }
+
+        guard let filter = try? EventFilter(expression) else {
+            writeSubscriptionError(client, request: request)
+            return
+        }
+
+        let id = UUID()
+        let response = JSONRPCResponse(
+            result: .object(["ok": .bool(true), "v": .number(1)]),
+            id: request.id ?? .null
+        )
+        guard let encoded = try? JSONRPCFraming.encode(response) else { return }
+        let registered = stateLock.withLock { () -> Bool in
+            guard writeAll(encoded, to: client) else { return false }
+            subscribers[id] = EventSubscriber(fd: client, filter: filter)
+            return true
+        }
+        guard registered else { return }
+        defer {
+            _ = stateLock.withLock {
+                subscribers.removeValue(forKey: id)
+            }
+        }
+
+        var byte: UInt8 = 0
+        while Darwin.read(client, &byte, 1) > 0 {}
+    }
+
+    private func writeSubscriptionError(_ client: Int32, request: JSONRPCRequest) {
+        let response = JSONRPCResponse(
+            error: JSONRPCError(code: -32602, message: "Invalid event filter"),
+            id: request.id ?? .null
+        )
+        if let encoded = try? JSONRPCFraming.encode(response) {
+            _ = writeAll(encoded, to: client)
+        }
+    }
+
+    private func emit(type: String, data: [String: JSONValue]) {
+        let event = EventEnvelope(type: type, data: data)
+        guard let encoded = try? JSONRPCFraming.encode(event) else { return }
+        stateLock.withLock {
+            let failed = subscribers.compactMap { id, subscriber -> UUID? in
+                guard subscriber.filter.matches(type) else { return nil }
+                return writeAll(encoded, to: subscriber.fd) ? nil : id
+            }
+            for id in failed {
+                subscribers.removeValue(forKey: id)
+            }
         }
     }
 
@@ -262,6 +406,11 @@ final class SupervisorServer: @unchecked Sendable {
             return true
         }
     }
+}
+
+private struct EventSubscriber: Sendable {
+    let fd: Int32
+    let filter: EventFilter
 }
 
 private struct HelperRecord: Sendable {

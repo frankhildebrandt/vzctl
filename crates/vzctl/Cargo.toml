@@ -7,4 +7,5 @@ license = "UNLICENSED"
 publish = false
 
 [dependencies]
+ctrlc = "3.4"
 serde_json = "1"

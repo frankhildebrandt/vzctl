@@ -189,16 +189,16 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 Foundation abgeschlossen">
-        Epic #7 Ownership, #12 Guest-Agent (#13–#16), #20 doctor closed.
-        Live-Boot/Sleep Residual bis Base-Raw. P1: CLI Contract #18 ✅ → #19 Events.
+      <Callout tone="success" title="P0 + CLI Contracts">
+        P0 Foundation closed. P1: #18 CLI-v1 + #19 Events ✅. Nächster Slice:
+        #21 Seal / Linked Clones / Identity.
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
-        <Stat value="P0✓" label="Foundation" tone="success" />
-        <Stat value="#19" label="Events next" tone="info" />
+        <Stat value="#18+#19" label="CLI+Events" tone="success" />
+        <Stat value="#21" label="Clones next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -684,10 +684,10 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          P1 #19: Event-Schema + <Code>vzctl events subscribe</Code> (NDJSON).
-          Spec <Code>docs/specs/events-v1.md</Code>; mind. <Code>vm.state</Code> +{" "}
-          <Code>apply.*</Code>. CLI Contract v1 (#18) ist Vorbild für Compatibility.
-          Alternative: #21 Seal/Clones.
+          P1 #21: Base Seal / APFS Linked Clones / Identity-Reset. Einstieg über
+          #22 <Code>image seal</Code> (Agent in Base erhalten), dann #23{" "}
+          <Code>clonefile</Code> + #24 Identity. Events (#19) und CLI-v1 (#18)
+          sind closed.
         </Callout>
       </Stack>
 
