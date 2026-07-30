@@ -414,10 +414,11 @@ export default function VzHypervisorImplementationsplan() {
 
       <Stack gap={12}>
         <H2>DNS — Dual Listener + *.vz.test</H2>
-        <Callout tone="success" title="#26 implementiert">
+        <Callout tone="success" title="#26 + #27 implementiert">
           Supervisor-owned UDP-Listener, Actual-State A-Records, TTL 5–30s,
           Hot-Reload, System-/expliziter Forwarder sowie DNS-Health und Events.
-          #27/#28/#29 bleiben.
+          macOS-Resolver werden atomar, idempotent und collision-safe pro
+          Projekt/Config verwaltet. #28/#29 bleiben.
         </Callout>
         <Callout tone="danger" title="Nicht auth.localhost in Guests">
           RFC 6761: *.localhost = Guest-Loopback. Kanonisch{" "}
@@ -431,7 +432,8 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Text size="small" tone="secondary">
                 Listener <Code>127.0.0.1:15353</Code> +{" "}
-                <Code>/etc/resolver/{"{project}"}.vz.test</Code>.{" "}
+                <Code>/etc/resolver/{"{project}"}.vz.test</Code> via{" "}
+                <Code>dns install-resolver|uninstall-resolver</Code>.{" "}
                 <Code>vzctl dns query</Code> spricht DNS direkt (dig umgeht oft
                 Resolver).
               </Text>
@@ -658,7 +660,7 @@ vzctl vm create|start|stop|delete|list|info|exec|console|logs
 vzctl image pull|seal|list
 vzctl net create|attach|list|delete
 vzctl route add|apply   &&   vzctl policy apply
-vzctl dns status|query|reload|install-resolver
+vzctl dns status|query|reload|install-resolver|uninstall-resolver
 vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
 # v0.2: ingress | certs | oidc`}</Code>
       </Stack>
@@ -698,9 +700,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
         <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk + DNS-Server">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
           per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
-          Router-Apply, Default-Netz und deklarative nftables-Policies. #26:
-          autoritative DNS-Zone, Forwarder, TTL und Hot-Reload. Next:
-          #27 macOS resolver, dann #28/#29; Stack-Reconciler #34.
+          Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
+          Dual-DNS plus macOS resolver install/cleanup. Next: #28 dns query,
+          dann #29 Guest nameservers; Stack-Reconciler #34.
         </Callout>
       </Stack>
 

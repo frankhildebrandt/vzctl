@@ -6,7 +6,7 @@ den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 
 | Listener | Default | Zweck |
 |---|---|---|
-| Host | `127.0.0.1:15353` | macOS `/etc/resolver` ab #27 |
+| Host | `127.0.0.1:15353` | macOS `/etc/resolver` |
 | Guest | Bridge-`.0:53` | Standard-DNS der Guests ab #29 |
 
 Für einen unprivilegierten Development-Run kann der Guest-Port mit
@@ -72,6 +72,65 @@ VZCTL_DNS_LAB=1 swift test --package-path daemon \
   --filter systemUpstreamLabResolvesExternalName
 ```
 
+## macOS-Systemresolver
+
+Issue [#27](https://github.com/frankhildebrandt/vzctl/issues/27) verwaltet
+pro Projekt eine scoped Resolver-Datei:
+
+```text
+# /etc/resolver/edge-dmz.vz.test
+# managed-by: vzctl
+# project: edge-dmz
+# owner: config-…
+nameserver 127.0.0.1
+port 15353
+```
+
+Im Environment-Verzeichnis wird `spec.project` aus
+`hypernetwork.config.yaml` gelesen:
+
+```sh
+sudo vzctl dns install-resolver
+sudo vzctl dns uninstall-resolver
+```
+
+Alternativ sind `--config <path>` und `--project <dns-label>` möglich.
+`--project` muss mit `spec.project` übereinstimmen, falls eine Config gelesen
+wird. `VZCTL_DNS_PORT` muss beim Supervisor und beim Installieren identisch
+gesetzt sein; Default ist `15353`. Beide Commands unterstützen
+`--format human|json`.
+
+Install und Cleanup sind idempotent. vzctl schreibt atomar mit Modus `0644`
+und folgt weder einem Resolver-Datei-Symlink noch einem
+`/etc/resolver`-Symlink. Beim Uninstall wird nur eine Datei mit passendem
+`managed-by`-, Projekt- und Config-Owner-Marker gelöscht. Fremde Dateien werden
+mit Exit `19` als Kollision gemeldet und nie überschrieben oder entfernt.
+
+Zwei unterschiedlich benannte Projekte erhalten unterschiedliche Dateien und
+Zones. Zwei Configs mit demselben `spec.project` würden dieselbe Zone
+beanspruchen; der Config-Owner-Marker macht das zum harten Konflikt. Das Projekt
+muss deshalb repository-/hostweit eindeutig sein.
+
+Der spätere Stack-Reconciler (#34) ruft bei `down --purge` denselben
+ownership-geprüften Cleanup-Pfad auf. Bis dieser P3-Command vorhanden ist,
+erfolgt der Cleanup explizit mit `dns uninstall-resolver`.
+
+### Smoke-Test
+
+Mit laufendem Supervisor und aktiver `web`-VM:
+
+```sh
+sudo vzctl dns install-resolver
+dscacheutil -q host -a name web.dmz.edge-dmz.vz.test
+curl http://web.dmz.edge-dmz.vz.test
+```
+
+`curl`, Browser und andere libc-Clients verwenden den macOS-Systemresolver.
+`dig` bildet die macOS-Split-DNS-Auswahl dagegen nicht zuverlässig ab und kann
+`/etc/resolver` ohne explizites `@server` umgehen. Für direkte,
+reproduzierbare DNS-Abfragen folgt `vzctl dns query` in
+[#28](https://github.com/frankhildebrandt/vzctl/issues/28).
+
 ## Health und Events
 
 `daemon.health` enthält `dns_ok` und ein `dns`-Objekt mit Listenern,
@@ -88,5 +147,4 @@ weiterlaufen.
 
 - UDP only; TCP-Fallback und DNSSEC-Validierung sind nicht implementiert.
 - Der Forwarder unterstützt IPv4-Upstreams.
-- `/etc/resolver` (#27), `vzctl dns query` (#28) und Guest-cloud-init (#29)
-  bleiben eigene Slices.
+- `vzctl dns query` (#28) und Guest-cloud-init (#29) bleiben eigene Slices.

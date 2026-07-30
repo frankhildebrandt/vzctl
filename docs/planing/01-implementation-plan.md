@@ -108,7 +108,9 @@ Kanonisch: `{vm}.{net}.{project}.vz.test`
 - **Implementiert in #26:** Supervisor-owned Dual-UDP-Listener,
   Actual-State-VM-/Service-A-Records, Hot-Reload, Forwarder und DNS-Health/Events
 - `vzctl dns query` spricht **direkt** den vzctl-DNS (nicht nur libc/`dig`)
-- `install-resolver` / Cleanup verwaister `/etc/resolver/*` bei purge
+- **Implementiert in #27:** `install-resolver` / `uninstall-resolver` atomar,
+  projekt-/config-scoped und idempotent; ownership-geprüfter Cleanup-Pfad für
+  späteres `down --purge` (#34)
 
 ```yaml
 spec:
@@ -287,7 +289,7 @@ oidc:
 6. image seal + APFS linked clone + identity reset — P1  
 7. vmnet nets + Router routes + policies — P2  
 8. Dual-DNS (Host+Guest Listener) + forward + `dns query` — P2  
-9. macOS `/etc/resolver/*.vz.test` install/cleanup — P2  
+9. macOS `/etc/resolver/*.vz.test` install/cleanup — P2 ✅ #27
 10. hypernetwork/v1 reconcile up/down/apply + lease + resume — P3  
 11. Docker SSH-context + ports (basic) — P4  
 12. v0.1.x: virtiofs spike + Docker polish — P4b  

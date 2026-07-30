@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod dns;
 mod network;
 mod route;
 
@@ -274,6 +275,7 @@ fn main() -> ExitCode {
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
         Some("route") => route::command(args, &supervisor_socket_path()),
+        Some("dns") => dns::command(args),
         Some("image") => image_command(args),
         Some("vm") => vm_command(args),
         Some(other) => {
@@ -303,6 +305,7 @@ Commands:
   net default set <name> --cidr CIDR [--format human|json]
   route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
   route status [--router <vm-id>] [--format human|json]
+  dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
   help
@@ -321,7 +324,8 @@ Stable exit codes:
   15  image seal state/marker failed
   16  VM root/data disk preparation failed
   17  network operation failed
-  18  route operation failed"
+  18  route operation failed
+  19  resolver operation failed"
     );
 }
 
@@ -2882,6 +2886,8 @@ mod tests {
         assert_eq!(EXIT_IMAGE_STATE_FAILED, 15);
         assert_eq!(EXIT_VM_DISK_PREP_FAILED, 16);
         assert_eq!(network::EXIT_NETWORK, 17);
+        assert_eq!(route::EXIT_ROUTE, 18);
+        assert_eq!(dns::EXIT_RESOLVER, 19);
     }
 
     #[test]

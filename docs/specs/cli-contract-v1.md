@@ -83,6 +83,8 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
 | `16` | VM-Root-/Data-Disk-Vorbereitung fehlgeschlagen | `vm create` |
 | `17` | Network-Operation fehlgeschlagen | Konflikt, nicht gefunden, vmnet-Rebuild |
+| `18` | Route-/Policy-Operation fehlgeschlagen | Guest-Agent oder nftables |
+| `19` | macOS-Resolver-Operation fehlgeschlagen | Rechte, Kollision, unsicherer Pfad |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -178,6 +180,24 @@ Das v1-Ergebnis enthält `routers[]`, `summary.changed` und pro Router
 `active`, `forward_policy`, `policies[]`, `rules[]` und `policy_changes[]`.
 Exit `18` steht für Route-/Guest-Apply-/Statusfehler, Exit `3` für ungültige
 Konfiguration, Rollen oder Topologien.
+
+### `vzctl dns install-resolver|uninstall-resolver`
+
+```bash
+vzctl dns install-resolver|uninstall-resolver \
+  [--project <name>] [--config <path>] [--format human|json]
+```
+
+Die kanonischen Commands heißen `dns.install-resolver` und
+`dns.uninstall-resolver`. Ohne `--project` wird `spec.project` aus
+`hypernetwork.config.yaml` gelesen. Das JSON-Envelope enthält `resolver` mit
+`project`, `domain`, `path`, `nameserver`, `port` und `managed`;
+`summary.change` ist `installed`, `updated`, `unchanged`, `removed` oder
+`absent`.
+
+Ungültige Projekte/Configs liefern Exit `3`. Fehlende Rechte, fremde Dateien,
+Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`. Idempotente
+No-op-Installationen und -Deinstallationen liefern Exit `0`.
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events
