@@ -13,6 +13,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 | 03 | [03-utm-multipass-hyperkit-vergleich.md](03-utm-multipass-hyperkit-vergleich.md) | UTM · Multipass · Self-made |
 | 04 | [04-decision-log.md](04-decision-log.md) | Festgezogene Entscheidungen |
 | 05 | [05-gpt-sol-review.md](05-gpt-sol-review.md) | GPT 5.6 SOL Medium-Bewertung |
+| 06 | [06-github-tracking.md](06-github-tracking.md) | Labels, Milestones, Epics, Issue-Map |
 | — | [canvases/](canvases/) | Original `.canvas.tsx` Quellen |
 
 ## Lesereihenfolge
@@ -22,7 +23,8 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 3. GPT-SOL-Review (05) — Feinschliff nach Must-Fixes
 4. Decision Log (04) — was übernommen wurde
 5. Implementation Plan (01) — aktueller Soll-Zustand
+6. GitHub Tracking (06) — Epics/Stories
 
 ## Nächster Schritt
 
-**G0 Netzwerk-Spike** + macOS-Baseline ADR, bevor Code-Scaffolding.
+**[#1 G0 Spike](https://github.com/frankhildebrandt/vzctl/issues/1)** — bevor Code-Scaffolding.
