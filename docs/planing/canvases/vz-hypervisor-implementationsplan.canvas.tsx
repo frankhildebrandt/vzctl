@@ -168,7 +168,7 @@ export default function VzHypervisorImplementationsplan() {
             G0 Go
           </Pill>
           <Pill tone="success" size="sm" active>
-            #32 route apply
+            #33 policies
           </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
@@ -192,11 +192,11 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 + P1 + P2 Netzwerk-Basis">
+      <Callout tone="success" title="P0 + P1 + P2 Netzwerk-Epic #30">
         P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
         #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31/#32:
-        vmnet CRUD, Desired Attachments, Router-Apply und #51 Default-Netz mit
-        Auto-IP/vollem NAT-Egress ✅.
+        vmnet CRUD, Router-Apply, #51 Default-Netz mit vollem NAT-Egress und
+        #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
 
       <Grid columns={5} gap={12}>
@@ -691,8 +691,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
         />
         <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk-Basis">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
-          per-Clone Identity/NoCloud. #31/#32/#51: Network CRUD, Router-Apply
-          und Default-Netz mit Auto-IP. Next: #33 Policies.
+          per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
+          Router-Apply, Default-Netz und deklarative nftables-Policies. Next:
+          Dual-DNS #25 und Stack-Reconciler #34.
         </Callout>
       </Stack>
 

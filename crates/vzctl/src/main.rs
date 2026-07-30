@@ -301,7 +301,8 @@ Commands:
   net delete <name> [--format human|json]
   net default show [--format human|json]
   net default set <name> --cidr CIDR [--format human|json]
-  route apply [--router <vm-id>] [--format human|json]
+  route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
+  route status [--router <vm-id>] [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
   help

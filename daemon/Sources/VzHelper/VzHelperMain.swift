@@ -239,8 +239,9 @@ enum VzHelperMain {
                 HelperControlServer(
                     vmID: options.vmID,
                     stateDirectory: stateDirectory
-                ) { plan in
-                    try await RouterGuestConfigurator.apply(
+                ) { operation, plan in
+                    try await RouterGuestConfigurator.run(
+                        operation,
                         plan,
                         runtime: created,
                         token: token

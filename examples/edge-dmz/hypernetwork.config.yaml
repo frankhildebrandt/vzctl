@@ -1,0 +1,32 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: edge-dmz
+spec:
+  project: edge-dmz
+  networks:
+    dmz:
+      cidr: 10.80.0.0/24
+      mode: shared
+    lan:
+      cidr: 10.90.0.0/24
+      mode: shared
+  policies:
+    - name: dmz-default
+      network: dmz
+      forward: deny-all
+      allow:
+        - { to: lan, proto: tcp, ports: [5432] }
+        - { to: dmz, proto: icmp }
+  vms:
+    router:
+      roles: [router]
+      networks:
+        - { name: dmz, ip: 10.80.0.2 }
+        - { name: lan, ip: 10.90.0.2 }
+    web:
+      networks:
+        - { name: dmz, ip: 10.80.0.10 }
+    database:
+      networks:
+        - { name: lan, ip: 10.90.0.10 }

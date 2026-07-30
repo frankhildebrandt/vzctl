@@ -161,17 +161,23 @@ JSON-Envelope enthält `default_network`; ohne Konfiguration ist der Wert
 `null`. Bei Konfiguration enthält er `mode=shared`, `access=full`,
 `nat_egress=true` und den Zustand der zugehörigen Network-Row.
 
-### `vzctl route apply`
+### `vzctl route apply|plan|status`
 
 ```bash
-vzctl route apply [--router <vm-id>] [--format human|json]
+vzctl route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
+vzctl route status [--router <vm-id>] [--format human|json]
 ```
 
-`route apply` validiert Router-Rolle, mindestens zwei Attachments und `.2` je
-Netz. Der Supervisor delegiert den Push an den VM-Helper; der Helper nutzt
-ausschließlich den authentisierten Guest-Agent über vsock. Das Ergebnis enthält
-`routers[]` sowie `summary.changed`. Exit `18` steht für Route-/Guest-Apply-
-Fehler, Exit `3` für ungültige Rollen oder Topologien.
+`route apply` und `route plan` lesen `spec.policies` aus der angegebenen
+Environment-Datei beziehungsweise aus `./hypernetwork.config.yaml`.
+Sie validieren Router-Rolle, mindestens zwei Attachments, `.2` je Netz,
+`forward: deny-all`, Zielnetze, Protokolle und Ports. `plan` verändert den Gast
+nicht. `status` liest den aktiven nftables-Status über Helper und Guest-Agent.
+
+Das v1-Ergebnis enthält `routers[]`, `summary.changed` und pro Router
+`active`, `forward_policy`, `policies[]`, `rules[]` und `policy_changes[]`.
+Exit `18` steht für Route-/Guest-Apply-/Statusfehler, Exit `3` für ungültige
+Konfiguration, Rollen oder Topologien.
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

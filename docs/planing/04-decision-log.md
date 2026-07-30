@@ -45,3 +45,9 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 - ~~Ob Pre-26 jemals supportet wird~~ → **nein** (ADR 0001)
 
 Protokoll: [g0-network.md](../spikes/g0-network.md)
+
+## Umgesetzt
+
+- Entscheidung 18: #33 rendert deklarative `policies:` als atomare nftables-
+  Forward-Tabelle auf der Router-VM. Default bleibt `DROP`; Plan und JSON-Status
+  laufen über den vorhandenen Helper→Guest-Agent-Pfad aus #32.

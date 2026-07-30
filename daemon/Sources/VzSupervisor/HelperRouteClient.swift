@@ -3,11 +3,12 @@ import Foundation
 import VzDaemonKit
 
 enum HelperRouteClient {
-    static func apply(
+    static func run(
+        _ operation: RouterOperation,
         _ plan: RouterPlan,
         stateDirectory: URL,
         timeoutSeconds: Int = 35
-    ) throws -> Bool {
+    ) throws -> JSONValue {
         let path = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
             .appendingPathComponent("\(StateFileName.component(plan.vmID)).sock")
@@ -45,7 +46,7 @@ enum HelperRouteClient {
             )
         }
         let request = JSONRPCRequest(
-            method: "route.apply",
+            method: "route.\(operation.rawValue)",
             params: plan.json,
             id: .number(1)
         )
@@ -57,12 +58,10 @@ enum HelperRouteClient {
         if let error = response.error {
             throw RouteApplyError.guest(error.message)
         }
-        guard case let .object(result)? = response.result,
-              case let .bool(changed)? = result["changed"]
-        else {
+        guard let result = response.result, case .object = result else {
             throw RouteApplyError.guest("router helper returned an invalid response")
         }
-        return changed
+        return result
     }
 
     private static func writeAll(_ data: Data, to fd: Int32) -> Bool {

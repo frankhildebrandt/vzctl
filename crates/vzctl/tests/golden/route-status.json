@@ -1,0 +1,22 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "route.status",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "1 router configuration(s), 0 active allow rule(s)",
+    "changed": false
+  },
+  "routers": [
+    {
+      "vm_id": "router",
+      "changed": false,
+      "active": true,
+      "forward_policy": "drop",
+      "networks": [],
+      "policies": [],
+      "rules": [],
+      "policy_changes": []
+    }
+  ]
+}

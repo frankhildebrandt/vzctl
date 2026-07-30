@@ -59,3 +59,50 @@ import Testing
         )
     }
 }
+
+@Test func routerPlanRendersDefaultDenyAndExplicitAllows() throws {
+    let plan = try RouterPlan(
+        vmID: "router",
+        networks: [
+            RouterNetwork(name: "dmz", cidr: "10.80.0.0/24", address: "10.80.0.2"),
+            RouterNetwork(name: "lan", cidr: "10.90.0.0/24", address: "10.90.0.2"),
+        ],
+        policies: [
+            ForwardPolicy(
+                name: "dmz-default",
+                network: "dmz",
+                forward: "deny-all",
+                allow: [
+                    PolicyAllow(to: "lan", proto: "tcp", ports: [5432]),
+                    PolicyAllow(to: "dmz", proto: "icmp"),
+                ]
+            ),
+        ]
+    )
+
+    #expect(plan.nftables.contains("policy drop"))
+    #expect(plan.nftables.contains("ct state established,related accept"))
+    #expect(plan.nftables.contains("tcp dport 5432 accept"))
+    #expect(plan.nftables.contains("ip protocol icmp accept"))
+    #expect(plan.rules.count == 2)
+}
+
+@Test func routerPlanRejectsUnknownNetworksAndInvalidPorts() {
+    #expect(throws: RouteApplyError.self) {
+        try RouterPlan(
+            vmID: "router",
+            networks: [
+                RouterNetwork(name: "dmz", cidr: "10.80.0.0/24", address: "10.80.0.2"),
+                RouterNetwork(name: "lan", cidr: "10.90.0.0/24", address: "10.90.0.2"),
+            ],
+            policies: [
+                ForwardPolicy(
+                    name: "bad",
+                    network: "dmz",
+                    forward: "deny-all",
+                    allow: [PolicyAllow(to: "missing", proto: "tcp", ports: [0])]
+                ),
+            ]
+        )
+    }
+}

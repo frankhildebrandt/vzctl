@@ -5,7 +5,7 @@ import VzDaemonKit
 
 final class HelperControlServer: @unchecked Sendable {
     let socketPath: String
-    private let handler: @Sendable (RouterPlan) async throws -> Bool
+    private let handler: @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
     private let lock = NSLock()
     private var listener: Int32 = -1
     private var ownsSocket = false
@@ -13,7 +13,7 @@ final class HelperControlServer: @unchecked Sendable {
     init(
         vmID: String,
         stateDirectory: URL,
-        handler: @escaping @Sendable (RouterPlan) async throws -> Bool
+        handler: @escaping @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
     ) {
         socketPath = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
@@ -100,7 +100,11 @@ final class HelperControlServer: @unchecked Sendable {
         let response: JSONRPCResponse
         do {
             let request = try JSONRPCFraming.decode(JSONRPCRequest.self, from: data)
-            guard request.method == "route.apply" else {
+            guard request.method.hasPrefix("route."),
+                  let operation = RouterOperation(
+                      rawValue: String(request.method.dropFirst("route.".count))
+                  )
+            else {
                 response = JSONRPCResponse(
                     error: JSONRPCError(code: -32601, message: "Method not found"),
                     id: request.id ?? .null
@@ -112,15 +116,15 @@ final class HelperControlServer: @unchecked Sendable {
             let box = AsyncResultBox()
             Task {
                 do {
-                    box.finish(.success(try await handler(plan)))
+                    box.finish(.success(try await handler(operation, plan)))
                 } catch {
                     box.finish(.failure(error))
                 }
             }
             switch box.wait() {
-            case let .success(changed):
+            case let .success(result):
                 response = JSONRPCResponse(
-                    result: .object(["changed": .bool(changed)]),
+                    result: result,
                     id: request.id ?? .null
                 )
             case let .failure(error):
@@ -155,21 +159,54 @@ final class HelperControlServer: @unchecked Sendable {
             }
             return RouterNetwork(name: name, cidr: cidr, address: address)
         }
-        guard networks.count >= 2 else {
-            throw RouteApplyError.invalid("router plan requires at least two networks")
+        let rawPolicies: [JSONValue]
+        if case let .array(items)? = params["policies"] {
+            rawPolicies = items
+        } else {
+            rawPolicies = []
         }
-        guard Set(networks.map(\.name)).count == networks.count else {
-            throw RouteApplyError.invalid("router plan contains duplicate networks")
-        }
-        for network in networks {
-            _ = try IPv4CIDR(network.cidr)
-            guard network.address == IPv4CIDR.router(for: network.cidr) else {
-                throw RouteApplyError.invalid(
-                    "router address for \(network.name) must be \(IPv4CIDR.router(for: network.cidr))"
-                )
+        let policies = try rawPolicies.map { item -> ForwardPolicy in
+            guard case let .object(values) = item,
+                  case let .string(name)? = values["name"],
+                  case let .string(network)? = values["network"],
+                  case let .string(forward)? = values["forward"]
+            else {
+                throw RouteApplyError.invalid("invalid forward policy")
             }
+            let rawAllows: [JSONValue]
+            if case let .array(items)? = values["allow"] {
+                rawAllows = items
+            } else {
+                rawAllows = []
+            }
+            let allows = try rawAllows.map { raw -> PolicyAllow in
+                guard case let .object(allow) = raw,
+                      case let .string(to)? = allow["to"],
+                      case let .string(proto)? = allow["proto"]
+                else {
+                    throw RouteApplyError.invalid("invalid allow rule in policy \(name)")
+                }
+                let ports: [Int]
+                if case let .array(values)? = allow["ports"] {
+                    ports = try values.map {
+                        guard case let .number(value) = $0, value.rounded() == value else {
+                            throw RouteApplyError.invalid("invalid port in policy \(name)")
+                        }
+                        return Int(value)
+                    }
+                } else {
+                    ports = []
+                }
+                return PolicyAllow(to: to, proto: proto, ports: ports)
+            }
+            return ForwardPolicy(
+                name: name,
+                network: network,
+                forward: forward,
+                allow: allows
+            )
         }
-        return RouterPlan(vmID: vmID, networks: networks)
+        return try RouterPlan(vmID: vmID, networks: networks, policies: policies)
     }
 
     private func peerUID(_ fd: Int32) -> uid_t? {
@@ -209,57 +246,150 @@ final class HelperControlServer: @unchecked Sendable {
 private final class AsyncResultBox: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
-    private var result: Result<Bool, Error>?
+    private var result: Result<JSONValue, Error>?
 
-    func finish(_ value: Result<Bool, Error>) {
+    func finish(_ value: Result<JSONValue, Error>) {
         lock.withLock { result = value }
         semaphore.signal()
     }
 
-    func wait() -> Result<Bool, Error> {
+    func wait() -> Result<JSONValue, Error> {
         semaphore.wait()
         return lock.withLock { result! }
     }
 }
 
 enum RouterGuestConfigurator {
-    static func apply(
+    static func run(
+        _ operation: RouterOperation,
         _ plan: RouterPlan,
         runtime: VirtualMachineRuntime,
         token: String
-    ) async throws -> Bool {
+    ) async throws -> JSONValue {
         let client = try await runtime.connectToGuestAgent(timeout: 5)
         defer { client.close() }
         _ = try client.hello(token: token, helperVersion: VzDaemonKit.version)
-        let payload = try JSONSerialization.data(
-            withJSONObject: [
-                "apiVersion": "vzctl.dev/router/v1",
-                "vm_id": plan.vmID,
-                "networks": plan.networks.map {
-                    [
-                        "name": $0.name,
-                        "cidr": $0.cidr,
-                        "address": $0.address,
-                        "host_gateway_dns": IPv4CIDR.gateway(for: $0.cidr),
-                        "router_gateway": IPv4CIDR.router(for: $0.cidr),
-                    ]
-                },
-                "forward_policy": "drop",
-            ],
-            options: [.sortedKeys]
-        )
-        let result = try client.exec(
-            argv: ["/bin/sh", "-ceu", routerApplyScript],
+        let current = try currentConfiguration(client: client)
+        let changes = policyChanges(current: current, desired: plan.json)
+        if operation == .status {
+            guard let current else {
+                throw RouteApplyError.guest("router has no active vzctl nftables rules")
+            }
+            return response(
+                configuration: current,
+                changed: false,
+                active: true,
+                policyChanges: []
+            )
+        }
+        if operation == .plan {
+            return response(
+                configuration: plan.json,
+                changed: current != plan.json,
+                active: current != nil,
+                policyChanges: changes
+            )
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = try encoder.encode(plan.json)
+        let applied = try client.exec(
+            argv: ["/bin/sh", "-ceu", routerApplyScript, "--", plan.nftables],
             stdin: payload,
             timeoutMilliseconds: 30_000
         )
-        guard result.exit == 0, !result.truncated else {
+        guard applied.exit == 0, !applied.truncated else {
             throw RouteApplyError.guest(
-                "router apply failed (exit \(result.exit)): \(result.stderr)"
+                "router apply failed (exit \(applied.exit)): \(applied.stderr)"
             )
         }
-        return result.stdout.contains("changed=true")
+        return response(
+            configuration: plan.json,
+            changed: applied.stdout.contains("changed=true"),
+            active: true,
+            policyChanges: changes
+        )
     }
+
+    private static func currentConfiguration(client: GuestAgentClient) throws -> JSONValue? {
+        let result = try client.exec(
+            argv: ["/bin/sh", "-ceu", routerStatusScript],
+            timeoutMilliseconds: 5_000
+        )
+        if result.exit == 3 { return nil }
+        guard result.exit == 0, !result.truncated,
+              let data = result.stdout.data(using: .utf8)
+        else {
+            throw RouteApplyError.guest(
+                "router status failed (exit \(result.exit)): \(result.stderr)"
+            )
+        }
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
+
+    private static func response(
+        configuration: JSONValue,
+        changed: Bool,
+        active: Bool,
+        policyChanges: [JSONValue]
+    ) -> JSONValue {
+        guard case let .object(values) = configuration else { return .null }
+        return .object([
+            "changed": .bool(changed),
+            "active": .bool(active),
+            "forward_policy": values["forward_policy"] ?? .string("drop"),
+            "policies": values["policies"] ?? .array([]),
+            "rules": values["rules"] ?? .array([]),
+            "policy_changes": .array(policyChanges),
+        ])
+    }
+
+    private static func policyChanges(
+        current: JSONValue?,
+        desired: JSONValue
+    ) -> [JSONValue] {
+        func policies(_ value: JSONValue?) -> [String: JSONValue] {
+            guard case let .object(root)? = value,
+                  case let .array(items)? = root["policies"]
+            else { return [:] }
+            var result: [String: JSONValue] = [:]
+            for item in items {
+                guard case let .object(values) = item,
+                      case let .string(name)? = values["name"]
+                else { continue }
+                result[name] = item
+            }
+            return result
+        }
+        let old = policies(current)
+        let new = policies(desired)
+        return Set(old.keys).union(new.keys).sorted().compactMap { name in
+            let operation: String
+            if old[name] == nil {
+                operation = "add"
+            } else if new[name] == nil {
+                operation = "remove"
+            } else if old[name] != new[name] {
+                operation = "update"
+            } else {
+                return nil
+            }
+            return .object([
+                "operation": .string(operation),
+                "policy": .string(name),
+            ])
+        }
+    }
+
+    static let routerStatusScript = """
+        if ! command -v nft >/dev/null 2>&1 ||
+           ! nft list table inet vzctl >/dev/null 2>&1 ||
+           [ ! -f /etc/vzctl/routes.json ]; then
+          exit 3
+        fi
+        cat /etc/vzctl/routes.json
+        """
 
     static let routerApplyScript = """
         changed=false
@@ -276,31 +406,35 @@ enum RouterGuestConfigurator {
         mkdir -p /etc/vzctl /etc/sysctl.d
         routes_tmp=$(mktemp)
         sysctl_tmp=$(mktemp)
-        trap 'rm -f "$routes_tmp" "$sysctl_tmp"' EXIT
+        nft_tmp=$(mktemp)
+        load_tmp=$(mktemp)
+        trap 'rm -f "$routes_tmp" "$sysctl_tmp" "$nft_tmp" "$load_tmp"' EXIT
         cat >"$routes_tmp"
+        printf '%s\\n' "$1" >"$nft_tmp"
         printf 'net.ipv4.ip_forward=1\\n' >"$sysctl_tmp"
-        install_if_changed "$routes_tmp" /etc/vzctl/routes.json 0644
+        if ! command -v nft >/dev/null 2>&1; then
+          echo 'nftables backend is required' >&2
+          exit 1
+        fi
+        if [ ! -f /etc/vzctl/routes.json ] ||
+           ! cmp -s "$routes_tmp" /etc/vzctl/routes.json ||
+           [ ! -f /etc/vzctl/vzctl.nft ] ||
+           ! cmp -s "$nft_tmp" /etc/vzctl/vzctl.nft ||
+           ! nft list table inet vzctl >/dev/null 2>&1; then
+          if nft list table inet vzctl >/dev/null 2>&1; then
+            printf 'delete table inet vzctl\\n' >"$load_tmp"
+          fi
+          cat "$nft_tmp" >>"$load_tmp"
+          nft -f "$load_tmp"
+          install -m 0644 "$routes_tmp" /etc/vzctl/routes.json
+          install -m 0644 "$nft_tmp" /etc/vzctl/vzctl.nft
+          changed=true
+        fi
         install_if_changed "$sysctl_tmp" /etc/sysctl.d/90-vzctl-router.conf 0644
         if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
           changed=true
         fi
         sysctl -q -w net.ipv4.ip_forward=1
-        if command -v iptables >/dev/null 2>&1; then
-          current=$(iptables -S FORWARD | sed -n '1s/^-P FORWARD //p')
-          if [ "$current" != DROP ]; then
-            iptables -P FORWARD DROP
-            changed=true
-          fi
-        elif command -v nft >/dev/null 2>&1; then
-          if ! nft list table inet vzctl >/dev/null 2>&1; then
-            nft add table inet vzctl
-            nft 'add chain inet vzctl forward { type filter hook forward priority 0; policy drop; }'
-            changed=true
-          fi
-        else
-          echo 'no nftables or iptables backend available' >&2
-          exit 1
-        fi
         printf 'changed=%s\\n' "$changed"
         """
 }

@@ -15,7 +15,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | G0 — Spike Gate | Netz+DNS+Crash Go/No-Go | **closed** (Go) |
 | P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **complete** (#20 closed) |
 | P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | **core complete** |
-| P2 — Net + DNS | vmnet, Dual-DNS, Policies | in progress (#31/#32/#51 ✅; next #33) |
+| P2 — Net + DNS | vmnet, Dual-DNS, Policies | network epic complete (#31/#32/#51/#33 ✅); DNS remains |
 | P3 — Stacks | hypernetwork reconcile | open |
 | P4 — Docker + Ports | SSH Context, Ports basic | open |
 | v0.1.x — Polish | virtiofs, Docker polish | open |
@@ -31,7 +31,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; CLI surface rest open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | **complete** |
 | [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (G0 Bind ✅) |
-| [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | in progress (#31/#32/#51 ✅; next #33) |
+| [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | **implementation complete** (#31/#32/#51/#33 ✅) |
 | [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | open (ADR 0003 ✅) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Docker Context + Ports | P4 | open |
 | [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | open |
@@ -84,7 +84,7 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#31](https://github.com/frankhildebrandt/vzctl/issues/31) | vmnet Network CRUD + Attachments | **closed** (SQLite rebuild + refs + metadata) |
 | [#32](https://github.com/frankhildebrandt/vzctl/issues/32) | Router-Template + Routes | **complete** (Helper→Guest-Agent, idempotent, default DROP) |
 | [#51](https://github.com/frankhildebrandt/vzctl/issues/51) | Default-Netzwerk (voller Zugriff) | **complete** (SQLite + Auto-IP + Create/Override) |
-| [#33](https://github.com/frankhildebrandt/vzctl/issues/33) | Firewall-Policies | ← **next network slice** |
+| [#33](https://github.com/frankhildebrandt/vzctl/issues/33) | Firewall-Policies | **complete** (nftables, plan/status JSON, edge-dmz) |
 
 ## Label-Schema
 

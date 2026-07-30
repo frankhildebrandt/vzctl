@@ -347,15 +347,16 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return networkErrorResponse(error, request: request)
             }
-        case "route.apply":
+        case "route.apply", "route.plan", "route.status":
             do {
-                let requestedRouter: String?
-                if request.params == nil {
-                    requestedRouter = nil
-                } else {
-                    let params = try networkParams(request.params)
-                    requestedRouter = try optionalString("router", from: params)
-                }
+                let operation = RouterOperation(
+                    rawValue: String(request.method.dropFirst("route.".count))
+                )!
+                let params = try request.params.map { try networkParams($0) } ?? [:]
+                let requestedRouter = try optionalString("router", from: params)
+                let policies = operation == .status
+                    ? []
+                    : try forwardPolicies(from: params["policies"])
                 let snapshot = try networkRegistry.snapshot()
                 let records = stateLock.withLock {
                     helpers.values.filter { $0.state == "running" }
@@ -370,36 +371,65 @@ final class SupervisorServer: @unchecked Sendable {
                             ?? "no running VM with roles: [router]"
                     )
                 }
-                var results: [JSONValue] = []
-                var anyChanged = false
-                for router in routers.sorted(by: { $0.vmID < $1.vmID }) {
+                var policyMatches: [String: Int] = [:]
+                let plans = try routers.sorted(by: { $0.vmID < $1.vmID }).map { router in
                     guard try vmHasRouterRole(bundle: router.bundle) else {
                         throw RouteApplyError.invalid(
                             "VM \(router.vmID) does not declare roles: [router]"
                         )
                     }
-                    let plan = try RouterPlan(
+                    let topology = try RouterPlan(
                         vmID: router.vmID,
                         networkRecords: snapshot.networks,
                         attachments: snapshot.attachments
                     )
-                    let changed = try HelperRouteClient.apply(
+                    let attached = Set(topology.networks.map(\.name))
+                    let selectedPolicies = policies.filter { policy in
+                        guard attached.contains(policy.network) else { return false }
+                        policyMatches[policy.name, default: 0] += 1
+                        return true
+                    }
+                    return try RouterPlan(
+                        vmID: topology.vmID,
+                        networks: topology.networks,
+                        policies: selectedPolicies
+                    )
+                }
+                for policy in policies {
+                    let matches = policyMatches[policy.name, default: 0]
+                    guard matches == 1 else {
+                        throw RouteApplyError.invalid(
+                            matches == 0
+                                ? "policy \(policy.name) does not match a running router"
+                                : "policy \(policy.name) matches more than one running router"
+                        )
+                    }
+                }
+                var results: [JSONValue] = []
+                var anyChanged = false
+                for plan in plans {
+                    let helperResult = try HelperRouteClient.run(
+                        operation,
                         plan,
                         stateDirectory: stateDirectory
                     )
+                    guard case var .object(values) = helperResult,
+                          case let .bool(changed)? = values["changed"]
+                    else {
+                        throw RouteApplyError.guest(
+                            "router helper \(plan.vmID) returned invalid status"
+                        )
+                    }
                     anyChanged = anyChanged || changed
-                    results.append(
-                        .object([
-                            "vm_id": .string(plan.vmID),
-                            "changed": .bool(changed),
-                            "networks": .array(plan.networks.map(\.json)),
-                            "forward_policy": .string("drop"),
-                        ])
-                    )
-                    emit(
-                        type: "route.applied",
-                        data: ["vm_id": .string(plan.vmID), "changed": .bool(changed)]
-                    )
+                    values["vm_id"] = .string(plan.vmID)
+                    values["networks"] = .array(plan.networks.map(\.json))
+                    results.append(.object(values))
+                    if operation == .apply {
+                        emit(
+                            type: "route.applied",
+                            data: ["vm_id": .string(plan.vmID), "changed": .bool(changed)]
+                        )
+                    }
                 }
                 return JSONRPCResponse(
                     result: .object([
@@ -648,6 +678,54 @@ final class SupervisorServer: @unchecked Sendable {
             )
         }
         return roles.contains("router")
+    }
+
+    private func forwardPolicies(from value: JSONValue?) throws -> [ForwardPolicy] {
+        guard let value else { return [] }
+        guard case let .array(items) = value else {
+            throw RouteApplyError.invalid("policies must be an array")
+        }
+        return try items.map { item in
+            guard case let .object(policy) = item,
+                  case let .string(name)? = policy["name"],
+                  case let .string(network)? = policy["network"],
+                  case let .string(forward)? = policy["forward"]
+            else {
+                throw RouteApplyError.invalid("invalid forward policy")
+            }
+            let rawAllows: [JSONValue]
+            if case let .array(values)? = policy["allow"] {
+                rawAllows = values
+            } else {
+                rawAllows = []
+            }
+            let allows = try rawAllows.map { item -> PolicyAllow in
+                guard case let .object(allow) = item,
+                      case let .string(to)? = allow["to"],
+                      case let .string(proto)? = allow["proto"]
+                else {
+                    throw RouteApplyError.invalid("invalid allow rule in policy \(name)")
+                }
+                let ports: [Int]
+                if case let .array(values)? = allow["ports"] {
+                    ports = try values.map {
+                        guard case let .number(value) = $0, value.rounded() == value else {
+                            throw RouteApplyError.invalid("invalid port in policy \(name)")
+                        }
+                        return Int(value)
+                    }
+                } else {
+                    ports = []
+                }
+                return PolicyAllow(to: to, proto: proto, ports: ports)
+            }
+            return ForwardPolicy(
+                name: name,
+                network: network,
+                forward: forward,
+                allow: allows
+            )
+        }
     }
 
     private func writeSubscriptionError(_ client: Int32, request: JSONRPCRequest) {

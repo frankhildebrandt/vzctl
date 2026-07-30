@@ -71,6 +71,6 @@ WARN. Für Alpha gilt: betroffene CIDR bis zum Host-Reboot nicht wiederverwenden
 oder ein neues Netz mit frischer CIDR anlegen.
 
 Der gemessene Hintergrund steht in
-[`docs/spikes/g0-network.md`](spikes/g0-network.md). Router-Template und
-`route apply` sind in [`routes.md`](routes.md) beschrieben; Policies folgen in
-[#33](https://github.com/frankhildebrandt/vzctl/issues/33).
+[`docs/spikes/g0-network.md`](spikes/g0-network.md). Router-Template,
+deklarative Forward-Policies sowie `route apply|plan|status` sind in
+[`routes.md`](routes.md) beschrieben.

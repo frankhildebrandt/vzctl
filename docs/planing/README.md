@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / #51 abgeschlossen** — das persistente Default-Netz, Auto-IP ab `.10`,
-statische NoCloud-Konfiguration und Explicit-over-Default sind implementiert.
-Der nächste Network-Slice ist **#33** Firewall-Policies (Epic #30).
+**P2 Network / Epic #30 implementiert** — CRUD, Router-Apply, Default-Netz und
+deklarative nftables-Forward-Policies mit Plan/Status sind abgeschlossen.
+Nächster P2-Block ist Dual-DNS in Epic #25; der Stack-Reconciler folgt in #34.

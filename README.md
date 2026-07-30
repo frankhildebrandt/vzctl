@@ -67,6 +67,7 @@ make install ACTIVATE=0
 | [`vzctl doctor`](docs/doctor.md) | Checks, Konfiguration und Exitcodes |
 | [CLI Contract v1](docs/specs/cli-contract-v1.md) | JSON, stdout/stderr und Exitcodes |
 | [Event Stream v1](docs/specs/events-v1.md) | NDJSON-Envelope, Typen und Filter |
+| [Router und Policies](docs/routes.md) | nftables Forward-Policies, Plan und Status |
 
 ## License
 

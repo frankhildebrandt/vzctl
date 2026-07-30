@@ -98,9 +98,9 @@ temporary bundle directories, verifies serial output, kills A with `SIGKILL`,
 then cleanly stops B with `SIGTERM`.
 
 Supervisor-owned vmnet CRUD and desired attachments are implemented in #31;
-see [`docs/network.md`](../docs/network.md). Router plans from #32 are sent
-Supervisor → per-VM helper → Guest-Agent over vsock; see
-[`docs/routes.md`](../docs/routes.md). The existing standalone helper command
+see [`docs/network.md`](../docs/network.md). Router and policy plans from
+#32/#33 are rendered as nftables and sent Supervisor → per-VM helper →
+Guest-Agent over vsock; see [`docs/routes.md`](../docs/routes.md). The existing standalone helper command
 still uses NAT when started directly. Applying a desired attachment remains
 part of the supervisor-driven helper start path; the Helper receives only a
 serialized vmnet attachment handle and never owns the registry ref.
