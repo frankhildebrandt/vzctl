@@ -2,30 +2,27 @@
 
 Planungsartefakte für den Apple-VZ Devstack-Supervisor (Arbeitstitel **vzctl**).
 
-Entstanden in Cursor (Juli 2026): Virtualisierungs-Vergleich → Implementationsplan → Feature-Erweiterungen → Fable-Review → Must-Fixes.
+Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Review → Must-Fixes → GPT-SOL-Review → Plan-Update.
 
 ## Dokumente
 
 | # | Datei | Inhalt |
 |---|---|---|
-| 01 | [01-implementation-plan.md](01-implementation-plan.md) | Aktueller Implementationsplan (nach Must-Fixes) |
-| 02 | [02-fable-review.md](02-fable-review.md) | Fable-5-High-Bewertung + Top-5-Entscheidungen |
-| 03 | [03-utm-multipass-hyperkit-vergleich.md](03-utm-multipass-hyperkit-vergleich.md) | UTM · Multipass · Self-made (HyperKit/VZ) |
-| 04 | [04-decision-log.md](04-decision-log.md) | Festgezogene Architektur-Entscheidungen |
+| 01 | [01-implementation-plan.md](01-implementation-plan.md) | Aktueller Plan (Fable + SOL Must-Fixes) |
+| 02 | [02-fable-review.md](02-fable-review.md) | Fable-5-High-Bewertung |
+| 03 | [03-utm-multipass-hyperkit-vergleich.md](03-utm-multipass-hyperkit-vergleich.md) | UTM · Multipass · Self-made |
+| 04 | [04-decision-log.md](04-decision-log.md) | Festgezogene Entscheidungen |
+| 05 | [05-gpt-sol-review.md](05-gpt-sol-review.md) | GPT 5.6 SOL Medium-Bewertung |
 | — | [canvases/](canvases/) | Original `.canvas.tsx` Quellen |
 
 ## Lesereihenfolge
 
 1. Vergleich (03) — Warum Self-made / VZ?
-2. Fable-Review (02) — kritische Löcher
-3. Decision Log (04) — was wir übernommen haben
-4. Implementation Plan (01) — aktueller Soll-Zustand
+2. Fable-Review (02) — erste kritischen Löcher
+3. GPT-SOL-Review (05) — Feinschliff nach Must-Fixes
+4. Decision Log (04) — was übernommen wurde
+5. Implementation Plan (01) — aktueller Soll-Zustand
 
-## Cursor Canvases (lokal)
+## Nächster Schritt
 
-Die lebendigen Canvases lagen unter:
-
-- `~/.cursor/projects/empty-window/canvases/vz-hypervisor-implementationsplan.canvas.tsx`
-- `~/.cursor/projects/empty-window/canvases/utm-multipass-hyperkit-vergleich.canvas.tsx`
-
-Kopien liegen in [`canvases/`](canvases/).
+**G0 Netzwerk-Spike** + macOS-Baseline ADR, bevor Code-Scaffolding.

@@ -9,9 +9,11 @@ macOS Virtualization.framework–based **devstack supervisor**: Git-native multi
 | Document | Description |
 |---|---|
 | [Planning index](docs/planing/README.md) | Übersicht aller Planungsartefakte |
-| [Implementation plan](docs/planing/01-implementation-plan.md) | Aktueller Plan inkl. Must-Fixes |
+| [Implementation plan](docs/planing/01-implementation-plan.md) | Aktueller Plan (Fable + SOL Must-Fixes) |
 | [Fable review](docs/planing/02-fable-review.md) | Architektur-Review (Claude Fable 5 High) |
-| [UTM / Multipass / HyperKit](docs/planing/03-utm-multipass-hyperkit-vergleich.md) | Vorab-Vergleich der Virtualisierungsoptionen |
+| [GPT SOL review](docs/planing/05-gpt-sol-review.md) | Follow-up-Review (GPT 5.6 SOL Medium) |
+| [Decision log](docs/planing/04-decision-log.md) | Festgezogene Architektur-Entscheidungen |
+| [UTM / Multipass / HyperKit](docs/planing/03-utm-multipass-hyperkit-vergleich.md) | Vorab-Vergleich |
 | [Canvases](docs/planing/canvases/) | Original Cursor Canvas sources |
 
 ## Working title

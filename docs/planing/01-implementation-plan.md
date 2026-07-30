@@ -1,18 +1,19 @@
 # Implementationsplan: Apple-VZ Hypervisor (vzctl)
 
-> Stand: 2026-07-30 · inkl. Must-Fixes aus der Fable-Review  
-> Canvas-Quelle: [`canvases/vz-hypervisor-implementationsplan.canvas.tsx`](canvases/vz-hypervisor-implementationsplan.canvas.tsx)
+> Stand: 2026-07-30 · Fable-Must-Fixes + [GPT-SOL-Must-Fixes](05-gpt-sol-review.md)  
+> Canvas-Quelle: [`canvases/vz-hypervisor-implementationsplan.canvas.tsx`](canvases/vz-hypervisor-implementationsplan.canvas.tsx)  
+> v0.1 = **Alpha** (Walking Skeleton), kein Alltagsprodukt
 
 ## Ziel
 
 Devstack-Supervisor auf **Virtualization.framework**:
 
 - Git-native Environments (`hypernetwork.config.yaml`) — `up` / `down` / `apply`
-- Custom Networks + manuelles Routing (Router-VM)
+- Custom Networks + Routing (Router-VM) + Firewall-Policy
 - Shared Base + APFS Linked Clones + `dataDisk` + Identity-Reset
-- Native Docker-Context, Port-Forwards
 - Hypervisor-DNS (intern) + macOS-Resolver
-- v0.2: Ingress, Local CA→Guests, Embedded OIDC (Dex)
+- Docker-Context + Port-Forwards (Polish in v0.1.x)
+- v0.2: Ingress (Caddy), Local CA→Guests, OIDC (Dex)
 
 **Nicht VZ:** Windows (QEMU später oder out-of-scope).
 
@@ -20,84 +21,120 @@ Devstack-Supervisor auf **Virtualization.framework**:
 
 ---
 
-## Architektur (Must-Fix)
+## Gates vor Scaffolding (SOL Must)
+
+| # | Gate | Abbruch wenn |
+|---|---|---|
+| G0 | **Netzwerk-Spike vor P0** (2 Netze, Router, feste IP, Host↔Guest, Sleep, Supervisor-Crash) | Isolation/Entitlements unmöglich |
+| G1 | **macOS-Baseline** entschieden (Default-Empfehlung: **macOS 26-only** für v0.1) | — |
+| G2 | **Process-/Ownership-ADR** (VZ, vmnet, DNS, Helper-Lifecycle) | — |
+| G3 | **State/Apply-Spez** (Journal, Idempotenz, Resume, Löschregeln) | — |
+| G4 | MVP-Exit-Kriterien messbar; virtiofs + Docker-Polish → **v0.1.x** | Scope sprengt 8–10 Wo |
+
+Details: [Decision Log](04-decision-log.md).
+
+---
+
+## Architektur
 
 ```
 Git Env → CLI/UI → Reconciler → Supervisor
-                                    ├─ DNS + macOS Resolver
-                                    └─ VM Helper (1:1) ⇄ vsock Agent ⇄ Guest
+                      │              ├─ DNS (Host-Loopback + Guest-fähiger Listener)
+                      │              ├─ vmnet Network Registry (Owner: Supervisor)
+                      │              └─ launchd: VM Helper (1:1)
+                      │                        ⇄ vsock Agent (in sealed Base)
+                      └─ apply Journal / Lease
 ```
 
-### Supervisor (Swift, schlank)
+### Process- & Ressourcen-Ownership (ADR-Pflicht)
 
-- UDS-RPC, SQLite, Stack-Locks
-- Spawnt/überwacht VM-Helper (launchd/XPC)
-- Besitzt **vmnet-Network-Refs** + **DNS-Service** (interne Zone)
-- Crash/Update darf laufende Helpers nicht killen
+| Ressource | Owner | Nach Supervisor-Crash |
+|---|---|---|
+| `VZVirtualMachine` | **VM-Helper** | VM läuft weiter (Helper unabhängig) |
+| vmnet network refs | **Supervisor** (Registry); Helper bekommt Attachment-Handle/ID beim Start | Net ggf. tot → Helper meldet `net_orphaned`; Reconnect nach Supervisor-Restart |
+| DNS Zone + Listener | **Supervisor** | DNS down → Guests/Host resolve fail until restart (akzeptiert in Alpha; dokumentieren) |
+| Stack-Lease / Journal | **Supervisor** | Incomplete ops → `apply --resume` |
 
-### VM-Helper (1 Prozess / VM)
+**Helper-Lifecycle (konkret):**
 
-- Hält genau eine `VZVirtualMachine` + vsock zum Guest-Agent
-- Crash = nur diese eine VM betroffen
+- Supervisor registriert Helper als launchd-Job pro VM-ID
+- Start: Supervisor erstellt/attach Net → spawnt Helper mit Config-Pfad + net-handle
+- Reconnect: Helper hält UDS rückwärts zum Supervisor; bei Disconnect Retry + State-Report
+- Upgrade: Helper-Binary versioniert; Rolling replace nur gestoppte VMs in Alpha
+- Doppel-Helper: VM-ID Lockfile + Supervisor adopt/kill stale
 
 ### vsock Guest-Agent
 
-- Install via cloud-init in Base/Seal
+- **Im sealed Base-Image vorinstalliert** (nicht erst per First-Boot cloud-init installieren)
+- cloud-init aktiviert/konfiguriert nur (Identity, Hostname)
 - Capabilities: exec, IP/Health, Time-Sync nach Sleep, CA-Inject, Log-Tail
-- SSH = Fallback, nicht Control-Plane
+- vsock Auth: Token aus NoCloud / shared secret pro VM
+- SSH = Fallback; Bootstrap-Fenster: Serial + Agent-ready Event
 
-### Reconciler + Locking
+### Reconcile-Vertrag (Alpha)
 
-- Shared Rust-Crate in CLI + Tauri
-- `stack.apply`-Lease im Supervisor
-- `vzctl adopt` für verwaiste Instanzen
+- Desired = YAML; Actual = SQLite; Lockfile = lokale Instanz-Map
+- Jede `apply`-Op im **Journal** (id, gen, step, status)
+- Idempotent; Crash → `apply --resume` / `--abort`
+- Drift: `diff` zeigt YAML↔Actual; recreate nur mit `--force`
+- Destruktiv: `down` stoppt; `down --purge` löscht nur `managed-by=vzctl`-Ressourcen + Resolver-Dateien des Projekts
+- `vzctl adopt` für Orphans
 
 ---
 
-## DNS: Hypervisor intern + macOS-Resolver
+## DNS: Hypervisor + macOS-Resolver
 
-### Warum nicht `auth.localhost` in Guests?
+### Domain
 
-`*.localhost` resolved im Guest auf **dessen** Loopback (RFC 6761) → OIDC/Ingress-Issuer würden brechen.
-
-### Namensschema
+Kanonisch: `{vm}.{net}.{project}.vz.test`  
+(reservierte Test-TLD — nicht `.vz`)
 
 | Kontext | Beispiel |
 |---|---|
-| Kanonisch (Guests, OIDC, inter-VM) | `web.dmz.edge-dmz.vz` |
-| System-Services | `auth.svc.edge-dmz.vz` |
-| Host-Alias (v0.2, Browser) | `web.localhost` → gleicher Upstream |
+| Guest / inter-VM / OIDC | `web.dmz.edge-dmz.vz.test` |
+| Services | `auth.svc.edge-dmz.vz.test` |
+| Host-Alias v0.2 | `web.localhost` → gleicher Upstream |
 
-### Hypervisor-DNS
+### Dual Listener
 
-- Supervisor = autoritativ für `*.{project}.vz`
-- Records aus Actual State (VM-Attachments, Services)
-- Guests: DNS = Gateway/Hypervisor-IP via cloud-init / DHCP option 6
-- Search-Domain z. B. `dmz.{project}.vz`
+| Listener | Bind | Wer nutzt |
+|---|---|---|
+| Host | `127.0.0.1:<dnsPort>` | `/etc/resolver/{project}.vz.test` |
+| Guest-erreichbar | Hypervisor/Gateway-IP auf vmnet (oder shared DNS-IP) | Guests via cloud-init `nameservers:` |
 
-### macOS-Resolver
-
-- `/etc/resolver/{project}.vz` → Hypervisor-DNS (Loopback-Listener)
-- `vzctl dns install-resolver` / `uninstall-resolver` / `reload` / `query`
+- Zone autoritativ für `*.{project}.vz.test`
+- **Forwarding** für externe Namen (Upstream = System-DNS / konfigurierbar; VPN-Verhalten dokumentieren)
+- TTL klein (z. B. 5–30s) für schnelle apply-Updates
+- `vzctl dns query` spricht **direkt** den vzctl-DNS (nicht nur libc/`dig`)
+- `install-resolver` / Cleanup verwaister `/etc/resolver/*` bei purge
 
 ```yaml
 spec:
-  domain: edge-dmz.vz
+  domain: edge-dmz.vz.test
   dns:
     enabled: true
     hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    # guestListen: abgeleitet aus Gateway / Spike-Ergebnis
+    forward:
+      enabled: true
+      upstream: system
 ```
 
 ---
 
-## IP-Vergabe (Spike P2)
+## Netzwerk & IP (Spike = G0)
 
-| Mode | Wer vergibt IP? | Hinweis |
+| Mode | IP-Vergabe (v0.1) | Hinweis |
 |---|---|---|
-| shared (vmnet ≥26) | vmnet DHCP + Reservations **oder** cloud-init static | Precedence klar spezifizieren |
-| host | vmnet / Daemon | |
-| bridged | LAN-DHCP | braucht `com.apple.vm.networking` |
-| pre-26 Fallback | NAT + Router-VM | testen oder Baseline = 26 |
+| shared (vmnet ≥26) | **cloud-init static** Primär; optional DHCP reservation aligned | Kein wildes DHCP+static Mix |
+| host | wie shared | |
+| bridged | v0.1 **out of scope** (Entitlement) | |
+| pre-26 | nur wenn Baseline ≠ 26; sonst unsupported | Kein stiller Fallback |
+
+- Router-IPs **nicht** `.1` wenn Gateway `.1` ist — Spike legt Gateway-CIDR-Konvention fest (z. B. Router `.2` / Gateway `.1` oder umgekehrt)
+- `routes:` + **`policies:`** (forward allow/deny) für echte DMZ-Semantik
+- Sleep/VPN/Crash = Akzeptanztests im Spike
 
 ---
 
@@ -105,18 +142,20 @@ spec:
 
 | Phase | Name | Zeit | Deliverable |
 |---|---|---|---|
-| P0 | Foundation | 1–3 Wo | Supervisor + Helper, vsock-Agent, doctor |
-| P1 | CLI + Clones | 2–4 Wo | JSON-CLI, Seal/clonefile, Identity-Reset, events |
-| P2 | Net + DNS | 3–6 Wo | vmnet, IP-Modell, Hypervisor-DNS, macOS-Resolver |
-| P3 | Stacks | 5–8 Wo | `hypernetwork.config.yaml` up/down/apply + Locking |
-| P4 | Docker + Ports | 7–9 Wo | Docker-Context, Ports, virtiofs |
-| P5 | Ingress + CA + OIDC | **v0.2** | Caddy, CA→Guests, Dex, `*.localhost` Aliase |
-| P6 | Tauri UI | **v0.2** | Stack-Browser |
-| P7 | Harden | ongoing | Signing, Snapshots, k3s-Rolle |
+| **G0** | Spike | Wo 0–1 | Netz+DNS+Crash Go/No-Go |
+| P0 | Foundation | 1–3 | Supervisor+Helper ADR, Agent-in-Base, doctor, Journal-Stub |
+| P1 | CLI + Clones | 2–4 | JSON-CLI, Exitcodes, events schema, Seal/clonefile, Identity |
+| P2 | Net + DNS | 3–5 | vmnet, IP-Modell, Dual-DNS, macOS-Resolver, Router+Policy |
+| P3 | Stacks | 5–7 | hypernetwork up/down/apply + Lease + Resume |
+| P4 | Docker + Ports | 7–9 | Docker-Context (SSH), Ports; **kein** virtiofs-Muss |
+| P4b | v0.1.x | nach Alpha | virtiofs + Docker-Polish + Logs/Diagnose |
+| P5 | Ingress + CA + OIDC | **v0.2** | Caddy, CA→Guests, Dex |
+| P6 | Tauri | **v0.2** | nach stabiler CLI |
+| P7 | Harden | ongoing | Signing, Snapshots, k3s |
 
 ---
 
-## Config-Skizze (v0.1 relevant)
+## Config-Skizze (v0.1)
 
 ```yaml
 apiVersion: hypernetwork/v1
@@ -125,20 +164,24 @@ metadata:
   name: edge-dmz
 spec:
   project: edge-dmz
-  domain: edge-dmz.vz
+  domain: edge-dmz.vz.test
   dns:
     enabled: true
     hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
 
   images:
     ubuntu-base:
       from: ubuntu:24.04
       role: base
+      # guest-agent vorinstalliert vor seal
 
   networks:
     dmz:
       cidr: 10.80.0.0/24
       mode: shared
+      # gateway: aus Spike (nicht mit Router kollidieren)
     lan:
       cidr: 10.90.0.0/24
       mode: shared
@@ -149,14 +192,21 @@ spec:
       to: lan
       via: router
 
+  policies:                         # Firewall / Isolation
+    - name: dmz-default
+      network: dmz
+      forward: deny-all
+      allow:
+        - { to: lan, proto: tcp, ports: [5432] }  # Beispiel
+
   vms:
     router:
       from: ubuntu-base
       clone: linked
       dataDisk: 4G
       networks:
-        - { name: dmz, ip: 10.80.0.1 }
-        - { name: lan, ip: 10.90.0.1 }
+        - { name: dmz, ip: 10.80.0.2 }   # .1 = Gateway-Konvention Spike
+        - { name: lan, ip: 10.90.0.2 }
       cloudInit: cloud-init/router.yaml
       roles: [router]
 
@@ -179,77 +229,67 @@ spec:
 
 ### Linked Clone / Identity
 
-1. Base sealed (`role: base`)
-2. Pro VM: APFS `clonefile` der Base + neues `dataDisk`
-3. Auto: neue MACs, machine-id, Hostname, SSH Host Keys, cloud-init instance-id
+1. Base mit Agent sealen (`role: base`, immutable)
+2. APFS `clonefile` + neues `dataDisk`
+3. Auto: MACs, machine-id, Hostname, SSH Host Keys, instance-id
+4. Disk-Lifecycle: Seal nie schreiben; purge löscht Clone+dataDisk; Base bleibt
 
 ### v0.2 Auszug
 
 ```yaml
-ca:
-  name: vzctl-local
-  rollout:
-    enabled: true
-    targets: all
-    stores: [system]
-
-ingress:
-  enabled: true
-  bind: 127.0.0.1
-  hostAliases: true
-  routes:
-    - host: web.svc.edge-dmz.vz
-      to: web:80
-    - host: auth.svc.edge-dmz.vz
-      to: oidc:5556
-
 oidc:
   enabled: true
-  issuer: https://auth.svc.edge-dmz.vz   # nie *.localhost
-  mode: embedded                         # Dex
+  issuer: https://auth.svc.edge-dmz.vz.test
+  mode: embedded   # Dex
   clients: auto
-  autoconfig:
-    inject: cloud-init
 ```
-
-VMs mit `requires: [oidc]` bekommen Issuer/Client/CA per Autoconfig.
 
 ---
 
 ## MVP-Schnitt
 
-### v0.1 Muss (~8–10 Wochen)
+### v0.1 Alpha (~8–10 Wochen) — Muss
 
-- Supervisor + Helper-pro-VM + vsock-Agent
-- CLI JSON + events + doctor
-- Netze + Router-Routing + IP-Modell
-- Hypervisor-DNS + macOS `/etc/resolver`
-- Stacks up/down/apply + Locking + Clones/Identity
-- Docker-Context + Ports (+ virtiofs Basis)
+- G0 Spike bestanden
+- Supervisor + Helper-pro-VM + Ownership-ADR
+- vsock-Agent **in Base**
+- CLI JSON + versioniertes Event-Schema + Exitcodes + doctor
+- Netze + Router + policies + IP-Modell
+- Dual-DNS + macOS `/etc/resolver/*.vz.test`
+- Stacks up/down/apply mit Journal/Resume + Locking + Clones
+- Docker-Context (SSH) + Ports (basic)
+- `vzctl logs` (pro VM) Mindesthilfe
+
+### v0.1.x
+
+- virtiofs + Perf-Messung
+- Docker-Polish (BuildKit hints)
+- Diagnose-Bundles, Admission/RAM-Warnungen
 
 ### v0.2+
 
-- Caddy Ingress + Local CA + Guest-Rollout
-- Dex OIDC + `requires` Autoconfig
+- Caddy + Local CA-Rollout + Dex OIDC
 - `*.localhost` Host-Aliase
-- Tauri UI, Stack-Snapshots, k3s-Rolle
+- Tauri, Snapshots, k3s
 
 ---
 
 ## Kickoff-Tickets
 
-1. Supervisor↔Helper Protokoll + Crash-Isolation-Test — P0  
-2. vsock Guest-Agent: ping/exec/report-ip + cloud-init — P0  
-3. `vzctl doctor` + UDS RPC health — P0  
-4. CLI vm lifecycle `--format json` + events schema — P1  
-5. image seal + APFS linked clone + identity reset — P1  
-6. Spike: IP/DHCP Precedence + macOS 26 vs Fallback — P2  
-7. vmnet nets + Router-VM routes — P2  
-8. Hypervisor-DNS Zone `*.project.vz` — P2  
-9. macOS `/etc/resolver` Installer + dns query — P2  
-10. hypernetwork/v1 + reconcile + stack lease — P3  
-11. Docker context + ports + virtiofs spike — P4  
-12. v0.2: Caddy + Dex + CA rollout + hostAliases — P5  
+0. **G0 Netz-/DNS-/Crash-Spike + macOS-Baseline ADR** — vor P0  
+1. Process-/Ownership-ADR + Helper launchd Lifecycle — P0  
+2. State/Apply-Spez (Journal, Resume, Purge-Regeln) — P0  
+3. Guest-Agent in Base-Image + vsock ping/exec/report-ip — P0  
+4. `vzctl doctor` + UDS health — P0  
+5. CLI vm lifecycle `--format json` + events schema + Exitcodes — P1  
+6. image seal + APFS linked clone + identity reset — P1  
+7. vmnet nets + Router routes + policies — P2  
+8. Dual-DNS (Host+Guest Listener) + forward + `dns query` — P2  
+9. macOS `/etc/resolver/*.vz.test` install/cleanup — P2  
+10. hypernetwork/v1 reconcile up/down/apply + lease + resume — P3  
+11. Docker SSH-context + ports (basic) — P4  
+12. v0.1.x: virtiofs spike + Docker polish — P4b  
+13. v0.2: Caddy + Dex + CA rollout + hostAliases — P5  
 
 ---
 
@@ -257,32 +297,27 @@ VMs mit `requires: [oidc]` bekommen Issuer/Client/CA per Autoconfig.
 
 ```text
 vzctl up|down|apply|diff|ps|validate|adopt
-vzctl vm create|start|stop|delete|list|info|exec|console
+vzctl apply --resume|--abort
+vzctl vm create|start|stop|delete|list|info|exec|console|logs
 vzctl image pull|seal
 vzctl net create|attach|list
 vzctl route add|apply
+vzctl policy apply
 vzctl dns status|query|reload|install-resolver|uninstall-resolver
-vzctl docker …          # Context-Wrapper
+vzctl docker …
 vzctl events subscribe
 vzctl doctor
-# v0.2:
-vzctl ingress up|down|status
-vzctl certs ca init|install|rollout|verify
-vzctl oidc status|users|clients|token
+# v0.2: ingress / certs / oidc
 ```
 
 ## Repo-Layout (Ziel)
 
 ```text
 vzctl/
-  crates/
-    vzctl/
-    vzctl-client/
-    vzctl-schema/
-    vzctl-reconcile/
-  daemon/                 # Swift Supervisor + Helper
-  guest-agent/            # vsock agent
-  ui/                     # Tauri (v0.2)
+  crates/ …
+  daemon/                 # Supervisor + Helper
+  guest-agent/
+  docs/planing/
+  docs/adr/               # Ownership, Baseline, Apply (nach G0)
   examples/edge-dmz/
-  docs/planing/           # dieses Dokument
 ```
