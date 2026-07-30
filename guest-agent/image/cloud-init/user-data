@@ -1,0 +1,13 @@
+#cloud-config
+# Render the placeholders per VM. This seed configures identity and credentials;
+# vzctl-agent is already installed in the sealed base.
+hostname: __HOSTNAME__
+manage_etc_hosts: true
+ssh_authorized_keys:
+  - __SSH_PUBLIC_KEY__
+write_files:
+  - path: /run/vzctl/agent.token
+    owner: vzctl-agent:vzctl-agent
+    permissions: "0600"
+    content: |
+      __BASE64URL_256_BIT_TOKEN__

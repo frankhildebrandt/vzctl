@@ -9,6 +9,7 @@ target/
 daemon/.build/
 node_modules/
 dist/
+artifacts/
 spikes/g0/assets/*.raw
 spikes/g0/assets/*.img
 

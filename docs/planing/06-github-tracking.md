@@ -27,7 +27,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 |---|---|---|---|
 | [#1](https://github.com/frankhildebrandt/vzctl/issues/1) | G0 Netzwerk-/DNS-/Crash-Spike | G0 | **closed** (Go) |
 | [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | **closed** |
-| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | open |
+| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | open (Spec+Base ✅, E2E offen) |
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | open |
 | [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (G0 Bind ✅) |
@@ -46,16 +46,20 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#8](https://github.com/frankhildebrandt/vzctl/issues/8) | ADR Ownership | ADR 0002 |
 | [#35](https://github.com/frankhildebrandt/vzctl/issues/35) | ADR Apply/Journal | ADR 0003 |
 | [#50](https://github.com/frankhildebrandt/vzctl/issues/50) | Docs Issues↔Plan | done |
+| [#13](https://github.com/frankhildebrandt/vzctl/issues/13) | Guest-Agent Spec v1 | [guest-agent-v1.md](../specs/guest-agent-v1.md) |
 
 ## P0 Next (active)
 
 | # | Story | Scaffold |
 |---|---|---|
 | [#9](https://github.com/frankhildebrandt/vzctl/issues/9) | Supervisor UDS + SQLite | **closed** (`11f0eaa`) |
-| [#10](https://github.com/frankhildebrandt/vzctl/issues/10) | Helper launchd + VZ | **closed** (Commit ausstehend) |
+| [#10](https://github.com/frankhildebrandt/vzctl/issues/10) | Helper launchd + VZ | **closed** (`25584d7`) |
 | [#11](https://github.com/frankhildebrandt/vzctl/issues/11) | Helper Reconnect | **closed** |
 | [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | macOS + supervisor health |
-| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) / [#13](https://github.com/frankhildebrandt/vzctl/issues/13) | Guest-Agent vsock | ← **next** |
+| [#13](https://github.com/frankhildebrandt/vzctl/issues/13) | Guest-Agent Protokoll/Auth-Spec | **closed** |
+| [#14](https://github.com/frankhildebrandt/vzctl/issues/14) | Guest-Agent in Ubuntu Base | **closed** (Commit ausstehend; Live-Boot→#15) |
+| [#15](https://github.com/frankhildebrandt/vzctl/issues/15) | Helper↔Agent E2E | ← **next** |
+| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | Epic Guest-Agent | open |
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Time-Sync nach Sleep | G0 Prozedur deferred |
 
 Stories sind als **Sub-Issues** unter den Epics verknüpft.

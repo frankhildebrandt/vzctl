@@ -1,0 +1,16 @@
+version: 2
+ethernets:
+  primary:
+    match:
+      macaddress: "__MAC_ADDRESS__"
+    set-name: enp0s1
+    addresses:
+      - __ADDRESS_CIDR__
+    routes:
+      - to: default
+        via: __GATEWAY__
+    nameservers:
+      addresses:
+        - __DNS_ADDRESS__
+      search:
+        - __SEARCH_DOMAIN__

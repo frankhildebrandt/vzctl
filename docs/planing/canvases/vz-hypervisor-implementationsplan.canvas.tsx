@@ -155,8 +155,11 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             G1 Baseline closed
           </Pill>
-          <Pill size="sm" active>
+          <Pill tone="success" size="sm" active>
             Helper 1:1
+          </Pill>
+          <Pill tone="success" size="sm" active>
+            Agent Spec+Base
           </Pill>
           <Pill size="sm" active>
             Dual-DNS *.vz.test
@@ -182,15 +185,21 @@ export default function VzHypervisorImplementationsplan() {
       <Callout tone="success" title="G0 Go — Netz/DNS/Router/Crash">
         Dual-Net, UDP-DNS auf <Code>.0</Code>, Router <Code>.2</Code>, Crash-Semantik
         gemessen. <Code>kill -9</Code> Monolith = VM tot + Subnet-Leak → Helper-Modell
-        (ADR 0002 proposed). Sleep: manuelle Prozedur / Alpha-Risiko.
+        (ADR 0002 Accepted). Sleep: manuelle Prozedur / Alpha-Risiko.
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
+      </Callout>
+
+      <Callout tone="success" title="P0 Ownership + Agent-Base">
+        Epic #7 closed (#9 UDS/SQLite, #10 Helper+VZ, #11 Reconnect). Guest-Agent
+        Spec #13 + Base #14 seal-ready (<Code>guest-agent/</Code>, vsock :21950).
+        Live Helper↔Agent E2E und Boot-Proof → #15.
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
-        <Stat value="UDP .0" label="Guest-DNS" tone="success" />
-        <Stat value="α" label="v0.1 Alpha" tone="warning" />
+        <Stat value="#7✓" label="Ownership" tone="success" />
+        <Stat value="#15" label="Agent E2E next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -263,7 +272,9 @@ export default function VzHypervisorImplementationsplan() {
         <ArchitectureDiagram />
         <Grid columns={2} gap={12}>
           <Card>
-            <CardHeader>Ownership</CardHeader>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#7✓</Pill>}>
+              Ownership
+            </CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
@@ -283,18 +294,23 @@ export default function VzHypervisorImplementationsplan() {
             </CardBody>
           </Card>
           <Card>
-            <CardHeader>vsock Guest-Agent</CardHeader>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#13+#14</Pill>}>
+              vsock Guest-Agent
+            </CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  In sealed Base vorinstalliert (nicht First-Boot-Install)
+                  Spec v1: <Code>docs/specs/guest-agent-v1.md</Code> · Port{" "}
+                  <Code>21950</Code>
                 </Text>
                 <Text size="small" tone="secondary">
-                  ping / exec / report-ip / health / time-sync / log-tail /
-                  ca-inject (v0.2)
+                  Base: static <Code>vzctl-agent</Code> + systemd vor Seal (#14)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Auth-Token aus NoCloud · SSH nur Fallback
+                  Boot-proof Min: hello / ping / version / health · exec/IP → #15
+                </Text>
+                <Text size="small" tone="secondary">
+                  Token nur NoCloud <Code>0600</Code> · SSH nur Fallback
                 </Text>
               </Stack>
             </CardBody>
@@ -370,7 +386,7 @@ export default function VzHypervisorImplementationsplan() {
                   Kill -9: VM tot, Subnet verbrannt, frische CIDR OK
                 </Text>
                 <Text size="small" tone="secondary">
-                  ADR 0002+0003 ✓ · P0 Scaffold: crates/ + daemon/
+                  ADR 0002+0003 ✓ · Helper+Reconnect ✓ · Agent-Base ✓ · E2E #15
                 </Text>
                 <Text size="small" tone="secondary">
                   <Code>phase-d-crash.sh</Code> ·{" "}
@@ -658,9 +674,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             e.ms,
           ])}
           rowTone={[
-            "danger",
             "success",
             "success",
+            "info",
             "info",
             "info",
             "success",
@@ -672,23 +688,24 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          P0 Scaffold da (`cargo run -p vzctl -- doctor`, `daemon/` swift
-          build). Weiter: UDS + Journal (#9), Helper launchd (#10), doctor
-          ausbauen (#20).
+          #15 Helper↔Agent E2E: vsock-Client im Helper,{" "}
+          <Code>hello</Code>/<Code>ping</Code>/<Code>exec</Code>/
+          <Code>report_ip</Code>, Live-Boot-Proof der Agent-Base. Optional parallel:
+          doctor (#20).
         </Callout>
       </Stack>
 
       <Stack gap={12}>
-        <H2>Repo-Layout (Ziel)</H2>
+        <H2>Repo-Layout (Ist)</H2>
         <Code>{`vzctl/
-  Cargo.toml       # workspace
-  crates/vzctl/    # CLI: doctor, apply stub
-  daemon/          # Swift: vz-supervisor, vz-helper, VzDaemonKit
-  docs/planing/    # Plan, Reviews, Tracking
-  docs/spikes/     # G0 network protocol
-  docs/adr/        # 0001–0003 Accepted
-  spikes/g0/       # G0 measurement harness
-  # later: guest-agent/, ui/, examples/`}</Code>
+  crates/vzctl/     # Rust CLI (doctor + supervisor health)
+  daemon/           # vz-supervisor + vz-helper (ADR 0002)
+  guest-agent/      # Go vzctl-agent + systemd + NoCloud seed
+  docs/adr/         # 0001–0003 Accepted
+  docs/specs/       # guest-agent-v1.md
+  docs/spikes/      # g0-network, p0-helper, p0-guest-agent-base
+  spikes/g0/        # G0 measurement harness
+  scripts/          # build/smoke guest-agent-base`}</Code>
       </Stack>
 
       <Text size="small" tone="tertiary" style={{ color: theme.text.tertiary }}>
