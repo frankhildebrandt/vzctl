@@ -1,0 +1,15 @@
+.DS_Store
+.vzctl/
+*.local.yaml
+secrets/
+.env
+.env.*
+target/
+node_modules/
+dist/
+*.pem
+*.key
+**/ca/
+.idea/
+.vscode/
+*.swp
