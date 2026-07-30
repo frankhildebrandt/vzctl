@@ -27,4 +27,4 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**[#1 G0 Spike](https://github.com/frankhildebrandt/vzctl/issues/1)** — bevor Code-Scaffolding.
+**P0 Foundation** — Scaffold liegt: `crates/vzctl` + `daemon/` (Supervisor/Helper-Stubs). Als Nächstes: UDS/Journal (#9), Helper-launchd (#10), doctor ausbauen (#20). Siehe Epic [#7](https://github.com/frankhildebrandt/vzctl/issues/7).

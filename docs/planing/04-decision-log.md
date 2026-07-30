@@ -27,20 +27,21 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 14 | macOS Baseline | **Fest: Mindestversion macOS 26**; Pre-26 unsupported |
 | 15 | Bridged | v0.1 **out of scope** |
 | 16 | IP-Precedence | **cloud-init static** Primär; kein wildes DHCP+static |
-| 17 | Router-IP | Nicht mit vmnet-Gateway kollidieren (Konvention aus Spike) |
+| 17 | Router-IP | **`.2`** je Net (Host-Bridge/DNS = **`.0`**; `.1` unused) |
 | 18 | Isolation | `routes` + **`policies`** (Forward allow/deny) |
 | 19 | Ownership ADR | VZ=Helper; vmnet+DNS+Journal=Supervisor; Reconnect spezifiziert |
-| 20 | Apply | **Journal + Resume/Abort**; Lease allein reicht nicht |
+| 20 | Apply | **Journal + Resume/Abort** — [ADR 0003](../adr/0003-apply-state.md) |
 | 21 | Guest-Agent | **In sealed Base vorinstalliert** (nicht First-Boot-Install) |
 | 22 | MVP Label | v0.1 = **Alpha**; virtiofs + Docker-Polish → **v0.1.x** |
+| 23 | Guest-DNS-IP | Host-Bridge **`.0`** (UDP gemessen); Host-Listener parallel `127.0.0.1` |
+| 24 | G0 Verdict | **Go**; ADR 0002+0003 accepted |
 
 ## Offen (Spike / ADR)
 
-- Exakte Gateway-/Router-IP-Konvention (G0)
-- Guest-DNS-Bind-Adresse (welche Host-IP auf welchem vmnet) (G0)
-- launchd-Plist-Details / XPC vs. UDS für Helper
-- ~~Ob Pre-26 jemals supportet wird~~ → **nein** (ADR 0001: macOS 26+)
+- Sleep/Wake Clock-Drift (manuelle Prozedur)
+- launchd-Plist-Details / XPC vs. UDS für Helper (P0 Implementierung)
+- ~~Ownership ADR~~ → [0002](../adr/0002-process-ownership.md)
+- ~~Apply Journal Spec~~ → [0003](../adr/0003-apply-state.md)
+- ~~Ob Pre-26 jemals supportet wird~~ → **nein** (ADR 0001)
 
-## Positionierung
-
-**Nische:** Environments as Code für macOS-VMs — Multi-VM, echte Netze, git-native, agent-steuerbar.
+Protokoll: [g0-network.md](../spikes/g0-network.md)

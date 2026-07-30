@@ -161,8 +161,8 @@ export default function VzHypervisorImplementationsplan() {
           <Pill size="sm" active>
             Dual-DNS *.vz.test
           </Pill>
-          <Pill tone="warning" size="sm">
-            G0 Spike open
+          <Pill tone="success" size="sm" active>
+            G0 Go
           </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
@@ -179,10 +179,17 @@ export default function VzHypervisorImplementationsplan() {
         auf macOS 26+ APIs (vmnet Custom inkl. VZVmnetNetworkDeviceAttachment).
       </Callout>
 
+      <Callout tone="success" title="G0 Go — Netz/DNS/Router/Crash">
+        Dual-Net, UDP-DNS auf <Code>.0</Code>, Router <Code>.2</Code>, Crash-Semantik
+        gemessen. <Code>kill -9</Code> Monolith = VM tot + Subnet-Leak → Helper-Modell
+        (ADR 0002 proposed). Sleep: manuelle Prozedur / Alpha-Risiko.
+        Protokoll: <Code>docs/spikes/g0-network.md</Code>
+      </Callout>
+
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
-        <Stat value="G0" label="nächstes Gate" tone="warning" />
-        <Stat value="11" label="Epics" tone="info" />
+        <Stat value="Go" label="G0 Gate" tone="success" />
+        <Stat value="UDP .0" label="Guest-DNS" tone="success" />
         <Stat value="α" label="v0.1 Alpha" tone="warning" />
       </Grid>
 
@@ -205,10 +212,10 @@ export default function VzHypervisorImplementationsplan() {
               <Pill size="sm" active>
                 G0
               </Pill>,
-              <Pill tone="warning" size="sm" active>
-                open
+              <Pill tone="success" size="sm" active>
+                Go
               </Pill>,
-              "2 Netze, Router, feste IP, Dual-DNS-Probe, Sleep, Supervisor-Crash — Epic #1",
+              "Dual-Net+DNS-UDP+Router+Crash ✓ · Sleep manuell · Epic #1",
             ],
             [
               <Pill size="sm" active>
@@ -223,15 +230,19 @@ export default function VzHypervisorImplementationsplan() {
               <Pill size="sm" active>
                 G2
               </Pill>,
-              <Pill size="sm">pending</Pill>,
-              "Process-/Ownership-ADR (#8) nach G0",
+              <Pill tone="success" size="sm" active>
+                done
+              </Pill>,
+              "ADR 0002 accepted · Helper 1:1 · Net-Registry",
             ],
             [
               <Pill size="sm" active>
                 G3
               </Pill>,
-              <Pill size="sm">pending</Pill>,
-              "Apply-Journal Spec (#35)",
+              <Pill tone="success" size="sm" active>
+                done
+              </Pill>,
+              "ADR 0003 Apply-Journal · Resume/Abort/Purge",
             ],
             [
               <Pill size="sm" active>
@@ -241,7 +252,7 @@ export default function VzHypervisorImplementationsplan() {
               "virtiofs + Docker-Polish → v0.1.x (#42)",
             ],
           ]}
-          rowTone={["warning", "success", "info", "info", "neutral"]}
+          rowTone={["success", "success", "success", "success", "neutral"]}
         />
       </Stack>
 
@@ -314,16 +325,73 @@ export default function VzHypervisorImplementationsplan() {
             ["9–12", "DNS", "*.vz.test · Dual Listener · Forward · dns query direkt"],
             ["14", "Baseline", "macOS 26+ (ADR 0001)"],
             ["15", "Bridged", "out of scope"],
-            ["16–18", "IP / Isolation", "static Primär · Router ≠ Gateway .1 · policies"],
+            ["16–18", "IP / Isolation", "static · DNS/gw=.0 UDP · Router .2 · .1 unused · policies"],
             ["20–22", "Apply / Agent / MVP", "Journal · Agent-in-Base · Alpha + v0.1.x"],
             ["6–7", "v0.2 Embed", "Caddy + Dex · Issuer nie *.localhost"],
           ]}
-          rowTone={["info", "success", "success", "warning", "info", "warning", "info"]}
+          rowTone={["info", "success", "success", "warning", "success", "warning", "info"]}
         />
         <Text size="small" tone="tertiary">
-          Offen aus G0: Gateway-/Router-IP-Konvention, Guest-DNS-Bind-IP,
-          launchd/XPC-Details.
+          G0: UDP DNS auf .0 ✓ · Cross-Net via Router .2 ✓ · TCP Host-.0 fail ·
+          Sleep noch messen.
         </Text>
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>G0 Spike — Messstand</H2>
+        <Grid columns={2} gap={12}>
+          <Card>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>Go</Pill>}>
+              Netz / DNS / Router
+            </CardHeader>
+            <CardBody>
+              <Stack gap={6}>
+                <Text size="small" tone="secondary">
+                  2× shared vmnet · Ubuntu EFI/NoCloud · static .10
+                </Text>
+                <Text size="small" tone="secondary">
+                  Guest→Host <Code>.0</Code>: ICMP + <Code>UDP:15353</Code> OK ·
+                  TCP fail · <Code>.1</Code> tot
+                </Text>
+                <Text size="small" tone="secondary">
+                  Router-VM dual-NIC <Code>.2</Code> ·{" "}
+                  <Code>ip_forward</Code> · Cross-Net Ping OK (ttl=63)
+                </Text>
+              </Stack>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>Crash ✓</Pill>}>
+              Phase D + ADR
+            </CardHeader>
+            <CardBody>
+              <Stack gap={6}>
+                <Text size="small" tone="secondary">
+                  Kill -9: VM tot, Subnet verbrannt, frische CIDR OK
+                </Text>
+                <Text size="small" tone="secondary">
+                  ADR 0002+0003 ✓ · P0 Scaffold: crates/ + daemon/
+                </Text>
+                <Text size="small" tone="secondary">
+                  <Code>phase-d-crash.sh</Code> ·{" "}
+                  <Code>docs/adr/0002-process-ownership.md</Code>
+                </Text>
+              </Stack>
+            </CardBody>
+          </Card>
+        </Grid>
+        <Table
+          headers={["Pfad", "Ergebnis", "Implikation"]}
+          rows={[
+            ["Host ↔ Guest .10", "ICMP OK", "static cloud-init"],
+            ["Guest → Host .0 UDP", "OK echo :15353", "Guest-DNS Listener"],
+            ["Guest → Host .0 TCP", "FAIL", "kein TCP-Service auf .0 nötig für DNS"],
+            ["Guest → Host .1", "FAIL", "nicht als gw/DNS"],
+            ["FE → BE via Router .2", "ICMP OK", "DMZ-Topologie machbar"],
+            ["kill -9 Monolith", "VM dead + CIDR leak", "Helper 1:1 Pflicht"],
+          ]}
+          rowTone={["success", "success", "warning", "danger", "success", "danger"]}
+        />
       </Stack>
 
       <Stack gap={12}>
@@ -350,9 +418,10 @@ export default function VzHypervisorImplementationsplan() {
             <CardHeader>Guest</CardHeader>
             <CardBody>
               <Text size="small" tone="secondary">
-                Listener auf Gateway/Hypervisor-IP (Ergebnis G0 #5). cloud-init
-                nameservers + search domain. Forward für externe Namen
-                (upstream=system; VPN dokumentieren).
+                Listener auf Host-Bridge-<Code>.0:UDP</Code> (gemessen).{" "}
+                <Code>.1</Code> nicht. cloud-init <Code>nameservers: [.0]</Code>.
+                Host parallel <Code>127.0.0.1</Code> +{" "}
+                <Code>/etc/resolver</Code>.
               </Text>
             </CardBody>
           </Card>
@@ -380,9 +449,9 @@ export default function VzHypervisorImplementationsplan() {
           rowTone={["success", "info", "warning", "danger"]}
         />
         <Text size="small" tone="secondary">
-          Router-IP nicht mit vmnet-Gateway kollidieren (z. B. Gateway .1 /
-          Router .2 — Spike #4). <Code>routes</Code> + <Code>policies</Code>{" "}
-          (forward allow/deny) für echte DMZ-Semantik.
+          Host-DNS/gw = <Code>.0</Code> (UDP). Router = <Code>.2</Code> je Net.
+          Guests <Code>.10+</Code>. <Code>routes</Code> + <Code>policies</Code>{" "}
+          für DMZ.
         </Text>
       </Stack>
 
@@ -603,21 +672,23 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          Epic #1 G0 Spike auf macOS 26+ (#3–#6). Danach Ownership-ADR #8 und
-          Apply-Spec #35 — erst dann Scaffolding.
+          P0 Scaffold da (`cargo run -p vzctl -- doctor`, `daemon/` swift
+          build). Weiter: UDS + Journal (#9), Helper launchd (#10), doctor
+          ausbauen (#20).
         </Callout>
       </Stack>
 
       <Stack gap={12}>
         <H2>Repo-Layout (Ziel)</H2>
         <Code>{`vzctl/
-  crates/          # vzctl, client, schema, reconcile
-  daemon/          # Swift Supervisor + Helper
-  guest-agent/     # vsock agent (in Base)
-  ui/              # Tauri v0.2
-  examples/edge-dmz/
+  Cargo.toml       # workspace
+  crates/vzctl/    # CLI: doctor, apply stub
+  daemon/          # Swift: vz-supervisor, vz-helper, VzDaemonKit
   docs/planing/    # Plan, Reviews, Tracking
-  docs/adr/        # 0001 macOS baseline ✓`}</Code>
+  docs/spikes/     # G0 network protocol
+  docs/adr/        # 0001–0003 Accepted
+  spikes/g0/       # G0 measurement harness
+  # later: guest-agent/, ui/, examples/`}</Code>
       </Stack>
 
       <Text size="small" tone="tertiary" style={{ color: theme.text.tertiary }}>

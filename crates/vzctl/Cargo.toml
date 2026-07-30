@@ -1,0 +1,9 @@
+[package]
+name = "vzctl"
+version = "0.0.1"
+edition = "2021"
+description = "Environments-as-Code CLI for macOS Virtualization (Alpha)"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]

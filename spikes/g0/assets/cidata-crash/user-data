@@ -1,0 +1,9 @@
+#cloud-config
+hostname: crash
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    plain_text_passwd: "ubuntu"
+ssh_pwauth: true
+package_update: false

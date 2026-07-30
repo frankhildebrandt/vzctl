@@ -1,0 +1,11 @@
+#cloud-config
+hostname: frontend
+manage_etc_hosts: true
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: "ubuntu"
+ssh_pwauth: true
+package_update: false

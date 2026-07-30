@@ -25,10 +25,10 @@ Devstack-Supervisor auf **Virtualization.framework**:
 
 | # | Gate | Abbruch wenn |
 |---|---|---|
-| G0 | **Netzwerk-Spike vor P0** (2 Netze, Router, feste IP, Host↔Guest, Sleep, Supervisor-Crash) | Isolation/Entitlements unmöglich |
-| G1 | **macOS-Baseline** | **Erledigt:** Mindestversion **macOS 26** ([ADR 0001](../adr/0001-macos-baseline.md), #2) |
-| G2 | **Process-/Ownership-ADR** (VZ, vmnet, DNS, Helper-Lifecycle) | — |
-| G3 | **State/Apply-Spez** (Journal, Idempotenz, Resume, Löschregeln) | — |
+| G0 | **Netzwerk-Spike vor P0** | **Go** — [g0-network.md](../spikes/g0-network.md) |
+| G1 | **macOS-Baseline** | **Erledigt:** macOS 26 ([ADR 0001](../adr/0001-macos-baseline.md)) |
+| G2 | **Process-/Ownership-ADR** | **Accepted:** [ADR 0002](../adr/0002-process-ownership.md) |
+| G3 | **State/Apply-Spez** | **Accepted:** [ADR 0003](../adr/0003-apply-state.md) |
 | G4 | MVP-Exit-Kriterien messbar; virtiofs + Docker-Polish → **v0.1.x** | Scope sprengt 8–10 Wo |
 
 Details: [Decision Log](04-decision-log.md).
@@ -100,7 +100,7 @@ Kanonisch: `{vm}.{net}.{project}.vz.test`
 | Listener | Bind | Wer nutzt |
 |---|---|---|
 | Host | `127.0.0.1:<dnsPort>` | `/etc/resolver/{project}.vz.test` |
-| Guest-erreichbar | Hypervisor/Gateway-IP auf vmnet (oder shared DNS-IP) | Guests via cloud-init `nameservers:` |
+| Guest-erreichbar | Hypervisor Bridge-IP **`.0`** (UDP; gemessen G0) | Guests via cloud-init `nameservers:` |
 
 - Zone autoritativ für `*.{project}.vz.test`
 - **Forwarding** für externe Namen (Upstream = System-DNS / konfigurierbar; VPN-Verhalten dokumentieren)
@@ -143,7 +143,7 @@ spec:
 | Phase | Name | Zeit | Deliverable |
 |---|---|---|---|
 | **G0** | Spike | Wo 0–1 | Netz+DNS+Crash Go/No-Go |
-| P0 | Foundation | 1–3 | Supervisor+Helper ADR, Agent-in-Base, doctor, Journal-Stub |
+| P0 | Foundation | 1–3 | **Scaffold da** (`crates/vzctl`, `daemon/`); UDS/Journal/launchd/Agent folgen |
 | P1 | CLI + Clones | 2–4 | JSON-CLI, Exitcodes, events schema, Seal/clonefile, Identity |
 | P2 | Net + DNS | 3–5 | vmnet, IP-Modell, Dual-DNS, macOS-Resolver, Router+Policy |
 | P3 | Stacks | 5–7 | hypernetwork up/down/apply + Lease + Resume |

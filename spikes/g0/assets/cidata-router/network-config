@@ -1,0 +1,12 @@
+version: 2
+ethernets:
+  ethfe:
+    match:
+      macaddress: "52:54:00:83:01:02"
+    dhcp4: false
+    addresses: [10.85.1.2/24]
+  ethbe:
+    match:
+      macaddress: "52:54:00:83:02:02"
+    dhcp4: false
+    addresses: [10.85.2.2/24]

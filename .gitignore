@@ -6,8 +6,14 @@ secrets/
 .env
 .env.*
 target/
+daemon/.build/
 node_modules/
 dist/
+spikes/g0/assets/*.raw
+spikes/g0/assets/*.img
+spikes/g0/assets/*.iso
+spikes/g0/assets/*.nvram
+spikes/g0/.build/
 *.pem
 *.key
 **/ca/

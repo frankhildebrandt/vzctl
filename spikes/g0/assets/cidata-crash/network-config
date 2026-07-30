@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  id0:
+    match:
+      macaddress: "52:54:00:90:01:10"
+    dhcp4: false
+    addresses: [10.93.1.10/24]
+    routes:
+      - to: default
+        via: 10.93.1.0
+        on-link: true
+    nameservers:
+      addresses: [10.93.1.0]
