@@ -23,9 +23,16 @@ The boot disk must be a writable raw Ubuntu arm64 disk image (not QCOW2):
 ```text
 vm.bundle/
 ├── disk.raw       # required unless --disk is supplied
+├── dataDisk.raw   # optional writable per-VM data disk
 ├── cidata.iso     # optional cloud-init seed
+├── agent.token    # optional guest-agent token, mode 0600
+├── vm.json        # optional vzctl manifest incl. persisted NIC MAC
 └── nvram.bin      # generated on first run
 ```
+
+For `vzctl vm create` bundles, the helper reads `identity.nics[0].mac` from
+`vm.json` and applies it to a fresh `VZVirtioNetworkDeviceConfiguration`.
+`--mac-address` overrides the manifest for manual bundles.
 
 Start the supervisor and helper:
 

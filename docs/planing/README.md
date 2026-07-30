@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P1 / #24** — #22 Base Seal und #23 APFS Linked Clones plus `dataDisk` sind
-implementiert. Als Nächstes folgt #24 Identity-Reset. Der weitere
-commandspezifische CLI-Surface bleibt unter #17 nachvollziehbar.
+**P1 / #21 abgeschlossen** — #22 Base Seal, #23 APFS Linked Clones plus
+`dataDisk` und #24 Identity-Reset sind implementiert. Der nächste geplante
+Slice ist P2 / #31: vmnet Network CRUD + Attachments + Labels.

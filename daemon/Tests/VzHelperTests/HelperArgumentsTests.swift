@@ -15,6 +15,17 @@ import Testing
         atPath: directory.appendingPathComponent("dataDisk.raw").path,
         contents: Data()
     )
+    try """
+    {
+      "identity": {
+        "nics": [{"index": 0, "mac": "02:12:34:56:78:9a", "address": "dhcp"}]
+      }
+    }
+    """.write(
+        to: directory.appendingPathComponent("vm.json"),
+        atomically: true,
+        encoding: .utf8
+    )
 
     let command = try HelperArguments.parse(
         ["run", "--vm-id", "web", "--bundle", directory.path, "--mock"],
@@ -26,6 +37,8 @@ import Testing
     }
     #expect(options.diskURL.lastPathComponent == "disk.raw")
     #expect(options.dataDiskURL?.lastPathComponent == "dataDisk.raw")
+    #expect(options.cidataURL == nil)
+    #expect(options.macAddress == "02:12:34:56:78:9a")
 }
 
 @Test func helperAcceptsExplicitDataDiskPath() throws {
@@ -44,4 +57,21 @@ import Testing
         return
     }
     #expect(options.dataDiskURL == dataDisk.standardizedFileURL)
+}
+
+@Test func helperAcceptsExplicitMACAddressWithoutManifest() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vzctl-helper-mac-flag-\(UUID().uuidString)", isDirectory: true)
+    let command = try HelperArguments.parse(
+        [
+            "run", "--vm-id", "web", "--bundle", directory.path,
+            "--mac-address", "02:aa:bb:cc:dd:ee", "--mock",
+        ],
+        environment: ["VZCTL_STATE_DIR": directory.path]
+    )
+    guard case let .run(options) = command else {
+        Issue.record("expected run command")
+        return
+    }
+    #expect(options.macAddress == "02:aa:bb:cc:dd:ee")
 }

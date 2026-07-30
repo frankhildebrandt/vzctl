@@ -178,6 +178,12 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
 
         let network = VZVirtioNetworkDeviceConfiguration()
         network.attachment = VZNATNetworkDeviceAttachment()
+        if let macString = options.macAddress {
+            guard let macAddress = VZMACAddress(string: macString) else {
+                throw HelperError.invalid("invalid MAC address: \(macString)")
+            }
+            network.macAddress = macAddress
+        }
         configuration.networkDevices = [network]
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]

@@ -16,6 +16,7 @@ struct RunOptions: Sendable {
     let diskURL: URL
     let dataDiskURL: URL?
     let cidataURL: URL?
+    let macAddress: String?
     let agentTokenURL: URL
     let timeHintReason: AgentTimeHintReason?
     let mock: Bool
@@ -88,6 +89,7 @@ enum HelperArguments {
         let cidataURL = values["--cidata"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? (FileManager.default.fileExists(atPath: defaultCidata.path) ? defaultCidata : nil)
+        let macAddress = try values["--mac-address"] ?? manifestMACAddress(bundleURL: bundleURL)
         let agentTokenURL = values["--agent-token"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? bundleURL.appendingPathComponent("agent.token")
@@ -110,6 +112,7 @@ enum HelperArguments {
             diskURL: diskURL,
             dataDiskURL: dataDiskURL,
             cidataURL: cidataURL,
+            macAddress: macAddress,
             agentTokenURL: agentTokenURL,
             timeHintReason: timeHintReason,
             mock: values["--mock"] != nil,
@@ -120,7 +123,7 @@ enum HelperArguments {
     private static func parseValues(_ arguments: [String]) throws -> [String: String] {
         let valueFlags = Set([
             "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--data-disk", "--cidata",
-            "--agent-token", "--executable", "--time-hint",
+            "--mac-address", "--agent-token", "--executable", "--time-hint",
         ])
         let booleanFlags = Set(["--mock"])
         var values: [String: String] = [:]
@@ -141,6 +144,30 @@ enum HelperArguments {
             }
         }
         return values
+    }
+
+    private static func manifestMACAddress(bundleURL: URL) throws -> String? {
+        let manifestURL = bundleURL.appendingPathComponent("vm.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: manifestURL)
+            guard
+                let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let identity = root["identity"] as? [String: Any],
+                let nics = identity["nics"] as? [[String: Any]],
+                let mac = nics.first?["mac"] as? String,
+                !mac.isEmpty
+            else {
+                throw HelperError.invalid(
+                    "VM manifest has no identity.nics[0].mac: \(manifestURL.path)"
+                )
+            }
+            return mac
+        } catch let error as HelperError {
+            throw error
+        } catch {
+            throw HelperError.invalid("cannot read VM identity from \(manifestURL.path): \(error)")
+        }
     }
 }
 

@@ -33,5 +33,21 @@
       "read_only": false
     }
   },
+  "identity": {
+    "instance_id": "123e4567-e89b-42d3-a456-426614174000",
+    "hostname": "web",
+    "fqdn": "web",
+    "nics": [
+      {
+        "index": 0,
+        "mac": "02:12:34:56:78:9a",
+        "address": "dhcp"
+      }
+    ]
+  },
+  "cloud_init": {
+    "seed": "/state/vms/web/cidata.iso",
+    "agent_token": "/state/vms/web/agent.token"
+  },
   "warnings": []
 }

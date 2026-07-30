@@ -80,6 +80,7 @@ APFS-Containerbelegung erst nach Write-Divergenz.
 
 ## Folge
 
-Epic #21 ist nach diesem Slice zu zwei Dritteln umgesetzt. Als Nächstes folgt
-#24: Identity-Reset für MAC, machine-id, Hostname, SSH Host Keys und
-cloud-init instance-id.
+Mit dem nachfolgenden, inzwischen umgesetzten #24 ist Epic #21 vollständig:
+Identity-Reset für MAC, machine-id, Hostname, SSH Host Keys und cloud-init
+instance-id. Details:
+[`p1-identity-reset.md`](p1-identity-reset.md).

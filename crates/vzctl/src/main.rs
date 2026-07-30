@@ -108,9 +108,20 @@ struct VmCreateResult {
     source: ImageSealResult,
     root_disk_path: PathBuf,
     data_disk_path: PathBuf,
+    cidata_path: PathBuf,
+    agent_token_path: PathBuf,
     data_disk_gib: u64,
     clone_mode: CloneMode,
     filesystem: String,
+    identity: VmIdentity,
+}
+
+#[derive(Debug)]
+struct VmIdentity {
+    instance_id: String,
+    hostname: String,
+    fqdn: String,
+    mac_addresses: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -155,6 +166,11 @@ trait VmDiskBackend {
     fn clone_linked(&self, source: &Path, destination: &Path) -> Result<(), io::Error>;
     fn copy_full(&self, source: &Path, destination: &Path) -> Result<(), io::Error>;
     fn create_sparse(&self, path: &Path, size_bytes: u64) -> Result<(), io::Error>;
+    fn create_cloud_init_iso(
+        &self,
+        seed_directory: &Path,
+        destination: &Path,
+    ) -> Result<(), io::Error>;
 }
 
 struct LibguestfsBackend;
@@ -1040,6 +1056,8 @@ fn create_vm_bundle_in_dirs(
 
     let root_disk_path = bundle_path.join("disk.raw");
     let data_disk_path = bundle_path.join("dataDisk.raw");
+    let cidata_path = bundle_path.join("cidata.iso");
+    let agent_token_path = bundle_path.join("agent.token");
     let result = prepare_vm_disks(
         options,
         backend,
@@ -1047,6 +1065,8 @@ fn create_vm_bundle_in_dirs(
         bundle_path,
         root_disk_path,
         data_disk_path,
+        cidata_path,
+        agent_token_path,
         size_bytes,
     );
     if result.is_err() {
@@ -1063,6 +1083,8 @@ fn prepare_vm_disks(
     bundle_path: PathBuf,
     root_disk_path: PathBuf,
     data_disk_path: PathBuf,
+    cidata_path: PathBuf,
+    agent_token_path: PathBuf,
     size_bytes: u64,
 ) -> Result<VmCreateResult, VmCreateFailure> {
     let filesystem = backend
@@ -1109,15 +1131,27 @@ fn prepare_vm_disks(
             )
         })?;
 
+    let identity = new_vm_identity(&options.id)?;
+    prepare_cloud_init_seed(
+        backend,
+        &bundle_path,
+        &cidata_path,
+        &agent_token_path,
+        &identity,
+    )?;
+
     let result = VmCreateResult {
         id: options.id.clone(),
         bundle_path,
         source,
         root_disk_path,
         data_disk_path,
+        cidata_path,
+        agent_token_path,
         data_disk_gib: options.data_disk_gib,
         clone_mode,
         filesystem,
+        identity,
     };
     write_vm_manifest(&result)?;
     Ok(result)
@@ -1148,6 +1182,22 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
                 "size_gib": result.data_disk_gib,
                 "sparse": true,
             },
+        },
+        "identity": {
+            "instance_id": result.identity.instance_id,
+            "hostname": result.identity.hostname,
+            "fqdn": result.identity.fqdn,
+            "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
+                json!({
+                    "index": index,
+                    "mac": mac,
+                    "address": "dhcp",
+                })
+            }).collect::<Vec<_>>(),
+        },
+        "cloud_init": {
+            "seed": result.cidata_path,
+            "agent_token": result.agent_token_path,
         },
     });
     fs::write(
@@ -1185,6 +1235,9 @@ fn print_vm_create_human(result: &VmCreateResult) {
         "  base: {} (read-only)",
         result.source.source_path.display()
     );
+    println!("  hostname: {}", result.identity.fqdn);
+    println!("  mac: {}", result.identity.mac_addresses.join(", "));
+    println!("  cloud-init: {}", result.cidata_path.display());
 }
 
 fn vm_create_json(result: &VmCreateResult) -> Value {
@@ -1229,8 +1282,209 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
                 "read_only": false,
             },
         },
+        "identity": {
+            "instance_id": result.identity.instance_id,
+            "hostname": result.identity.hostname,
+            "fqdn": result.identity.fqdn,
+            "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
+                json!({
+                    "index": index,
+                    "mac": mac,
+                    "address": "dhcp",
+                })
+            }).collect::<Vec<_>>(),
+        },
+        "cloud_init": {
+            "seed": result.cidata_path,
+            "agent_token": result.agent_token_path,
+        },
         "warnings": warning.into_iter().collect::<Vec<_>>(),
     })
+}
+
+fn new_vm_identity(vm_id: &str) -> Result<VmIdentity, VmCreateFailure> {
+    let mut random = [0_u8; 22];
+    File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut random))
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!("cannot generate VM identity: {error}"),
+            )
+        })?;
+
+    random[6] = (random[6] & 0x0f) | 0x40;
+    random[8] = (random[8] & 0x3f) | 0x80;
+    let instance_id = format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        random[0], random[1], random[2], random[3],
+        random[4], random[5], random[6], random[7],
+        random[8], random[9], random[10], random[11],
+        random[12], random[13], random[14], random[15],
+    );
+    let mac = format!(
+        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        random[17], random[18], random[19], random[20], random[21]
+    );
+    let fqdn = cloud_init_fqdn(vm_id);
+    let hostname = fqdn.split('.').next().unwrap_or("vm").to_string();
+    Ok(VmIdentity {
+        instance_id,
+        hostname,
+        fqdn,
+        mac_addresses: vec![mac],
+    })
+}
+
+fn cloud_init_fqdn(vm_id: &str) -> String {
+    let normalized = vm_id
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .split('.')
+        .filter(|label| !label.is_empty())
+        .map(|label| label.trim_matches('-'))
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    if normalized.is_empty() {
+        "vm".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn prepare_cloud_init_seed(
+    backend: &dyn VmDiskBackend,
+    bundle_path: &Path,
+    cidata_path: &Path,
+    agent_token_path: &Path,
+    identity: &VmIdentity,
+) -> Result<(), VmCreateFailure> {
+    let mut token_bytes = [0_u8; 32];
+    File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut token_bytes))
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!("cannot generate guest-agent token: {error}"),
+            )
+        })?;
+    let token = base64url_unpadded(&token_bytes);
+    write_private_file(agent_token_path, format!("{token}\n").as_bytes())?;
+
+    let seed_directory = bundle_path.join(".cidata.seed");
+    fs::create_dir(&seed_directory).map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!(
+                "cannot create cloud-init staging directory {}: {error}",
+                seed_directory.display()
+            ),
+        )
+    })?;
+    fs::set_permissions(&seed_directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!(
+                "cannot protect cloud-init staging directory {}: {error}",
+                seed_directory.display()
+            ),
+        )
+    })?;
+
+    let meta_data = format!(
+        "instance-id: {}\nlocal-hostname: {}\n",
+        identity.instance_id, identity.hostname
+    );
+    let network_config = format!(
+        "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp6: false\n",
+        identity.mac_addresses[0]
+    );
+    let user_data = format!(
+        "#cloud-config\npreserve_hostname: false\nhostname: {}\nfqdn: {}\nprefer_fqdn_over_hostname: true\nmanage_etc_hosts: true\nssh_deletekeys: true\nssh_genkeytypes:\n  - ed25519\n  - rsa\nwrite_files:\n  - path: /run/vzctl/agent.token\n    owner: vzctl-agent:vzctl-agent\n    permissions: \"0600\"\n    content: |\n      {}\n",
+        identity.hostname, identity.fqdn, token
+    );
+
+    let seed_result = (|| {
+        write_private_file(&seed_directory.join("meta-data"), meta_data.as_bytes())?;
+        write_private_file(
+            &seed_directory.join("network-config"),
+            network_config.as_bytes(),
+        )?;
+        write_private_file(&seed_directory.join("user-data"), user_data.as_bytes())?;
+        backend
+            .create_cloud_init_iso(&seed_directory, cidata_path)
+            .map_err(|error| {
+                VmCreateFailure::new(
+                    EXIT_VM_DISK_PREP_FAILED,
+                    format!(
+                        "cannot create NoCloud seed {}: {error}",
+                        cidata_path.display()
+                    ),
+                )
+            })?;
+        fs::set_permissions(cidata_path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!(
+                    "cannot protect NoCloud seed {}: {error}",
+                    cidata_path.display()
+                ),
+            )
+        })
+    })();
+    let cleanup_result = fs::remove_dir_all(&seed_directory);
+    seed_result?;
+    cleanup_result.map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!(
+                "cannot remove cloud-init staging directory {}: {error}",
+                seed_directory.display()
+            ),
+        )
+    })
+}
+
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), VmCreateFailure> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!("cannot create private file {}: {error}", path.display()),
+            )
+        })?;
+    file.write_all(contents)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!("cannot write private file {}: {error}", path.display()),
+            )
+        })
+}
+
+fn base64url_unpadded(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut output = String::with_capacity((bytes.len() * 4).div_ceil(3));
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        output.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[((value >> 6) & 0x3f) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(value & 0x3f) as usize] as char);
+        }
+    }
+    output
 }
 
 fn emit_vm_create_failure(format: OutputFormat, failure: &VmCreateFailure) {
@@ -1352,6 +1606,30 @@ impl VmDiskBackend for NativeVmDiskBackend {
             .open(path)?;
         file.set_len(size_bytes)?;
         file.sync_all()
+    }
+
+    fn create_cloud_init_iso(
+        &self,
+        seed_directory: &Path,
+        destination: &Path,
+    ) -> Result<(), io::Error> {
+        let output = Command::new("hdiutil")
+            .args([
+                "makehybrid",
+                "-iso",
+                "-joliet",
+                "-default-volume-name",
+                "cidata",
+            ])
+            .arg("-o")
+            .arg(destination)
+            .arg(seed_directory)
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(command_text(&output)))
+        }
     }
 }
 
@@ -2629,13 +2907,34 @@ mod tests {
     }
 
     #[test]
+    fn identity_helpers_produce_cloud_init_safe_values() {
+        assert_eq!(cloud_init_fqdn("Web_01.Example"), "web-01.example");
+        assert_eq!(cloud_init_fqdn("..."), "vm");
+        assert_eq!(base64url_unpadded(&[0xfb, 0xff, 0xef]), "-__v");
+        assert_eq!(base64url_unpadded(&[0xff]), "_w");
+    }
+
+    #[test]
     fn two_linked_clones_keep_base_read_only_and_get_sparse_data_disks() {
         let directory = test_directory("vm-linked-clones");
         let images_directory = directory.join("images");
         let vms_directory = directory.join("vms");
         let image = prepare_sealed_test_image(&directory, &images_directory);
         let backend = RecordingVmDiskBackend::new("apfs");
+        let marker_path = fs::read_dir(&images_directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .unwrap();
+        let base_before = fs::read(&image).unwrap();
+        let marker_before = fs::read(&marker_path).unwrap();
 
+        let mut instance_ids = Vec::new();
+        let mut mac_addresses = Vec::new();
+        let mut tokens = Vec::new();
         for id in ["web-1", "web-2"] {
             let result = create_vm_bundle_in_dirs(
                 &VmCreateOptions {
@@ -2658,15 +2957,44 @@ mod tests {
                 fs::metadata(&result.data_disk_path).unwrap().len(),
                 1024 * 1024 * 1024
             );
+            assert!(result.cidata_path.is_file());
+            assert_eq!(
+                fs::metadata(&result.cidata_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            let token = fs::read_to_string(&result.agent_token_path).unwrap();
+            assert_eq!(token.trim().len(), 43);
+            assert!(!token.contains('='));
+            instance_ids.push(result.identity.instance_id);
+            mac_addresses.push(result.identity.mac_addresses[0].clone());
+            tokens.push(token);
         }
 
+        assert_ne!(instance_ids[0], instance_ids[1]);
+        assert_ne!(mac_addresses[0], mac_addresses[1]);
+        assert!(mac_addresses.iter().all(|mac| mac.starts_with("02:")));
+        assert_ne!(tokens[0], tokens[1]);
+        for (meta_data, network_config, user_data) in backend.seeds() {
+            assert!(meta_data.contains("instance-id: "));
+            assert!(network_config.contains("macaddress: \"02:"));
+            assert!(network_config.contains("dhcp4: true"));
+            assert!(user_data.contains("ssh_deletekeys: true"));
+            assert!(user_data.contains("  - ed25519"));
+            assert!(user_data.contains("  - rsa"));
+        }
         assert_eq!(
             fs::metadata(&image).unwrap().permissions().mode() & 0o222,
             0
         );
+        assert_eq!(fs::read(&image).unwrap(), base_before);
+        assert_eq!(fs::read(&marker_path).unwrap(), marker_before);
         assert_eq!(
             backend.calls(),
-            vec!["linked", "sparse", "linked", "sparse"]
+            vec!["linked", "sparse", "seed", "linked", "sparse", "seed"]
         );
         fs::remove_dir_all(directory).unwrap();
     }
@@ -2692,7 +3020,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.clone_mode, CloneMode::Full);
-        assert_eq!(backend.calls(), vec!["full", "sparse"]);
+        assert_eq!(backend.calls(), vec!["full", "sparse", "seed"]);
         assert_eq!(vm_create_json(&result)["status"], "warn");
         fs::remove_dir_all(directory).unwrap();
     }
@@ -2786,6 +3114,26 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_backend_builds_private_nocloud_iso() {
+        let directory = test_directory("vm-native-cidata");
+        let seed_directory = directory.join("seed");
+        fs::create_dir_all(&seed_directory).unwrap();
+        fs::write(seed_directory.join("meta-data"), "instance-id: test\n").unwrap();
+        fs::write(seed_directory.join("network-config"), "version: 2\n").unwrap();
+        fs::write(seed_directory.join("user-data"), "#cloud-config\n").unwrap();
+        let destination = directory.join("cidata.iso");
+
+        NativeVmDiskBackend
+            .create_cloud_init_iso(&seed_directory, &destination)
+            .unwrap();
+
+        assert!(destination.is_file());
+        assert!(fs::metadata(&destination).unwrap().len() > 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn vm_create_json_matches_golden_contract() {
         let result = VmCreateResult {
@@ -2800,9 +3148,17 @@ mod tests {
             },
             root_disk_path: PathBuf::from("/state/vms/web/disk.raw"),
             data_disk_path: PathBuf::from("/state/vms/web/dataDisk.raw"),
+            cidata_path: PathBuf::from("/state/vms/web/cidata.iso"),
+            agent_token_path: PathBuf::from("/state/vms/web/agent.token"),
             data_disk_gib: 64,
             clone_mode: CloneMode::Linked,
             filesystem: "apfs".to_string(),
+            identity: VmIdentity {
+                instance_id: "123e4567-e89b-42d3-a456-426614174000".to_string(),
+                hostname: "web".to_string(),
+                fqdn: "web".to_string(),
+                mac_addresses: vec!["02:12:34:56:78:9a".to_string()],
+            },
         };
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/vm-create.json")).unwrap();
@@ -2895,6 +3251,7 @@ mod tests {
         filesystem: String,
         fail_clone: bool,
         calls: RefCell<Vec<&'static str>>,
+        seeds: RefCell<Vec<(String, String, String)>>,
     }
 
     impl RecordingVmDiskBackend {
@@ -2903,6 +3260,7 @@ mod tests {
                 filesystem: filesystem.to_string(),
                 fail_clone: false,
                 calls: RefCell::new(Vec::new()),
+                seeds: RefCell::new(Vec::new()),
             }
         }
 
@@ -2911,11 +3269,16 @@ mod tests {
                 filesystem: filesystem.to_string(),
                 fail_clone: true,
                 calls: RefCell::new(Vec::new()),
+                seeds: RefCell::new(Vec::new()),
             }
         }
 
         fn calls(&self) -> Vec<&'static str> {
             self.calls.borrow().clone()
+        }
+
+        fn seeds(&self) -> Vec<(String, String, String)> {
+            self.seeds.borrow().clone()
         }
     }
 
@@ -2941,6 +3304,20 @@ mod tests {
             self.calls.borrow_mut().push("sparse");
             let file = File::create(path)?;
             file.set_len(size_bytes)
+        }
+
+        fn create_cloud_init_iso(
+            &self,
+            seed_directory: &Path,
+            destination: &Path,
+        ) -> Result<(), io::Error> {
+            self.calls.borrow_mut().push("seed");
+            self.seeds.borrow_mut().push((
+                fs::read_to_string(seed_directory.join("meta-data"))?,
+                fs::read_to_string(seed_directory.join("network-config"))?,
+                fs::read_to_string(seed_directory.join("user-data"))?,
+            ));
+            fs::write(destination, b"test NoCloud ISO")
         }
     }
 

@@ -14,7 +14,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 |---|---|---|
 | G0 — Spike Gate | Netz+DNS+Crash Go/No-Go | **closed** (Go) |
 | P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **complete** (#20 closed) |
-| P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | open |
+| P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | **core complete** |
 | P2 — Net + DNS | vmnet, Dual-DNS, Policies | open |
 | P3 — Stacks | hypernetwork reconcile | open |
 | P4 — Docker + Ports | SSH Context, Ports basic | open |
@@ -29,7 +29,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | **closed** |
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | **closed** (Live Sleep/Base-Raw residual) |
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; CLI surface rest open |
-| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | open |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | **complete** |
 | [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (G0 Bind ✅) |
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | open (G0 Reach ✅) |
 | [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | open (ADR 0003 ✅) |
@@ -70,17 +70,18 @@ Stories sind als **Sub-Issues** unter den Epics verknüpft.
 
 Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-07-30) aktualisiert.
 
-## P1 Next
+## P1 Abschluss / P2 Next
 
 | # | Story | Status |
 |---|---|---|
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | Contract-DoD complete; CLI surface rest |
 | [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | **complete** (CLI Contract v1 + Golden Tests) |
 | [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | **closed** (UDS + NDJSON + Filter) |
-| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | in progress: #22/#23 ✅; **next #24** |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | **complete** (#22/#23/#24 ✅) |
 | [#22](https://github.com/frankhildebrandt/vzctl/issues/22) | `vzctl image seal` | **closed** (offline ✅; Builder Residual) |
 | [#23](https://github.com/frankhildebrandt/vzctl/issues/23) | APFS linked clone + `dataDisk` | **closed** (APFS COW + fallback + Helper attach) |
-| [#24](https://github.com/frankhildebrandt/vzctl/issues/24) | Identity-Reset | ← **next** |
+| [#24](https://github.com/frankhildebrandt/vzctl/issues/24) | Identity-Reset | **complete** (NoCloud + Helper-MAC) |
+| [#31](https://github.com/frankhildebrandt/vzctl/issues/31) | vmnet Network CRUD + Attachments | ← **next** |
 
 ## Label-Schema
 

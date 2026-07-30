@@ -190,15 +190,15 @@ export default function VzHypervisorImplementationsplan() {
       </Callout>
 
       <Callout tone="success" title="P0 + CLI + Seal + Clones">
-        P0 Foundation closed. P1: #18/#19 Contracts, #22 seal, #23 linked clone +
-        dataDisk ✅. Next: #24 Identity-Reset (#21 Epic).
+        P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
+        #23 linked clone + dataDisk und #24 Identity-Reset ✅.
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="#22✓" label="image seal" tone="success" />
         <Stat value="#23✓" label="linked clone" tone="success" />
-        <Stat value="#24" label="identity next" tone="info" />
+        <Stat value="#24✓" label="identity reset" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -483,8 +483,8 @@ export default function VzHypervisorImplementationsplan() {
             <CardHeader>2. Linked Clone</CardHeader>
             <CardBody>
               <Text size="small" tone="secondary">
-                APFS <Code>clonefile</Code> COW Root-Disk. Identity-Reset: MAC,
-                machine-id, SSH keys, instance-id.
+                APFS <Code>clonefile</Code> COW Root-Disk. Pro Clone neue MAC,
+                machine-id, SSH keys und instance-id.
               </Text>
             </CardBody>
           </Card>
@@ -683,10 +683,10 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             "neutral",
           ]}
         />
-        <Callout tone="info" title="Nächster Schritt">
-          P1 #21: #22/#23 closed. Next: #24 Identity-Reset (MAC, machine-id,
-          hostname, SSH keys, instance-id) pro Clone/NoCloud-Seed — sealed Base
-          unverändert.
+        <Callout tone="success" title="P1 Clone-Lifecycle abgeschlossen">
+          #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
+          per-Clone Identity/NoCloud. Sealed Base und Marker bleiben unverändert.
+          Next: P2 #31 vmnet Network CRUD + Attachments.
         </Callout>
       </Stack>
 

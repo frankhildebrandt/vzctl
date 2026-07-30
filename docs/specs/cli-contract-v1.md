@@ -117,16 +117,21 @@ Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
 ### `vzctl vm create <id> --from <sealed> --data-disk <GiB> --format json`
 
-Payloads: `vm`, `image`, `disks` und `warnings`; kanonischer Command ist
-`vm.create`. APFS liefert `disks.root.clone=linked`. Nicht-APFS fällt mit
-`status=warn`, Exit `0` und `clone=full` zurück. Usage liefert `2`, ungültige
-IDs/Größen/Formate `3`, inkonsistenter Seal-State `15` und Fehler bei
-`clonefile`, Vollkopie, Sparse-Image oder Manifest `16`.
+Payloads: `vm`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
+kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue
+cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
+`cidata.iso` und ein privater Agent-Token. APFS liefert
+`disks.root.clone=linked`. Nicht-APFS fällt mit `status=warn`, Exit `0` und
+`clone=full` zurück. Usage liefert `2`, ungültige IDs/Größen/Formate `3`,
+inkonsistenter Seal-State `15` und Fehler bei `clonefile`, Vollkopie,
+Sparse-Image, NoCloud-Seed oder Manifest `16`.
 
 Die Base wird ausschließlich read-only verwendet. `disks.root` und
 `disks.data` sind die writable VZ-Attachments. Details und manueller
 APFS-Space-Smoke stehen in
 [`p1-linked-clone.md`](../spikes/p1-linked-clone.md).
+Der Identity-Vertrag und Live-Boot-Nachweis stehen in
+[`p1-identity-reset.md`](../spikes/p1-identity-reset.md).
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

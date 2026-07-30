@@ -432,6 +432,9 @@ enum LaunchdPlist {
         if let cidata = run.cidataURL {
             arguments += ["--cidata", cidata.path]
         }
+        if let macAddress = run.macAddress {
+            arguments += ["--mac-address", macAddress]
+        }
         if run.mock { arguments.append("--mock") }
 
         let argumentXML = arguments.map {

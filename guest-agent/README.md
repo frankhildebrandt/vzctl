@@ -49,5 +49,10 @@ The per-VM NoCloud seed must write an unpadded base64url token containing at
 least 256 random bits. The file owner is `vzctl-agent:vzctl-agent`, mode `0600`.
 The token is never part of the base image and is never logged.
 
+`vzctl vm create` also writes a fresh NoCloud instance UUID, hostname/FQDN,
+per-NIC MAC match and SSH host-key regeneration policy. The sealed base keeps
+an empty machine-id and no SSH host keys, so first boot regenerates both per
+clone.
+
 The macOS helper client and live-boot harness are documented in
 [`docs/spikes/p0-helper-agent-e2e.md`](../docs/spikes/p0-helper-agent-e2e.md).
