@@ -81,6 +81,7 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `13` | Image-Customization fehlgeschlagen | `image seal` |
 | `14` | Image-Invariante/Preservation fehlgeschlagen | `image seal` |
 | `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
+| `16` | VM-Root-/Data-Disk-Vorbereitung fehlgeschlagen | `vm create` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -113,6 +114,19 @@ Payload: `image`, `cleanup` und `preserved`; kanonischer Command ist
 Usage liefert `2`, ungültiger bzw. nicht auflösbarer Input `3`, fehlende
 Linux-Builder-Tools `12` und die commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
+
+### `vzctl vm create <id> --from <sealed> --data-disk <GiB> --format json`
+
+Payloads: `vm`, `image`, `disks` und `warnings`; kanonischer Command ist
+`vm.create`. APFS liefert `disks.root.clone=linked`. Nicht-APFS fällt mit
+`status=warn`, Exit `0` und `clone=full` zurück. Usage liefert `2`, ungültige
+IDs/Größen/Formate `3`, inkonsistenter Seal-State `15` und Fehler bei
+`clonefile`, Vollkopie, Sparse-Image oder Manifest `16`.
+
+Die Base wird ausschließlich read-only verwendet. `disks.root` und
+`disks.data` sind die writable VZ-Attachments. Details und manueller
+APFS-Space-Smoke stehen in
+[`p1-linked-clone.md`](../spikes/p1-linked-clone.md).
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

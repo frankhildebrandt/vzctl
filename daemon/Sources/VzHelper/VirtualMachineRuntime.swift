@@ -155,6 +155,18 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         var storage: [VZStorageDeviceConfiguration] = [
             VZVirtioBlockDeviceConfiguration(attachment: root),
         ]
+        if let dataDiskURL = options.dataDiskURL {
+            guard FileManager.default.fileExists(atPath: dataDiskURL.path) else {
+                throw HelperError.invalid("missing data disk: \(dataDiskURL.path)")
+            }
+            let data = try VZDiskImageStorageDeviceAttachment(
+                url: dataDiskURL,
+                readOnly: false,
+                cachingMode: .cached,
+                synchronizationMode: .fsync
+            )
+            storage.append(VZVirtioBlockDeviceConfiguration(attachment: data))
+        }
         if let cidataURL = options.cidataURL {
             guard FileManager.default.fileExists(atPath: cidataURL.path) else {
                 throw HelperError.invalid("missing cidata image: \(cidataURL.path)")

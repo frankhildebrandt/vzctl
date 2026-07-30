@@ -14,6 +14,7 @@ struct RunOptions: Sendable {
     let bundleURL: URL
     let supervisorSocket: String
     let diskURL: URL
+    let dataDiskURL: URL?
     let cidataURL: URL?
     let agentTokenURL: URL
     let timeHintReason: AgentTimeHintReason?
@@ -79,6 +80,10 @@ enum HelperArguments {
         let diskURL = values["--disk"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? bundleURL.appendingPathComponent("disk.raw")
+        let defaultDataDisk = bundleURL.appendingPathComponent("dataDisk.raw")
+        let dataDiskURL = values["--data-disk"].map {
+            URL(fileURLWithPath: $0).standardizedFileURL
+        } ?? (FileManager.default.fileExists(atPath: defaultDataDisk.path) ? defaultDataDisk : nil)
         let defaultCidata = bundleURL.appendingPathComponent("cidata.iso")
         let cidataURL = values["--cidata"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
@@ -103,6 +108,7 @@ enum HelperArguments {
             bundleURL: bundleURL,
             supervisorSocket: supervisorSocket,
             diskURL: diskURL,
+            dataDiskURL: dataDiskURL,
             cidataURL: cidataURL,
             agentTokenURL: agentTokenURL,
             timeHintReason: timeHintReason,
@@ -113,8 +119,8 @@ enum HelperArguments {
 
     private static func parseValues(_ arguments: [String]) throws -> [String: String] {
         let valueFlags = Set([
-            "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--cidata", "--agent-token",
-            "--executable", "--time-hint",
+            "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--data-disk", "--cidata",
+            "--agent-token", "--executable", "--time-hint",
         ])
         let booleanFlags = Set(["--mock"])
         var values: [String: String] = [:]

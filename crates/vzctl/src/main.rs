@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -24,6 +25,7 @@ const EXIT_UNAVAILABLE: u8 = 12;
 const EXIT_IMAGE_CUSTOMIZE_FAILED: u8 = 13;
 const EXIT_IMAGE_INVARIANT_FAILED: u8 = 14;
 const EXIT_IMAGE_STATE_FAILED: u8 = 15;
+const EXIT_VM_DISK_PREP_FAILED: u8 = 16;
 const IMAGE_PRESERVATION_CHECKS: &[&str] = &[
     "test -x /usr/local/sbin/vzctl-agent && test -s /usr/local/sbin/vzctl-agent",
     "test -s /etc/systemd/system/vzctl-agent.service",
@@ -76,6 +78,41 @@ struct ImageSealResult {
     already_sealed: bool,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct VmCreateOptions {
+    id: String,
+    from: String,
+    data_disk_gib: u64,
+    format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloneMode {
+    Linked,
+    Full,
+}
+
+impl CloneMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Linked => "linked",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct VmCreateResult {
+    id: String,
+    bundle_path: PathBuf,
+    source: ImageSealResult,
+    root_disk_path: PathBuf,
+    data_disk_path: PathBuf,
+    data_disk_gib: u64,
+    clone_mode: CloneMode,
+    filesystem: String,
+}
+
 #[derive(Debug)]
 struct SealFailure {
     code: u8,
@@ -91,6 +128,21 @@ impl SealFailure {
     }
 }
 
+#[derive(Debug)]
+struct VmCreateFailure {
+    code: u8,
+    message: String,
+}
+
+impl VmCreateFailure {
+    fn new(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
 trait ImageSealBackend {
     fn inspect_format(&self, path: &Path) -> Result<String, SealFailure>;
     fn verify_preserved(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
@@ -98,7 +150,15 @@ trait ImageSealBackend {
     fn verify_clone_safe(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
 }
 
+trait VmDiskBackend {
+    fn filesystem_type(&self, path: &Path) -> Option<String>;
+    fn clone_linked(&self, source: &Path, destination: &Path) -> Result<(), io::Error>;
+    fn copy_full(&self, source: &Path, destination: &Path) -> Result<(), io::Error>;
+    fn create_sparse(&self, path: &Path, size_bytes: u64) -> Result<(), io::Error>;
+}
+
 struct LibguestfsBackend;
+struct NativeVmDiskBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CheckStatus {
@@ -189,6 +249,7 @@ fn main() -> ExitCode {
         Some("apply") => apply_stub(args),
         Some("events") => events_command(args),
         Some("image") => image_command(args),
+        Some("vm") => vm_command(args),
         Some(other) => {
             eprintln!("unknown command: {other}");
             ExitCode::from(EXIT_USAGE)
@@ -208,6 +269,7 @@ Commands:
   apply [--resume|--abort]   (stub — see ADR 0003)
   events subscribe [--filter 'vm.*,apply.*']
   image seal <name|path> [--format human|json]
+  vm create <id> --from <sealed> --data-disk <GiB> [--format human|json]
   help
 
 Stable exit codes:
@@ -221,7 +283,8 @@ Stable exit codes:
   12  command backend unavailable or not implemented
   13  image customization failed
   14  image seal invariant failed
-  15  image seal state/marker failed"
+  15  image seal state/marker failed
+  16  VM root/data disk preparation failed"
     );
 }
 
@@ -738,6 +801,456 @@ fn emit_seal_failure(format: OutputFormat, failure: &SealFailure) {
     }
 }
 
+fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
+    match args.next().as_deref() {
+        Some("create") => vm_create_command(args.collect()),
+        Some(command) => {
+            eprintln!("unknown vm command: {command}");
+            ExitCode::from(EXIT_USAGE)
+        }
+        None => {
+            eprintln!(
+                "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
+                 [--format human|json]"
+            );
+            ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
+fn vm_create_command(args: Vec<String>) -> ExitCode {
+    let requested_format = requested_output_format(&args);
+    let options = match parse_vm_create_options(args.into_iter()) {
+        Ok(options) => options,
+        Err(failure) => {
+            emit_vm_create_failure(requested_format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
+
+    match create_vm_bundle(&options, &NativeVmDiskBackend) {
+        Ok(result) => {
+            if result.clone_mode == CloneMode::Full {
+                eprintln!(
+                    "WARN: {} is on {}; created a full root-disk copy instead of an APFS linked clone",
+                    result.bundle_path.display(),
+                    result.filesystem
+                );
+            }
+            match options.format {
+                OutputFormat::Human => print_vm_create_human(&result),
+                OutputFormat::Json => println!("{}", vm_create_json(&result)),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            emit_vm_create_failure(options.format, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn parse_vm_create_options(
+    args: impl Iterator<Item = String>,
+) -> Result<VmCreateOptions, VmCreateFailure> {
+    let mut id = None;
+    let mut from = None;
+    let mut data_disk_gib = None;
+    let mut format = OutputFormat::Human;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--from" => {
+                from = Some(args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--from requires a sealed image")
+                })?);
+            }
+            "--data-disk" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--data-disk requires a GiB size")
+                })?;
+                let size = value.parse::<u64>().map_err(|_| {
+                    VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        format!("invalid data-disk size: {value}"),
+                    )
+                })?;
+                if size == 0 {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        "data-disk size must be greater than zero",
+                    ));
+                }
+                data_disk_gib = Some(size);
+            }
+            "--format" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--format requires human or json")
+                })?;
+                format = match value.as_str() {
+                    "human" => OutputFormat::Human,
+                    "json" => OutputFormat::Json,
+                    _ => {
+                        return Err(VmCreateFailure::new(
+                            EXIT_USAGE,
+                            format!("unsupported vm create format: {value}"),
+                        ))
+                    }
+                };
+            }
+            "-h" | "--help" => {
+                return Err(VmCreateFailure::new(
+                    EXIT_USAGE,
+                    "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
+                     [--format human|json]",
+                ))
+            }
+            _ if arg.starts_with('-') => {
+                return Err(VmCreateFailure::new(
+                    EXIT_USAGE,
+                    format!("unknown vm create option: {arg}"),
+                ))
+            }
+            _ if id.is_none() => id = Some(arg),
+            _ => {
+                return Err(VmCreateFailure::new(
+                    EXIT_USAGE,
+                    format!("unexpected vm create argument: {arg}"),
+                ))
+            }
+        }
+    }
+
+    let id = id.ok_or_else(|| {
+        VmCreateFailure::new(
+            EXIT_USAGE,
+            "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
+             [--format human|json]",
+        )
+    })?;
+    if !valid_vm_id(&id) {
+        return Err(VmCreateFailure::new(
+            EXIT_INVALID_INPUT,
+            "vm id must be 1-63 ASCII characters: alphanumeric, '.', '_' or '-'",
+        ));
+    }
+    let from =
+        from.ok_or_else(|| VmCreateFailure::new(EXIT_USAGE, "vm create requires --from <sealed>"))?;
+    let data_disk_gib = data_disk_gib
+        .ok_or_else(|| VmCreateFailure::new(EXIT_USAGE, "vm create requires --data-disk <GiB>"))?;
+
+    Ok(VmCreateOptions {
+        id,
+        from,
+        data_disk_gib,
+        format,
+    })
+}
+
+fn valid_vm_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 63
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+}
+
+fn create_vm_bundle(
+    options: &VmCreateOptions,
+    backend: &dyn VmDiskBackend,
+) -> Result<VmCreateResult, VmCreateFailure> {
+    create_vm_bundle_in_dirs(options, backend, &images_dir(), &state_dir().join("vms"))
+}
+
+fn create_vm_bundle_in_dirs(
+    options: &VmCreateOptions,
+    backend: &dyn VmDiskBackend,
+    images_directory: &Path,
+    vms_directory: &Path,
+) -> Result<VmCreateResult, VmCreateFailure> {
+    let source_path =
+        resolve_image_input(&options.from, images_directory).map_err(vm_failure_from_seal)?;
+    let source_path = fs::canonicalize(&source_path).map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("cannot resolve image {}: {error}", source_path.display()),
+        )
+    })?;
+    let marker_path = seal_marker_path(images_directory, &source_path);
+    if !marker_path.is_file() {
+        return Err(VmCreateFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "sealed marker missing for {}; run `vzctl image seal` first",
+                source_path.display()
+            ),
+        ));
+    }
+    let name = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let source =
+        read_existing_seal(&marker_path, &source_path, name).map_err(vm_failure_from_seal)?;
+    if source.image_format != "raw" {
+        return Err(VmCreateFailure::new(
+            EXIT_INVALID_INPUT,
+            format!(
+                "vm create requires a sealed raw image; {} is {}",
+                source.source_path.display(),
+                source.image_format
+            ),
+        ));
+    }
+
+    let size_bytes = options
+        .data_disk_gib
+        .checked_mul(1024 * 1024 * 1024)
+        .ok_or_else(|| {
+            VmCreateFailure::new(EXIT_INVALID_INPUT, "data-disk size exceeds u64 bytes")
+        })?;
+    fs::create_dir_all(vms_directory).map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!(
+                "cannot create VM directory {}: {error}",
+                vms_directory.display()
+            ),
+        )
+    })?;
+    let bundle_path = vms_directory.join(&options.id);
+    fs::create_dir(&bundle_path).map_err(|error| {
+        let message = if error.kind() == io::ErrorKind::AlreadyExists {
+            format!("VM bundle already exists: {}", bundle_path.display())
+        } else {
+            format!("cannot create VM bundle {}: {error}", bundle_path.display())
+        };
+        VmCreateFailure::new(
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                EXIT_INVALID_INPUT
+            } else {
+                EXIT_VM_DISK_PREP_FAILED
+            },
+            message,
+        )
+    })?;
+
+    let root_disk_path = bundle_path.join("disk.raw");
+    let data_disk_path = bundle_path.join("dataDisk.raw");
+    let result = prepare_vm_disks(
+        options,
+        backend,
+        source,
+        bundle_path,
+        root_disk_path,
+        data_disk_path,
+        size_bytes,
+    );
+    if result.is_err() {
+        let _ = fs::remove_dir_all(vms_directory.join(&options.id));
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_vm_disks(
+    options: &VmCreateOptions,
+    backend: &dyn VmDiskBackend,
+    source: ImageSealResult,
+    bundle_path: PathBuf,
+    root_disk_path: PathBuf,
+    data_disk_path: PathBuf,
+    size_bytes: u64,
+) -> Result<VmCreateResult, VmCreateFailure> {
+    let filesystem = backend
+        .filesystem_type(&bundle_path)
+        .unwrap_or_else(|| "unknown".to_string());
+    let clone_mode = if filesystem.eq_ignore_ascii_case("apfs") {
+        backend
+            .clone_linked(&source.source_path, &root_disk_path)
+            .map_err(|error| {
+                VmCreateFailure::new(
+                    EXIT_VM_DISK_PREP_FAILED,
+                    format!(
+                        "clonefile failed for {} -> {}: {error}",
+                        source.source_path.display(),
+                        root_disk_path.display()
+                    ),
+                )
+            })?;
+        CloneMode::Linked
+    } else {
+        backend
+            .copy_full(&source.source_path, &root_disk_path)
+            .map_err(|error| {
+                VmCreateFailure::new(
+                    EXIT_VM_DISK_PREP_FAILED,
+                    format!(
+                        "full-copy fallback failed for {} -> {}: {error}",
+                        source.source_path.display(),
+                        root_disk_path.display()
+                    ),
+                )
+            })?;
+        CloneMode::Full
+    };
+    backend
+        .create_sparse(&data_disk_path, size_bytes)
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!(
+                    "cannot create sparse data disk {}: {error}",
+                    data_disk_path.display()
+                ),
+            )
+        })?;
+
+    let result = VmCreateResult {
+        id: options.id.clone(),
+        bundle_path,
+        source,
+        root_disk_path,
+        data_disk_path,
+        data_disk_gib: options.data_disk_gib,
+        clone_mode,
+        filesystem,
+    };
+    write_vm_manifest(&result)?;
+    Ok(result)
+}
+
+fn vm_failure_from_seal(failure: SealFailure) -> VmCreateFailure {
+    VmCreateFailure::new(failure.code, failure.message)
+}
+
+fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
+    let manifest_path = result.bundle_path.join("vm.json");
+    let manifest = json!({
+        "apiVersion": "vzctl.dev/vm-bundle/v1",
+        "managed-by": "vzctl",
+        "vm_id": result.id,
+        "base": {
+            "path": result.source.source_path,
+            "marker": result.source.marker_path,
+            "read_only": true,
+        },
+        "disks": {
+            "root": {
+                "path": result.root_disk_path,
+                "clone": result.clone_mode.as_str(),
+            },
+            "data": {
+                "path": result.data_disk_path,
+                "size_gib": result.data_disk_gib,
+                "sparse": true,
+            },
+        },
+    });
+    fs::write(
+        &manifest_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).expect("VM manifest serializes")
+        ),
+    )
+    .map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!(
+                "cannot write VM manifest {}: {error}",
+                manifest_path.display()
+            ),
+        )
+    })
+}
+
+fn print_vm_create_human(result: &VmCreateResult) {
+    println!("created VM bundle {}", result.id);
+    println!("  bundle: {}", result.bundle_path.display());
+    println!(
+        "  root: {} (clone: {})",
+        result.root_disk_path.display(),
+        result.clone_mode.as_str()
+    );
+    println!(
+        "  data: {} ({} GiB sparse)",
+        result.data_disk_path.display(),
+        result.data_disk_gib
+    );
+    println!(
+        "  base: {} (read-only)",
+        result.source.source_path.display()
+    );
+}
+
+fn vm_create_json(result: &VmCreateResult) -> Value {
+    let warning = (result.clone_mode == CloneMode::Full).then(|| {
+        format!(
+            "filesystem {} is not APFS; root disk is a full copy",
+            result.filesystem
+        )
+    });
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "vm.create",
+        "status": if warning.is_some() { "warn" } else { "ok" },
+        "exit_code": 0,
+        "summary": {
+            "message": "VM bundle created",
+            "vm_id": result.id,
+            "clone": result.clone_mode.as_str(),
+            "warnings": warning.iter().count(),
+        },
+        "vm": {
+            "id": result.id,
+            "bundle": result.bundle_path,
+            "managed-by": "vzctl",
+        },
+        "image": {
+            "name": result.source.name,
+            "path": result.source.source_path,
+            "marker": result.source.marker_path,
+            "read_only": true,
+        },
+        "disks": {
+            "root": {
+                "path": result.root_disk_path,
+                "clone": result.clone_mode.as_str(),
+                "read_only": false,
+            },
+            "data": {
+                "path": result.data_disk_path,
+                "size_gib": result.data_disk_gib,
+                "sparse": true,
+                "read_only": false,
+            },
+        },
+        "warnings": warning.into_iter().collect::<Vec<_>>(),
+    })
+}
+
+fn emit_vm_create_failure(format: OutputFormat, failure: &VmCreateFailure) {
+    eprintln!("{}", failure.message);
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": CLI_API_VERSION,
+                "command": "vm.create",
+                "status": "fail",
+                "exit_code": failure.code,
+                "summary": {
+                    "message": failure.message,
+                },
+            })
+        );
+    }
+}
+
 impl ImageSealBackend for LibguestfsBackend {
     fn inspect_format(&self, path: &Path) -> Result<String, SealFailure> {
         let output = Command::new("qemu-img")
@@ -806,6 +1319,70 @@ impl ImageSealBackend for LibguestfsBackend {
             "clone-safe cleanup verification failed",
         )
     }
+}
+
+impl VmDiskBackend for NativeVmDiskBackend {
+    fn filesystem_type(&self, path: &Path) -> Option<String> {
+        filesystem_type(path)
+    }
+
+    fn clone_linked(&self, source: &Path, destination: &Path) -> Result<(), io::Error> {
+        clonefile_path(source, destination)?;
+        let mut permissions = fs::metadata(destination)?.permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(destination, permissions)
+    }
+
+    fn copy_full(&self, source: &Path, destination: &Path) -> Result<(), io::Error> {
+        let mut source_file = File::open(source)?;
+        let mut destination_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(destination)?;
+        io::copy(&mut source_file, &mut destination_file)?;
+        destination_file.sync_all()
+    }
+
+    fn create_sparse(&self, path: &Path, size_bytes: u64) -> Result<(), io::Error> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        file.set_len(size_bytes)?;
+        file.sync_all()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn clonefile_path(source: &Path, destination: &Path) -> Result<(), io::Error> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn clonefile(source: *const c_char, destination: *const c_char, flags: c_int) -> c_int;
+    }
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
+    })?;
+    if unsafe { clonefile(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clonefile_path(_source: &Path, _destination: &Path) -> Result<(), io::Error> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "clonefile is only available on macOS",
+    ))
 }
 
 fn run_virt_customize(
@@ -1897,6 +2474,7 @@ mod tests {
         assert_eq!(EXIT_IMAGE_CUSTOMIZE_FAILED, 13);
         assert_eq!(EXIT_IMAGE_INVARIANT_FAILED, 14);
         assert_eq!(EXIT_IMAGE_STATE_FAILED, 15);
+        assert_eq!(EXIT_VM_DISK_PREP_FAILED, 16);
     }
 
     #[test]
@@ -2009,6 +2587,229 @@ mod tests {
     }
 
     #[test]
+    fn vm_create_options_accept_required_flags_in_any_order() {
+        let args = [
+            "--data-disk",
+            "64",
+            "web-1",
+            "--format",
+            "json",
+            "--from",
+            "ubuntu-base",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(args).unwrap(),
+            VmCreateOptions {
+                id: "web-1".to_string(),
+                from: "ubuntu-base".to_string(),
+                data_disk_gib: 64,
+                format: OutputFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn vm_create_rejects_unsafe_id_and_zero_data_disk() {
+        let unsafe_id = ["../web", "--from", "base", "--data-disk", "1"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(unsafe_id).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+        let zero_size = ["web", "--from", "base", "--data-disk", "0"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(zero_size).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+    }
+
+    #[test]
+    fn two_linked_clones_keep_base_read_only_and_get_sparse_data_disks() {
+        let directory = test_directory("vm-linked-clones");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+
+        for id in ["web-1", "web-2"] {
+            let result = create_vm_bundle_in_dirs(
+                &VmCreateOptions {
+                    id: id.to_string(),
+                    from: image.to_string_lossy().to_string(),
+                    data_disk_gib: 1,
+                    format: OutputFormat::Json,
+                },
+                &backend,
+                &images_directory,
+                &vms_directory,
+            )
+            .unwrap();
+            assert_eq!(result.clone_mode, CloneMode::Linked);
+            assert_eq!(
+                fs::read(&result.root_disk_path).unwrap(),
+                b"sealed base blocks"
+            );
+            assert_eq!(
+                fs::metadata(&result.data_disk_path).unwrap().len(),
+                1024 * 1024 * 1024
+            );
+        }
+
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o222,
+            0
+        );
+        assert_eq!(
+            backend.calls(),
+            vec!["linked", "sparse", "linked", "sparse"]
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn non_apfs_uses_documented_full_copy_fallback() {
+        let directory = test_directory("vm-full-clone");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("hfs");
+        let result = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                format: OutputFormat::Human,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+
+        assert_eq!(result.clone_mode, CloneMode::Full);
+        assert_eq!(backend.calls(), vec!["full", "sparse"]);
+        assert_eq!(vm_create_json(&result)["status"], "warn");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn clonefile_failure_is_exit_16_and_removes_partial_bundle() {
+        let directory = test_directory("vm-clone-failure");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::failing_clone("apfs");
+        let failure = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap_err();
+
+        assert_eq!(failure.code, EXIT_VM_DISK_PREP_FAILED);
+        assert!(failure.message.contains("clonefile failed"));
+        assert!(!vms_directory.join("web").exists());
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o222,
+            0
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn two_native_apfs_clonefiles_diverge_without_changing_shared_base() {
+        let directory = test_directory("vm-native-apfs");
+        fs::create_dir_all(&directory).unwrap();
+        if !filesystem_type(&directory).is_some_and(|value| value.eq_ignore_ascii_case("apfs")) {
+            fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        fs::create_dir_all(&images_directory).unwrap();
+        let image = directory.join("base.raw");
+        let original = vec![0x5a; 4 * 1024 * 1024];
+        fs::write(&image, &original).unwrap();
+        seal_image_in_dir(
+            &ImageSealOptions {
+                input: image.to_string_lossy().to_string(),
+                format: OutputFormat::Json,
+            },
+            &RecordingSealBackend::new("raw"),
+            &images_directory,
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        for id in ["native-a", "native-b"] {
+            let result = create_vm_bundle_in_dirs(
+                &VmCreateOptions {
+                    id: id.to_string(),
+                    from: image.to_string_lossy().to_string(),
+                    data_disk_gib: 1,
+                    format: OutputFormat::Human,
+                },
+                &NativeVmDiskBackend,
+                &images_directory,
+                &vms_directory,
+            )
+            .unwrap();
+            assert_eq!(result.clone_mode, CloneMode::Linked);
+            assert_eq!(fs::read(&result.root_disk_path).unwrap(), original);
+            results.push(result);
+        }
+        let mut clone = OpenOptions::new()
+            .write(true)
+            .open(&results[0].root_disk_path)
+            .unwrap();
+        clone.write_all(b"diverged").unwrap();
+        clone.sync_all().unwrap();
+        assert_eq!(fs::read(&image).unwrap(), original);
+        assert_ne!(fs::read(&results[0].root_disk_path).unwrap(), original);
+        assert_eq!(fs::read(&results[1].root_disk_path).unwrap(), original);
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o222,
+            0
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vm_create_json_matches_golden_contract() {
+        let result = VmCreateResult {
+            id: "web".to_string(),
+            bundle_path: PathBuf::from("/state/vms/web"),
+            source: ImageSealResult {
+                name: "ubuntu-base".to_string(),
+                source_path: PathBuf::from("/images/ubuntu-base.raw"),
+                image_format: "raw".to_string(),
+                marker_path: PathBuf::from("/images/ubuntu-base-abc.sealed.json"),
+                already_sealed: true,
+            },
+            root_disk_path: PathBuf::from("/state/vms/web/disk.raw"),
+            data_disk_path: PathBuf::from("/state/vms/web/dataDisk.raw"),
+            data_disk_gib: 64,
+            clone_mode: CloneMode::Linked,
+            filesystem: "apfs".to_string(),
+        };
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/vm-create.json")).unwrap();
+        assert_eq!(vm_create_json(&result), expected);
+    }
+
+    #[test]
     fn event_options_parse_filter_list() {
         let args = ["--filter", "vm.*,apply.*"].into_iter().map(str::to_string);
         assert_eq!(
@@ -2072,6 +2873,75 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn prepare_sealed_test_image(directory: &Path, images_directory: &Path) -> PathBuf {
+        fs::create_dir_all(images_directory).unwrap();
+        let image = directory.join("base.raw");
+        fs::write(&image, b"sealed base blocks").unwrap();
+        seal_image_in_dir(
+            &ImageSealOptions {
+                input: image.to_string_lossy().to_string(),
+                format: OutputFormat::Json,
+            },
+            &RecordingSealBackend::new("raw"),
+            images_directory,
+        )
+        .unwrap();
+        image
+    }
+
+    struct RecordingVmDiskBackend {
+        filesystem: String,
+        fail_clone: bool,
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl RecordingVmDiskBackend {
+        fn new(filesystem: &str) -> Self {
+            Self {
+                filesystem: filesystem.to_string(),
+                fail_clone: false,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn failing_clone(filesystem: &str) -> Self {
+            Self {
+                filesystem: filesystem.to_string(),
+                fail_clone: true,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl VmDiskBackend for RecordingVmDiskBackend {
+        fn filesystem_type(&self, _path: &Path) -> Option<String> {
+            Some(self.filesystem.clone())
+        }
+
+        fn clone_linked(&self, source: &Path, destination: &Path) -> Result<(), io::Error> {
+            self.calls.borrow_mut().push("linked");
+            if self.fail_clone {
+                return Err(io::Error::other("injected clonefile failure"));
+            }
+            fs::copy(source, destination).map(|_| ())
+        }
+
+        fn copy_full(&self, source: &Path, destination: &Path) -> Result<(), io::Error> {
+            self.calls.borrow_mut().push("full");
+            fs::copy(source, destination).map(|_| ())
+        }
+
+        fn create_sparse(&self, path: &Path, size_bytes: u64) -> Result<(), io::Error> {
+            self.calls.borrow_mut().push("sparse");
+            let file = File::create(path)?;
+            file.set_len(size_bytes)
+        }
     }
 
     struct RecordingSealBackend {

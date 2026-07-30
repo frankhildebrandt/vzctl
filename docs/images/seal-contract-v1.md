@@ -85,4 +85,6 @@ Bei JSON-Fehlern stimmen Prozess-Exitcode und `exit_code` im Envelope
   [ADR 0003](../adr/0003-apply-state.md).
 - Vor #23 soll [`vzctl doctor`](../doctor.md) bestätigen, dass das
   Images-Verzeichnis auf APFS liegt.
-
+- #23 konsumiert Marker und Read-only-State mit `vzctl vm create`; der
+  Clone-Pfad öffnet die Base nie writable. Siehe
+  [`p1-linked-clone.md`](../spikes/p1-linked-clone.md).

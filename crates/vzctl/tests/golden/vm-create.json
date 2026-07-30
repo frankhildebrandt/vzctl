@@ -1,0 +1,37 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "vm.create",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "VM bundle created",
+    "vm_id": "web",
+    "clone": "linked",
+    "warnings": 0
+  },
+  "vm": {
+    "id": "web",
+    "bundle": "/state/vms/web",
+    "managed-by": "vzctl"
+  },
+  "image": {
+    "name": "ubuntu-base",
+    "path": "/images/ubuntu-base.raw",
+    "marker": "/images/ubuntu-base-abc.sealed.json",
+    "read_only": true
+  },
+  "disks": {
+    "root": {
+      "path": "/state/vms/web/disk.raw",
+      "clone": "linked",
+      "read_only": false
+    },
+    "data": {
+      "path": "/state/vms/web/dataDisk.raw",
+      "size_gib": 64,
+      "sparse": true,
+      "read_only": false
+    }
+  },
+  "warnings": []
+}

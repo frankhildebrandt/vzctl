@@ -230,8 +230,8 @@ spec:
 ### Linked Clone / Identity
 
 1. ✅ Base mit Agent sealen (`role: base`, immutable) — #22
-2. **Next:** APFS `clonefile` + neues `dataDisk` — #23
-3. Auto: MACs, machine-id, Hostname, SSH Host Keys, instance-id
+2. ✅ APFS `clonefile` + neues `dataDisk` — #23
+3. **Next:** Auto: MACs, machine-id, Hostname, SSH Host Keys, instance-id — #24
 4. Disk-Lifecycle: Seal nie schreiben; purge löscht Clone+dataDisk; Base bleibt
 
 ### v0.2 Auszug

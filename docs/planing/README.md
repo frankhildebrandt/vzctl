@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P1 / #23** — #22 Base Seal ist implementiert. Als Nächstes APFS Linked
-Clones plus `dataDisk`, danach #24 Identity-Reset. Der weitere
+**P1 / #24** — #22 Base Seal und #23 APFS Linked Clones plus `dataDisk` sind
+implementiert. Als Nächstes folgt #24 Identity-Reset. Der weitere
 commandspezifische CLI-Surface bleibt unter #17 nachvollziehbar.

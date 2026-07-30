@@ -189,16 +189,16 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 + CLI + Seal">
-        P0 Foundation closed. P1: #18/#19 Contracts ✅, #22 <Code>image seal</Code> ✅.
-        Next: #23 APFS <Code>clonefile</Code> + dataDisk (#21 Epic).
+      <Callout tone="success" title="P0 + CLI + Seal + Clones">
+        P0 Foundation closed. P1: #18/#19 Contracts, #22 seal, #23 linked clone +
+        dataDisk ✅. Next: #24 Identity-Reset (#21 Epic).
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
-        <Stat value="Go" label="G0 Gate" tone="success" />
         <Stat value="#22✓" label="image seal" tone="success" />
-        <Stat value="#23" label="clones next" tone="info" />
+        <Stat value="#23✓" label="linked clone" tone="success" />
+        <Stat value="#24" label="identity next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -684,9 +684,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          P1 #21 läuft: #22 <Code>image seal</Code> closed. Next: #23{" "}
-          <Code>clonefile</Code> + leeres <Code>dataDisk</Code> (Base nie
-          writable), danach #24 Identity-Reset.
+          P1 #21: #22/#23 closed. Next: #24 Identity-Reset (MAC, machine-id,
+          hostname, SSH keys, instance-id) pro Clone/NoCloud-Seed — sealed Base
+          unverändert.
         </Callout>
       </Stack>
 

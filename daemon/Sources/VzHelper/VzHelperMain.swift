@@ -380,17 +380,17 @@ enum VzHelperMain {
         Usage:
           vz-helper version
           vz-helper run --vm-id <id> --bundle <dir>
-            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--disk <raw>] [--data-disk <raw>] [--cidata <iso>] [--agent-token <file>]
             [--supervisor-sock <path>]
           vz-helper agent-smoke --vm-id <id> --bundle <dir>
-            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--disk <raw>] [--data-disk <raw>] [--cidata <iso>] [--agent-token <file>]
             [--time-hint handshake|wake|manual]
           vz-helper launchd-plist --vm-id <id> --bundle <dir>
-            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--disk <raw>] [--data-disk <raw>] [--cidata <iso>] [--agent-token <file>]
             [--supervisor-sock <path>]
             [--executable <path>]
 
-        Bundle defaults: disk.raw, optional cidata.iso, agent.token, generated nvram.bin.
+        Bundle defaults: disk.raw, optional dataDisk.raw/cidata.iso, agent.token, generated nvram.bin.
         run sends time_hint after agent handshake and after detected host wake when agent.token exists.
         agent-smoke --time-hint sends one hint and skips the destructive exec/down checks.
         Development only: --mock holds lifecycle/lock without creating a VM.
@@ -426,6 +426,9 @@ enum LaunchdPlist {
             "--supervisor-sock", run.supervisorSocket,
             "--agent-token", run.agentTokenURL.path,
         ]
+        if let dataDisk = run.dataDiskURL {
+            arguments += ["--data-disk", dataDisk.path]
+        }
         if let cidata = run.cidataURL {
             arguments += ["--cidata", cidata.path]
         }
