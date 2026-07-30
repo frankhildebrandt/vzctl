@@ -26,7 +26,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | # | Epic | Milestone | Status |
 |---|---|---|---|
 | [#1](https://github.com/frankhildebrandt/vzctl/issues/1) | G0 Netzwerk-/DNS-/Crash-Spike | G0 | **closed** (Go) |
-| [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | open (ADR ✅, Impl offen) |
+| [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | **closed** |
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | open |
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | open |
@@ -51,11 +51,11 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 
 | # | Story | Scaffold |
 |---|---|---|
-| [#9](https://github.com/frankhildebrandt/vzctl/issues/9) | Supervisor UDS + SQLite | Kit-Typen da |
-| [#10](https://github.com/frankhildebrandt/vzctl/issues/10) | Helper launchd + VZ | Binary-Stub |
-| [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | macOS-Check Stub |
-| [#11](https://github.com/frankhildebrandt/vzctl/issues/11) | Helper Reconnect | Spec |
-| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) ff. | Guest-Agent | offen |
+| [#9](https://github.com/frankhildebrandt/vzctl/issues/9) | Supervisor UDS + SQLite | **closed** (`11f0eaa`) |
+| [#10](https://github.com/frankhildebrandt/vzctl/issues/10) | Helper launchd + VZ | **closed** (Commit ausstehend) |
+| [#11](https://github.com/frankhildebrandt/vzctl/issues/11) | Helper Reconnect | **closed** |
+| [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | macOS + supervisor health |
+| [#12](https://github.com/frankhildebrandt/vzctl/issues/12) / [#13](https://github.com/frankhildebrandt/vzctl/issues/13) | Guest-Agent vsock | ← **next** |
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Time-Sync nach Sleep | G0 Prozedur deferred |
 
 Stories sind als **Sub-Issues** unter den Epics verknüpft.

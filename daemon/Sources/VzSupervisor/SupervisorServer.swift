@@ -31,6 +31,7 @@ final class SupervisorServer: @unchecked Sendable {
     private var listener: Int32 = -1
     private var ownsSocket = false
     private let database: StateDatabase
+    private var helpers: [String: HelperRecord] = [:]
 
     init(stateDirectory: URL) throws {
         try FileManager.default.createDirectory(
@@ -158,7 +159,27 @@ final class SupervisorServer: @unchecked Sendable {
         case "daemon.version":
             return JSONRPCResponse(result: .string(VzDaemonKit.version), id: request.id ?? .null)
         case "vm.list":
-            return JSONRPCResponse(result: .array([]), id: request.id ?? .null)
+            let records = stateLock.withLock {
+                helpers.values.sorted { $0.vmID < $1.vmID }
+            }
+            return JSONRPCResponse(
+                result: .array(records.map(\.json)),
+                id: request.id ?? .null
+            )
+        case "helper.hello", "helper.state":
+            guard let record = HelperRecord(params: request.params) else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -32602, message: "Invalid helper params"),
+                    id: request.id ?? .null
+                )
+            }
+            stateLock.withLock {
+                helpers[record.vmID] = record
+            }
+            return JSONRPCResponse(
+                result: .object(["ok": .bool(true)]),
+                id: request.id ?? .null
+            )
         default:
             return JSONRPCResponse(
                 error: JSONRPCError(code: -32601, message: "Method not found"),
@@ -223,5 +244,46 @@ final class SupervisorServer: @unchecked Sendable {
             }
             return true
         }
+    }
+}
+
+private struct HelperRecord: Sendable {
+    let vmID: String
+    let state: String
+    let pid: Int
+    let bundle: String
+    let updatedAt: String
+
+    init?(params: JSONValue?) {
+        guard case let .object(values) = params,
+              case let .string(vmID)? = values["vm_id"],
+              case let .string(state)? = values["state"],
+              case let .number(pid)? = values["pid"],
+              case let .string(bundle)? = values["bundle"],
+              !vmID.isEmpty,
+              !bundle.isEmpty,
+              pid.isFinite,
+              pid >= 1,
+              pid <= Double(Int.max),
+              pid.rounded() == pid,
+              ["starting", "running", "stopped", "failed"].contains(state)
+        else {
+            return nil
+        }
+        self.vmID = vmID
+        self.state = state
+        self.pid = Int(pid)
+        self.bundle = bundle
+        updatedAt = ISO8601DateFormatter().string(from: Date())
+    }
+
+    var json: JSONValue {
+        .object([
+            "vm_id": .string(vmID),
+            "state": .string(state),
+            "pid": .number(Double(pid)),
+            "bundle": .string(bundle),
+            "updated_at": .string(updatedAt),
+        ])
     }
 }

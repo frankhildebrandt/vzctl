@@ -63,7 +63,7 @@ enum VzSupervisorMain {
         case "help", "-h", "--help":
             print(
                 """
-                vz-supervisor — stack supervisor (P0 stub)
+                vz-supervisor — stack supervisor (P0)
 
                 Commands:
                   version
@@ -72,7 +72,8 @@ enum VzSupervisorMain {
                   help
 
                 Owns: vmnet registry, DNS listeners, apply journal (ADR 0002/0003).
-                Spawns: vz-helper per VM via launchd (not yet wired).
+                Accepts: helper.hello/helper.state and exposes records via vm.list.
+                Helper launchd jobs are standalone in #10; supervisor spawning follows.
                 """
             )
         default:

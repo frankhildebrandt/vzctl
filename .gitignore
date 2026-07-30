@@ -11,6 +11,13 @@ node_modules/
 dist/
 spikes/g0/assets/*.raw
 spikes/g0/assets/*.img
+
+# VM helper bundles / local boot assets
+*.raw
+*.img
+*.qcow2
+*.iso
+nvram.bin
 spikes/g0/assets/*.iso
 spikes/g0/assets/*.nvram
 spikes/g0/.build/

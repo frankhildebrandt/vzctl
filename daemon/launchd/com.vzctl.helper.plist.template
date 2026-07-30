@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Production values are XML-escaped by `vz-helper launchd-plist`. -->
+    <key>Label</key>
+    <string>com.vzctl.helper.__VM_ID__</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HELPER_PATH__</string>
+        <string>run</string>
+        <string>--vm-id</string>
+        <string>__VM_ID__</string>
+        <string>--bundle</string>
+        <string>__BUNDLE_PATH__</string>
+        <string>--supervisor-sock</string>
+        <string>__SUPERVISOR_SOCKET__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__ERROR_LOG_PATH__</string>
+</dict>
+</plist>
