@@ -2,7 +2,8 @@
 
 - **Issue:** #22 unter Epic #21
 - **Stand:** Code- und Offline-Smoke abgeschlossen
-- **Builder:** Linux mit `qemu-img` und `libguestfs-tools`
+- **Builder:** Linux mit `qemu-img` und `libguestfs-tools` **oder** macOS mit
+  gepinnter Builder-Appliance (`scripts/build-builder-appliance.sh`, Decision 25)
 
 ## Ergebnis
 
@@ -36,8 +37,8 @@ nicht erlaubt.
 - [x] Human- und JSON-Ausgabe folgen CLI Contract v1.
 - [x] Marker + Read-only-Modus machen den Command idempotent.
 - [x] Offline-Tests decken Auflösung, Pipeline, Marker und Golden-JSON ab.
-- [ ] Reales großes Ubuntu-Image auf dem Linux-Builder ausführen
-  (Operations-Smoke, kein Code-Blocker).
+- [ ] Reales großes Ubuntu-Image: Appliance cachen, dann
+  `vzctl image bake` + `vzctl image seal` auf macOS (Ops-Smoke)
 
 ## Folge
 

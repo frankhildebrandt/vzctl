@@ -150,7 +150,7 @@ spec:
 | P0 | Foundation | 1–3 | **Scaffold da** (`crates/vzctl`, `daemon/`); UDS/Journal/launchd/Agent folgen |
 | P1 | CLI + Clones | 2–4 | JSON-CLI, Exitcodes, events schema, Seal/clonefile, Identity |
 | P2 | Net + DNS | 3–5 | vmnet, IP-Modell, Dual-DNS, macOS-Resolver, Router+Policy |
-| P3 | Stacks | 5–7 | **#36 Schema/Validate + #37 Reconciler ✅**; #38 CI/Integration folgt |
+| P3 | Stacks | 5–7 | **#36/#37/#38 implementiert**; GitHub-CI/Close und Epic-DoD (`ps`, `adopt`) ausstehend |
 | P4 | Docker + Ports | 7–9 | Docker-Context (SSH), Ports; **kein** virtiofs-Muss |
 | P4b | v0.1.x | nach Alpha | virtiofs + Docker-Polish + Logs/Diagnose |
 | P5 | Ingress + CA + OIDC | **v0.2** | Caddy, CA→Guests, Dex |
@@ -303,7 +303,7 @@ oidc:
 vzctl up|down|apply|diff|ps|validate|adopt
 vzctl apply --resume|--abort
 vzctl vm create|start|stop|delete|list|info|exec|console|logs
-vzctl image pull|seal
+vzctl image pull|bake|seal
 vzctl net create|attach|list
 vzctl route add|apply
 vzctl policy apply

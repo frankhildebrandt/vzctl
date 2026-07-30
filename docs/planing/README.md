@@ -27,6 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P3 / #37 abgeschlossen** — `plan|diff|up|down|apply` mit SQLite-Lease,
-Journal Resume/Abort und Apply-Events. Der nächste Slice ist **#38**
-`examples/edge-dmz` Referenz-Env + CI validate/diff (Epic #34).
+**P3 / #38 lokal implementiert** — `examples/edge-dmz` ist vollständig und
+CI führt `validate`, `plan` und `diff` gegen einen isolierten Supervisor aus.
+Ausstehend sind GitHub-CI/Close sowie die Epic-#34-DoD-Prüfung: `ps` fehlt,
+`adopt` ist bisher minimal.

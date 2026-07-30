@@ -24,7 +24,7 @@ const PHASES = [
   { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor", done: true },
   { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity", done: true },
   { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
-  { id: "P3", name: "Stacks", weeks: "5–7", goal: "Schema+Validate+Reconciler ✅ · next: CI/Integration (#38)", done: false },
+  { id: "P3", name: "Stacks", weeks: "5–7", goal: "#36/#37/#38 implementiert · CI/Close + Epic-DoD pending", done: false },
   { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: false },
   { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
   { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
@@ -215,14 +215,24 @@ export default function VzHypervisorImplementationsplan() {
         #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
 
-      <Callout tone="success" title="P3 Stack-Reconciler #37 implementiert">
+      <Callout tone="success" title="P3 Stack-Reconciler + Referenz-Env implementiert">
         #36 implementiert <Code>hypernetwork/v1</Code> als Serde-Typen plus
         exportierbares JSON Schema. <Code>vzctl validate -C</Code> prüft Schema,
         Referenzen, IPv4/CIDR, DependsOn-DAG und DHCP/static-Kollisionen mit
         JSON-Pfaden. #52 ergänzt 14 ARM64-<Code>*-latest</Code>-Aliase,
         Digestprüfung und den content-addressed Raw-Store. #37 ergänzt
         Plan/Diff/Up/Down/Apply, SQLite-Journal/Lease, Resume/Abort und
-        UI-Events. Next: #38 CI/Integration.
+        UI-Events. #38 ergänzt edge-dmz Cloud-Init, README sowie reale
+        Validate/Plan/Diff-CI. GitHub-CI/Close und Epic-DoD bleiben offen.
+      </Callout>
+
+      <Callout tone="success" title="Builder-VM Bake/Seal auf macOS">
+        Decision 25: Bake/Seal nutzen lokales <Code>virt-customize</Code> oder
+        eine gepinnte Builder-Appliance (ephemerer Helper, Ziel als Data-Disk).
+        Workflow <Code>pull → bake → seal</Code>. Contracts getrennt
+        (<Code>bake-contract-v1</Code>, <Code>seal-contract-v1</Code>). Ops-Residual:
+        Appliance einmalig auf ARM64-Linux bauen und unter{" "}
+        <Code>images/builder/</Code> cachen.
       </Callout>
 
       <Grid columns={6} gap={12}>
@@ -358,7 +368,7 @@ export default function VzHypervisorImplementationsplan() {
                 Journal-Runtime · apply --resume|--abort · Lease · Lockfile (#37)
               </Struck>
               <Text size="small" tone="secondary">
-                Offen: adopt-Polish · Example/CI (#38)
+                Epic-DoD offen: <Code>ps</Code> fehlt · <Code>adopt</Code> minimal
               </Text>
             </Stack>
           </CardBody>
@@ -528,7 +538,8 @@ export default function VzHypervisorImplementationsplan() {
             </CardHeader>
             <CardBody>
               <Struck>
-                Sealed, immutable, Guest-Agent vorinstalliert. vzctl image seal
+                Sealed, immutable, Guest-Agent vorinstalliert. pull → bake →
+                seal (Builder-VM oder lokal virt-customize).
               </Struck>
             </CardBody>
           </Card>
@@ -693,7 +704,7 @@ spec:
         <Stack gap={4}>
           <Struck>vzctl validate · --schema</Struck>
           <Struck>vzctl vm create|… (create/from/data-disk/role)</Struck>
-          <Struck>vzctl image pull|seal</Struck>
+          <Struck>vzctl image pull|bake|seal</Struck>
           <Struck>vzctl net create|attach|list|detach|delete|default</Struck>
           <Struck>vzctl route apply|plan|status</Struck>
           <Struck>vzctl dns query|install-resolver|uninstall-resolver</Struck>
@@ -701,7 +712,7 @@ spec:
           <Struck>vzctl plan|diff|up|down|apply [--force|--resume|--abort]</Struck>
           <Text size="small" tone="secondary">
             Offen: <Code>ps|adopt</Code>-Polish · <Code>vm logs</Code> ·{" "}
-            <Code>docker …</Code> · Example/CI (#38) · v0.2{" "}
+            <Code>docker …</Code> · v0.2{" "}
             <Code>ingress|certs|oidc</Code>
           </Text>
         </Stack>
@@ -728,7 +739,7 @@ spec:
               ? "done"
               : e.done === "partial"
                 ? e.n === 34
-                  ? "#36/#37/#52 ✓ · #38 next"
+                  ? "#36/#37/#38/#52 ✓ · DoD pending"
                   : "contract ✓ · CLI surface rest"
                 : "open",
           ])}
@@ -755,7 +766,9 @@ spec:
           und Projekt-Search-Domain. #36: hypernetwork/v1 Schema, Serde und
           Validate mit JSON-Pfaden. #52: ARM64 Image-Pull mit 14 Aliasen,
           Digestprüfung und Raw-Normalisierung. #37: Plan/Diff/Up/Down/Apply
-          mit SQLite-Lease, Journal Resume/Abort und Apply-Events. Next: #38.
+          mit SQLite-Lease, Journal Resume/Abort und Apply-Events. #38:
+          edge-dmz Referenz-Env plus Validate/Plan/Diff-CI. Epic-DoD:
+          <Code>ps</Code> fehlt, <Code>adopt</Code> ist minimal.
         </Callout>
       </Stack>
 
@@ -767,7 +780,7 @@ spec:
   guest-agent/      # Go vzctl-agent + systemd + NoCloud seed
   docs/adr/         # 0001–0003 Accepted
   docs/specs/       # guest-agent-v1, cli-contract-v1, hypernetwork-v1, events-v1
-  docs/images/      # seal + pull contracts
+  docs/images/      # seal + bake + pull contracts
   docs/spikes/      # g0/p0/p1 spikes
   examples/edge-dmz/
   spikes/g0/        # G0 measurement harness
