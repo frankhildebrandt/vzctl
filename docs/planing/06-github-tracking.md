@@ -39,6 +39,8 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 
 Stories sind als **Sub-Issues** unter den Epics verknüpft; **blocked-by** Dependencies folgen dem Plan (G0 → Ownership → …).
 
+Issue-Bodies sind **implementationsreif** formatiert (Summary, Findings, Scope, Acceptance, Quellen) und enthalten Canvas-/Plan-Details, soweit sie Fable/SOL nicht widersprechen.
+
 ## Label-Schema
 
 - `type:` epic | story | spike | adr | chore
