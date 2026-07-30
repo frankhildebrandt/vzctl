@@ -15,6 +15,7 @@ let package = Package(
             name: "VzSupervisor",
             dependencies: ["VzDaemonKit"],
             linkerSettings: [
+                .linkedLibrary("sqlite3"),
                 .linkedFramework("vmnet"),
                 .linkedFramework("Virtualization"),
             ]
@@ -26,6 +27,10 @@ let package = Package(
                 .linkedFramework("Virtualization"),
                 .linkedFramework("vmnet"),
             ]
+        ),
+        .testTarget(
+            name: "VzDaemonKitTests",
+            dependencies: ["VzDaemonKit"]
         ),
     ]
 )
