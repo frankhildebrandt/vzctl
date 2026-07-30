@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P3 / #52 abgeschlossen** — `vzctl image pull` für 14 `*-latest`-Aliase mit
-Digestprüfung und content-addressed Raw-Store. Der nächste Slice ist
-**#37** Reconcile-/Apply-Engine (Epic #34, ADR 0003).
+**P3 / #37 abgeschlossen** — `plan|diff|up|down|apply` mit SQLite-Lease,
+Journal Resume/Abort und Apply-Events. Der nächste Slice ist **#38**
+`examples/edge-dmz` Referenz-Env + CI validate/diff (Epic #34).

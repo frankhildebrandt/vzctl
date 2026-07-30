@@ -77,7 +77,7 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `6` | Apply-Lease wird von anderem Holder gehalten | ADR 0003 |
 | `10` | Supervisor-Socket oder Health fehlerhaft | `doctor` |
 | `11` | Host-Baseline macOS 26 nicht erfüllt/nicht ermittelbar | `doctor` |
-| `12` | Command/Backend noch nicht verfügbar oder implementiert | Alpha-Stub |
+| `12` | Command/Backend noch nicht verfügbar oder implementiert | Alpha |
 | `13` | Image-Customization fehlgeschlagen | `image seal` |
 | `14` | Image-Invariante/Preservation fehlgeschlagen | `image seal` |
 | `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
@@ -89,12 +89,12 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `21` | Image-Netzwerk-/Metadatenfehler | Download, Release-Metadaten |
 | `22` | Image-Checksum fehlgeschlagen | Upstream-/lokaler Digest-Mismatch |
 | `23` | Image-Architektur unsupported | `image pull` ist ARM64-only |
+| `24` | Reconciler-Step fehlgeschlagen | `up`, `apply`, `down` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
-liefern. `apply` verwendet nach Anschluss der Journal-Logik `5` und `6`; der
-aktuelle syntaktisch gültige Stub liefert bis dahin `12`. Ungültige
-`apply`-Flags liefern `2`, widersprüchliche `--resume --abort` liefern `3`.
+liefern. `apply` verwendet `5` und `6` für Journal/Lease. Ungültige
+Reconciler-Flags liefern `2`, widersprüchliche `--resume --abort` liefern `3`.
 
 ## Commands v1 (erster Slice)
 
@@ -107,12 +107,37 @@ Payload: `version.cli`. Erfolg ist `status=ok`, Exit `0`.
 Payload: `checks[]` mit stabilen Check-IDs. Die Summary enthält `ok`,
 `warnings` und `failures`. Exitcodes: `0`, `3`, `10`, `11`.
 
-### `vzctl apply` (Stub)
+### `vzctl plan|diff|up|apply|down|adopt`
 
-Der Stub validiert `--resume` und `--abort`, führt aber noch keine
-Journal-Operation aus. Gültige Aufrufe liefern Diagnostic auf stderr und Exit
-`12`. Die spätere Journal-Implementierung muss die ADR-0003-Zustände auf `5`
-und `6` abbilden.
+```bash
+vzctl plan|diff [-C <directory|config>] [--format human|json]
+vzctl up [-C <directory|config>] [--force] [--format human|json]
+vzctl apply [-C <directory|config>] [--force|--resume|--abort] [--format human|json]
+vzctl down [-C <directory|config>] [--purge] [--format human|json]
+vzctl adopt [-C <directory|config>] [--format human|json]
+```
+
+Alle Commands verwenden zuerst denselben `hypernetwork/v1`-Validator wie
+`vzctl validate`. `plan` und `diff` lesen nur Desired YAML und den bekannten
+Actual-State aus Supervisor-SQLite. `up` erzeugt fehlende Ressourcen und
+startet gestoppte VMs, löscht aber nichts. `apply` korrigiert Drift; VM- und
+Netz-Recreates sowie Deletes sind `breaking` und benötigen interaktive
+Bestätigung oder `--force`. `down` stoppt in umgekehrter `dependsOn`-Reihenfolge.
+`down --purge` löscht ausschließlich Ressourcen mit `managed-by=vzctl` und
+passender Project-/Stack-Zuordnung. `adopt` ist in diesem Slice minimal und
+meldet ohne sichere Lockfile-Orphans einen unveränderten Plan.
+
+Das JSON-Envelope enthält `stack_id`, optional `journal` und `actions[]` mit
+`action`, `kind`, `name`, `breaking` und `reason`. Ein unveränderter Plan bzw.
+ein wiederholtes erfolgreiches `apply` liefert `actions=[]`, Exit `0`.
+
+Ein incomplete Journal blockiert neue Operationen mit Exit `5`.
+`apply --resume` setzt beim gespeicherten Step und derselben Desired-Generation
+fort; `apply --abort` markiert die Operation als abgebrochen und gibt nur die
+Lease frei. Eine aktive Lease eines anderen Holders liefert Exit `6`. Fehler
+innerhalb eines Reconciler-Steps bleiben als `failed` resumierbar und liefern
+Exit `24`, soweit das aufgerufene Primitive keinen spezifischeren v1-Exitcode
+liefert.
 
 ### `vzctl validate`
 

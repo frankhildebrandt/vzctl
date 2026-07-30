@@ -150,7 +150,7 @@ spec:
 | P0 | Foundation | 1–3 | **Scaffold da** (`crates/vzctl`, `daemon/`); UDS/Journal/launchd/Agent folgen |
 | P1 | CLI + Clones | 2–4 | JSON-CLI, Exitcodes, events schema, Seal/clonefile, Identity |
 | P2 | Net + DNS | 3–5 | vmnet, IP-Modell, Dual-DNS, macOS-Resolver, Router+Policy |
-| P3 | Stacks | 5–7 | **#36 Schema/Validate ✅**; #37 up/down/apply + Lease + Resume folgt |
+| P3 | Stacks | 5–7 | **#36 Schema/Validate + #37 Reconciler ✅**; #38 CI/Integration folgt |
 | P4 | Docker + Ports | 7–9 | Docker-Context (SSH), Ports; **kein** virtiofs-Muss |
 | P4b | v0.1.x | nach Alpha | virtiofs + Docker-Polish + Logs/Diagnose |
 | P5 | Ingress + CA + OIDC | **v0.2** | Caddy, CA→Guests, Dex |
@@ -177,7 +177,7 @@ spec:
 
   images:
     ubuntu-base:
-      from: ubuntu:24.04
+      from: ubuntu-latest
       role: base
       # guest-agent vorinstalliert vor seal
 
@@ -290,7 +290,7 @@ oidc:
 7. vmnet nets + Router routes + policies — P2  
 8. Dual-DNS (Host+Guest Listener) + forward + `dns query` — P2  
 9. macOS `/etc/resolver/*.vz.test` install/cleanup — P2 ✅ #27
-10. hypernetwork/v1 Schema + Validate ✅ #36; reconcile up/down/apply + lease + resume — P3 #37
+10. hypernetwork/v1 Schema + Validate ✅ #36; reconcile up/down/apply + lease + resume ✅ #37
 11. Docker SSH-context + ports (basic) — P4  
 12. v0.1.x: virtiofs spike + Docker polish — P4b  
 13. v0.2: Caddy + Dex + CA rollout + hostAliases — P5  

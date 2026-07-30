@@ -746,7 +746,7 @@ fn requested_format(args: &[String]) -> Format {
         .unwrap_or(Format::Human)
 }
 
-fn config_path(path: &Path) -> PathBuf {
+pub(crate) fn config_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.join(CONFIG_FILE)
     } else {

@@ -12,7 +12,7 @@ spec:
     forward: { enabled: true, upstream: system }
   images:
     ubuntu-base:
-      from: ubuntu:24.04
+      from: ubuntu-latest
       role: base
   networks:
     dmz:

@@ -35,6 +35,7 @@ final class SupervisorServer: @unchecked Sendable {
     private let networkRegistry: NetworkRegistry
     private let dnsServer: DNSServer
     private var helpers: [String: HelperRecord] = [:]
+    private var helperProcesses: [String: Process] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
 
     init(stateDirectory: URL) throws {
@@ -214,6 +215,81 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .array(records.map(\.json)),
                 id: request.id ?? .null
             )
+        case "vm.start":
+            do {
+                let params = try objectParams(request.params, context: "vm.start")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                let bundle = try requiredReconcileString("bundle", from: params)
+                if let current = stateLock.withLock({ helpers[vmID] }),
+                   current.state == "starting" || current.state == "running"
+                {
+                    return JSONRPCResponse(result: current.json, id: request.id ?? .null)
+                }
+                let helperURL = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("vz-helper")
+                guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
+                    throw ReconcileRPCError.invalid("vz-helper not found at \(helperURL.path)")
+                }
+                let process = Process()
+                process.executableURL = helperURL
+                process.arguments = [
+                    "run", "--vm-id", vmID, "--bundle", bundle,
+                    "--supervisor-sock", socketPath,
+                ]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.standardError
+                process.terminationHandler = { [weak self] process in
+                    _ = self?.stateLock.withLock {
+                        self?.helperProcesses.removeValue(forKey: vmID)
+                        self?.helpers.removeValue(forKey: vmID)
+                    }
+                    self?.emit(type: "vm.state", data: [
+                        "vm_id": .string(vmID),
+                        "state": .string(process.terminationStatus == 0 ? "stopped" : "failed"),
+                        "pid": .number(Double(process.processIdentifier)),
+                        "bundle": .string(bundle),
+                    ])
+                }
+                try process.run()
+                stateLock.withLock { helperProcesses[vmID] = process }
+                let result = JSONValue.object([
+                    "vm_id": .string(vmID),
+                    "state": .string("starting"),
+                    "pid": .number(Double(process.processIdentifier)),
+                    "bundle": .string(bundle),
+                ])
+                emit(type: "vm.state", data: [
+                    "vm_id": .string(vmID),
+                    "state": .string("starting"),
+                    "pid": .number(Double(process.processIdentifier)),
+                    "bundle": .string(bundle),
+                ])
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
+        case "vm.stop":
+            do {
+                let params = try objectParams(request.params, context: "vm.stop")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                let record = stateLock.withLock { helpers[vmID] }
+                if let record, record.state == "starting" || record.state == "running" {
+                    guard Darwin.kill(pid_t(record.pid), SIGTERM) == 0 || errno == ESRCH else {
+                        throw SupervisorError.system("stop helper \(vmID)", errno)
+                    }
+                } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
+                          process.isRunning
+                {
+                    process.terminate()
+                }
+                return JSONRPCResponse(
+                    result: .object(["vm_id": .string(vmID), "state": .string("stopped")]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
         case "net.create":
             do {
                 let params = try networkParams(request.params)
@@ -495,41 +571,129 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
             )
-        case "apply.stub":
-            guard case let .object(params)? = request.params,
-                  case let .string(invocationID)? = params["invocation_id"],
-                  case let .string(mode)? = params["mode"],
-                  !invocationID.isEmpty,
-                  ["apply", "resume", "abort"].contains(mode)
-            else {
+        case "stack.inspect":
+            do {
+                let params = try objectParams(request.params, context: "stack.inspect")
+                let stackID = try requiredReconcileString("stack_id", from: params)
+                let state = try database.stackState(stackID: stackID)
+                return JSONRPCResponse(result: state.json, id: request.id ?? .null)
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
+        case "stack.begin":
+            do {
+                let params = try objectParams(request.params, context: "stack.begin")
+                let stackID = try requiredReconcileString("stack_id", from: params)
+                let holder = try requiredReconcileString("holder", from: params)
+                let desiredHash = try requiredReconcileString("desired_hash", from: params)
+                let mode = try requiredReconcileString("mode", from: params)
+                guard ["up", "apply", "down", "resume"].contains(mode) else {
+                    throw ReconcileRPCError.invalid("invalid reconcile mode")
+                }
+                let purge = optionalBool("purge", from: params) ?? false
+                let payload = try jsonString([
+                    "desired_hash": .string(desiredHash),
+                    "mode": .string(mode),
+                    "purge": .bool(purge),
+                ])
+                let journal = try database.beginApply(
+                    stackID: stackID,
+                    holder: holder,
+                    desiredHash: desiredHash,
+                    payload: payload,
+                    resume: mode == "resume"
+                )
+                let common: [String: JSONValue] = [
+                    "invocation_id": .string(journal.id),
+                    "mode": .string(mode),
+                    "stack_id": .string(stackID),
+                    "generation": .number(Double(journal.generation)),
+                ]
+                emit(type: "apply.started", data: common)
+                return JSONRPCResponse(result: journal.json, id: request.id ?? .null)
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
+        case "stack.step":
+            do {
+                let params = try objectParams(request.params, context: "stack.step")
+                let requestedStatus = try requiredReconcileString("status", from: params)
+                guard ["running", "completed", "failed"].contains(requestedStatus) else {
+                    throw ReconcileRPCError.invalid("invalid journal step status")
+                }
+                let journal = try database.advanceApply(
+                    id: try requiredReconcileString("id", from: params),
+                    stackID: try requiredReconcileString("stack_id", from: params),
+                    holder: try requiredReconcileString("holder", from: params),
+                    step: try requiredReconcileString("step", from: params),
+                    status: requestedStatus == "completed" ? "running" : requestedStatus,
+                    error: optionalReconcileString("error", from: params)
+                )
+                emit(type: "apply.step", data: [
+                    "invocation_id": .string(journal.id),
+                    "step": .string(journal.step),
+                    "status": .string(requestedStatus == "completed" ? "done" : journal.status),
+                    "error": journal.error.map(JSONValue.string) ?? .null,
+                ])
+                if requestedStatus == "failed" {
+                    emit(type: "apply.failed", data: [
+                        "invocation_id": .string(journal.id),
+                        "mode": .string(journal.operationMode ?? "apply"),
+                        "step": .string(journal.step),
+                        "exit_code": .number(24),
+                        "error": journal.error.map(JSONValue.string) ?? .string("step_failed"),
+                    ])
+                }
+                return JSONRPCResponse(result: journal.json, id: request.id ?? .null)
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
+        case "stack.finish":
+            do {
+                let params = try objectParams(request.params, context: "stack.finish")
+                let id = try requiredReconcileString("id", from: params)
+                let stackID = try requiredReconcileString("stack_id", from: params)
+                let holder = try requiredReconcileString("holder", from: params)
+                let operationMode = try database.stackState(stackID: stackID)
+                    .journal?.operationMode ?? "apply"
+                guard let resources = params["resources"] else {
+                    throw ReconcileRPCError.invalid("missing resources")
+                }
+                try database.finishApply(
+                    id: id,
+                    stackID: stackID,
+                    holder: holder,
+                    resourcesJSON: try jsonString(resources)
+                )
+                emit(type: "apply.finished", data: [
+                    "invocation_id": .string(id),
+                    "mode": .string(operationMode),
+                    "stack_id": .string(stackID),
+                    "exit_code": .number(0),
+                ])
                 return JSONRPCResponse(
-                    error: JSONRPCError(code: -32602, message: "Invalid apply event params"),
+                    result: .object(["ok": .bool(true), "id": .string(id)]),
                     id: request.id ?? .null
                 )
+            } catch {
+                return reconcileErrorResponse(error, request: request)
             }
-            let common: [String: JSONValue] = [
-                "invocation_id": .string(invocationID),
-                "mode": .string(mode),
-            ]
-            emit(type: "apply.started", data: common)
-            emit(
-                type: "apply.step",
-                data: common.merging([
-                    "step": .string("reconcile"),
-                    "status": .string("unavailable"),
-                ]) { _, new in new }
-            )
-            emit(
-                type: "apply.failed",
-                data: common.merging([
-                    "exit_code": .number(12),
-                    "error": .string("not_implemented"),
-                ]) { _, new in new }
-            )
-            return JSONRPCResponse(
-                result: .object(["ok": .bool(true)]),
-                id: request.id ?? .null
-            )
+        case "stack.abort":
+            do {
+                let params = try objectParams(request.params, context: "stack.abort")
+                let stackID = try requiredReconcileString("stack_id", from: params)
+                let holder = try requiredReconcileString("holder", from: params)
+                let journal = try database.abortApply(stackID: stackID, holder: holder)
+                emit(type: "apply.finished", data: [
+                    "invocation_id": .string(journal.id),
+                    "mode": .string("abort"),
+                    "stack_id": .string(stackID),
+                    "exit_code": .number(0),
+                ])
+                return JSONRPCResponse(result: journal.json, id: request.id ?? .null)
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
         default:
             return JSONRPCResponse(
                 error: JSONRPCError(code: -32601, message: "Method not found"),
@@ -677,6 +841,85 @@ final class SupervisorServer: @unchecked Sendable {
             error: JSONRPCError(code: routeError.rpcCode, message: routeError.description),
             id: request.id ?? .null
         )
+    }
+
+    private func reconcileErrorResponse(
+        _ error: Error,
+        request: JSONRPCRequest
+    ) -> JSONRPCResponse {
+        let code: Int
+        let message: String
+        switch error {
+        case let ReconcileDatabaseError.incomplete(journal):
+            code = 5
+            message = "incomplete journal \(journal.id) at \(journal.step); use --resume or --abort"
+        case let ReconcileDatabaseError.leaseHeld(lease):
+            code = 6
+            message = "stack lease held by \(lease.holder) until \(lease.expiresAtText)"
+        case ReconcileDatabaseError.generationChanged:
+            code = 5
+            message = "desired config changed; abort the incomplete journal before applying"
+        case ReconcileDatabaseError.noIncomplete:
+            code = 5
+            message = "no incomplete journal"
+        case ReconcileDatabaseError.leaseLost:
+            code = 6
+            message = "stack lease was lost"
+        case let ReconcileRPCError.invalid(value):
+            code = -32602
+            message = value
+        default:
+            code = -32010
+            message = String(describing: error)
+        }
+        return JSONRPCResponse(
+            error: JSONRPCError(code: code, message: message),
+            id: request.id ?? .null
+        )
+    }
+
+    private func objectParams(
+        _ value: JSONValue?,
+        context: String
+    ) throws -> [String: JSONValue] {
+        guard case let .object(params)? = value else {
+            throw ReconcileRPCError.invalid("\(context) params must be an object")
+        }
+        return params
+    }
+
+    private func requiredReconcileString(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> String {
+        guard case let .string(value)? = params[key], !value.isEmpty else {
+            throw ReconcileRPCError.invalid("missing or invalid \(key)")
+        }
+        return value
+    }
+
+    private func optionalReconcileString(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) -> String? {
+        guard case let .string(value)? = params[key] else { return nil }
+        return value
+    }
+
+    private func optionalBool(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) -> Bool? {
+        guard case let .bool(value)? = params[key] else { return nil }
+        return value
+    }
+
+    private func jsonString(_ value: JSONValue) throws -> String {
+        String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
+    }
+
+    private func jsonString(_ value: [String: JSONValue]) throws -> String {
+        try jsonString(.object(value))
     }
 
     private func vmHasRouterRole(bundle: String) throws -> Bool {
@@ -850,6 +1093,56 @@ final class SupervisorServer: @unchecked Sendable {
 private struct EventSubscriber: Sendable {
     let fd: Int32
     let filter: EventFilter
+}
+
+private enum ReconcileRPCError: Error {
+    case invalid(String)
+}
+
+private extension StackStateRecord {
+    var json: JSONValue {
+        .object([
+            "resources": .array(resources.map(\.json)),
+            "journal": journal.map(\.json) ?? .null,
+            "lease": lease.map(\.json) ?? .null,
+        ])
+    }
+}
+
+private extension StackResourceRecord {
+    var json: JSONValue {
+        .object([
+            "kind": .string(kind),
+            "name": .string(name),
+            "labels": .object(labels.mapValues(JSONValue.string)),
+            "state": .string(state),
+        ])
+    }
+}
+
+private extension JournalRecord {
+    var json: JSONValue {
+        .object([
+            "id": .string(id),
+            "stack_id": .string(stackID),
+            "generation": .number(Double(generation)),
+            "step": .string(step),
+            "status": .string(status),
+            "payload": .string(payload),
+            "error": error.map(JSONValue.string) ?? .null,
+            "created_at": .string(createdAt),
+            "updated_at": .string(updatedAt),
+        ])
+    }
+}
+
+private extension LeaseRecord {
+    var json: JSONValue {
+        .object([
+            "holder": .string(holder),
+            "expires_at": .string(expiresAtText),
+        ])
+    }
 }
 
 private struct HelperRecord: Sendable {

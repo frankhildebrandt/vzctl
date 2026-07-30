@@ -16,6 +16,7 @@ mod config;
 mod dns;
 mod image;
 mod network;
+mod reconciler;
 mod route;
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
@@ -280,7 +281,9 @@ fn main() -> ExitCode {
             }
         },
         Some("validate") => config::command(args),
-        Some("apply") => apply_stub(args),
+        Some(command @ ("plan" | "diff" | "up" | "down" | "apply" | "adopt")) => {
+            reconciler::command(command, args, &supervisor_socket_path())
+        }
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
         Some("route") => route::command(args, &supervisor_socket_path()),
@@ -297,7 +300,7 @@ fn main() -> ExitCode {
 fn print_help() {
     println!(
         "\
-vzctl — Environments-as-Code for macOS Virtualization (Alpha stub)
+vzctl — Environments-as-Code for macOS Virtualization (Alpha)
 
 Commands:
   doctor [--format human|json] [--min-free-gib N]
@@ -305,7 +308,11 @@ Commands:
   version [--format human|json]
   validate [-C <directory|config>] [--format human|json]
   validate --schema   Export hypernetwork/v1 JSON Schema
-  apply [--resume|--abort]   (stub — see ADR 0003)
+  plan|diff [-C <directory|config>] [--format human|json]
+  up [-C <directory|config>] [--force] [--format human|json]
+  apply [-C <directory|config>] [--force|--resume|--abort] [--format human|json]
+  down [-C <directory|config>] [--purge] [--format human|json]
+  adopt [-C <directory|config>] [--format human|json]
   events subscribe [--filter 'vm.*,apply.*']
   net create <name> --cidr CIDR [--mode shared] [--label key=value] [--project P] [--stack S]
   net attach <vm> --network <name> --ip <address> [--label key=value] [--project P] [--stack S]
@@ -2011,45 +2018,6 @@ fn run_virt_customize(
     }
 }
 
-fn apply_stub(args: impl Iterator<Item = String>) -> ExitCode {
-    let mut resume = false;
-    let mut abort = false;
-
-    for arg in args {
-        match arg.as_str() {
-            "--resume" => resume = true,
-            "--abort" => abort = true,
-            _ => {
-                eprintln!("unknown apply option: {arg}");
-                return ExitCode::from(EXIT_USAGE);
-            }
-        }
-    }
-
-    if resume && abort {
-        eprintln!("apply accepts only one of --resume or --abort");
-        return ExitCode::from(EXIT_INVALID_INPUT);
-    }
-
-    let mode = if resume {
-        "resume"
-    } else if abort {
-        "abort"
-    } else {
-        "apply"
-    };
-    if let Err(error) = emit_apply_stub(mode) {
-        eprintln!("warning: apply events not emitted: {error}");
-    }
-
-    eprintln!(
-        "apply is not implemented yet; journal/reconcile remains tracked by ADR 0003 \
-         (future blockers: exit {EXIT_INCOMPLETE_JOURNAL}=incomplete journal, \
-         exit {EXIT_LEASE_HELD}=lease held)"
-    );
-    ExitCode::from(EXIT_UNAVAILABLE)
-}
-
 fn events_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
         Some("subscribe") => match parse_events_options(args) {
@@ -2216,44 +2184,6 @@ fn events_subscribe(options: EventsOptions) -> ExitCode {
                 return ExitCode::from(EXIT_SUPERVISOR_UNHEALTHY);
             }
         }
-    }
-}
-
-fn emit_apply_stub(mode: &str) -> Result<(), String> {
-    let path = supervisor_socket_path();
-    let mut stream =
-        UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let timeout = Some(Duration::from_secs(2));
-    stream
-        .set_read_timeout(timeout)
-        .map_err(|error| format!("read timeout setup: {error}"))?;
-    stream
-        .set_write_timeout(timeout)
-        .map_err(|error| format!("write timeout setup: {error}"))?;
-    let epoch_millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "apply.stub",
-        "params": {
-            "invocation_id": format!("{}-{epoch_millis}", std::process::id()),
-            "mode": mode,
-        },
-        "id": 1
-    });
-    writeln!(stream, "{request}").map_err(|error| format!("apply event request: {error}"))?;
-    let mut response = String::new();
-    BufReader::new(stream)
-        .read_line(&mut response)
-        .map_err(|error| format!("apply event response: {error}"))?;
-    let value: Value =
-        serde_json::from_str(&response).map_err(|error| format!("invalid response: {error}"))?;
-    if value["result"]["ok"] == true {
-        Ok(())
-    } else {
-        Err(format!("supervisor rejected apply events: {value}"))
     }
 }
 

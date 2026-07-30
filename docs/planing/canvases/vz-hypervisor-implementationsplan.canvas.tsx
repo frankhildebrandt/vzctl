@@ -24,7 +24,7 @@ const PHASES = [
   { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor", done: true },
   { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity", done: true },
   { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
-  { id: "P3", name: "Stacks", weeks: "5–7", goal: "Schema+Validate+#52 ✅ · open: up/down/apply + Lease (#37)", done: false },
+  { id: "P3", name: "Stacks", weeks: "5–7", goal: "Schema+Validate+Reconciler ✅ · next: CI/Integration (#38)", done: false },
   { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: false },
   { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
   { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
@@ -186,8 +186,8 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             #52 pull
           </Pill>
-          <Pill tone="warning" size="sm">
-            #37 apply open
+          <Pill tone="success" size="sm" active>
+            #37 apply
           </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
@@ -215,12 +215,14 @@ export default function VzHypervisorImplementationsplan() {
         #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
 
-      <Callout tone="info" title="P3 Stack-Reconciler gestartet">
+      <Callout tone="success" title="P3 Stack-Reconciler #37 implementiert">
         #36 implementiert <Code>hypernetwork/v1</Code> als Serde-Typen plus
         exportierbares JSON Schema. <Code>vzctl validate -C</Code> prüft Schema,
         Referenzen, IPv4/CIDR, DependsOn-DAG und DHCP/static-Kollisionen mit
         JSON-Pfaden. #52 ergänzt 14 ARM64-<Code>*-latest</Code>-Aliase,
-        Digestprüfung und den content-addressed Raw-Store. Next: #37.
+        Digestprüfung und den content-addressed Raw-Store. #37 ergänzt
+        Plan/Diff/Up/Down/Apply, SQLite-Journal/Lease, Resume/Abort und
+        UI-Events. Next: #38 CI/Integration.
       </Callout>
 
       <Grid columns={6} gap={12}>
@@ -229,7 +231,7 @@ export default function VzHypervisorImplementationsplan() {
         <Stat value="#36✓" label="validate" tone="success" />
         <Stat value="#51✓" label="default net" tone="success" />
         <Stat value="#52✓" label="image pull" tone="success" />
-        <Stat value="#37" label="apply next" tone="info" />
+        <Stat value="#37✓" label="reconciler" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -352,9 +354,11 @@ export default function VzHypervisorImplementationsplan() {
               <Struck>
                 Desired=YAML · Actual=SQLite · Spec ADR 0003 · validate (#36)
               </Struck>
+              <Struck>
+                Journal-Runtime · apply --resume|--abort · Lease · Lockfile (#37)
+              </Struck>
               <Text size="small" tone="secondary">
-                Offen: Journal-Runtime · <Code>apply --resume|--abort</Code> ·
-                Lease · Lockfile · purge/adopt (#37)
+                Offen: adopt-Polish · Example/CI (#38)
               </Text>
             </Stack>
           </CardBody>
@@ -592,9 +596,7 @@ export default function VzHypervisorImplementationsplan() {
                 <Struck>Dual-DNS *.vz.test + Resolver</Struck>
                 <Struck>Clones · Seal · Identity · Net/Policies · image pull</Struck>
                 <Struck>hypernetwork Schema + validate (#36)</Struck>
-                <Text size="small" tone="secondary">
-                  Offen: Stacks up/down/apply + Journal/Resume (#37)
-                </Text>
+                <Struck>Stacks up/down/apply + Journal/Resume (#37)</Struck>
                 <Text size="small" tone="secondary">
                   Offen: Docker SSH-Context + Ports basic + logs (#39/#49)
                 </Text>
@@ -696,10 +698,11 @@ spec:
           <Struck>vzctl route apply|plan|status</Struck>
           <Struck>vzctl dns query|install-resolver|uninstall-resolver</Struck>
           <Struck>vzctl events subscribe · vzctl doctor</Struck>
+          <Struck>vzctl plan|diff|up|down|apply [--force|--resume|--abort]</Struck>
           <Text size="small" tone="secondary">
-            Offen: <Code>up|down|apply|diff|ps|adopt</Code> ·{" "}
-            <Code>apply --resume|--abort</Code> · <Code>vm logs</Code> ·{" "}
-            <Code>docker …</Code> · v0.2 <Code>ingress|certs|oidc</Code>
+            Offen: <Code>ps|adopt</Code>-Polish · <Code>vm logs</Code> ·{" "}
+            <Code>docker …</Code> · Example/CI (#38) · v0.2{" "}
+            <Code>ingress|certs|oidc</Code>
           </Text>
         </Stack>
       </Stack>
@@ -725,7 +728,7 @@ spec:
               ? "done"
               : e.done === "partial"
                 ? e.n === 34
-                  ? "#36/#52 ✓ · #37 open"
+                  ? "#36/#37/#52 ✓ · #38 next"
                   : "contract ✓ · CLI surface rest"
                 : "open",
           ])}
@@ -751,7 +754,8 @@ spec:
           Guest-NoCloud mit Bridge-.0 als einzigem DNS, on-link Default-Route
           und Projekt-Search-Domain. #36: hypernetwork/v1 Schema, Serde und
           Validate mit JSON-Pfaden. #52: ARM64 Image-Pull mit 14 Aliasen,
-          Digestprüfung und Raw-Normalisierung. Next: Apply-Engine #37.
+          Digestprüfung und Raw-Normalisierung. #37: Plan/Diff/Up/Down/Apply
+          mit SQLite-Lease, Journal Resume/Abort und Apply-Events. Next: #38.
         </Callout>
       </Stack>
 

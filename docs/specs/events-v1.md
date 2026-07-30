@@ -87,30 +87,30 @@ Wird nach einer vom Guest-Agent bestätigten Uhrkorrektur emittiert.
 {"invocation_id":"1234-1785398400000","mode":"apply"}
 ```
 
-`mode` ist `apply`, `resume` oder `abort`.
+`mode` ist `up`, `apply`, `down`, `resume` oder `abort`.
 
 ### `apply.step`
 
 ```json
-{"invocation_id":"1234-1785398400000","mode":"apply","step":"reconcile","status":"unavailable"}
+{"invocation_id":"7e14728c","step":"ensure_nets","status":"running","error":null}
 ```
+
+`status` ist `running`, `done` oder `failed`. Die Step-Reihenfolge folgt ADR
+0003; ein Resume beginnt beim zuletzt gespeicherten `failed`/`running`-Step.
 
 ### `apply.finished`
 
-Reserviert für einen erfolgreichen Reconciler-Abschluss.
+Wird nach Commit des Actual-State und Freigabe der Lease emittiert.
 
 ```json
-{"invocation_id":"1234-1785398400000","mode":"apply","exit_code":0}
+{"invocation_id":"7e14728c","mode":"apply","stack_id":"project:stack","exit_code":0}
 ```
 
 ### `apply.failed`
 
 ```json
-{"invocation_id":"1234-1785398400000","mode":"apply","exit_code":12,"error":"not_implemented"}
+{"invocation_id":"7e14728c","mode":"apply","step":"ensure_vms","exit_code":24,"error":"helper failed"}
 ```
-
-Der Alpha-Stub emittiert `apply.started`, `apply.step` und `apply.failed`, bevor
-er wie im CLI Contract v1 mit Exit `12` endet.
 
 ### `dns.reloaded`
 

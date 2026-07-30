@@ -5,6 +5,7 @@ import VzDaemonKit
 
 final class StateDatabase {
     private var handle: OpaquePointer?
+    private let reconcileLock = NSLock()
 
     init(path: String) throws {
         guard sqlite3_open_v2(
@@ -50,6 +51,9 @@ final class StateDatabase {
                     holder TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS one_incomplete_journal_per_stack
+                ON journal(stack_id)
+                WHERE status IN ('pending', 'running', 'failed');
                 CREATE TABLE IF NOT EXISTS networks (
                     name TEXT PRIMARY KEY,
                     cidr TEXT NOT NULL UNIQUE,
@@ -310,6 +314,328 @@ final class StateDatabase {
         }
     }
 
+    func stackState(stackID: String) throws -> StackStateRecord {
+        try reconcileLock.withLock {
+            StackStateRecord(
+                resources: try resources(stackID: stackID),
+                journal: try incompleteJournal(stackID: stackID),
+                lease: try lease(stackID: stackID)
+            )
+        }
+    }
+
+    func beginApply(
+        stackID: String,
+        holder: String,
+        desiredHash: String,
+        payload: String,
+        resume: Bool
+    ) throws -> JournalRecord {
+        try reconcileLock.withLock {
+            try execute("BEGIN IMMEDIATE;")
+            do {
+                if let current = try incompleteJournal(stackID: stackID) {
+                    if let currentLease = try lease(stackID: stackID),
+                       currentLease.holder != holder,
+                       (!resume && currentLease.expiresAt > Date())
+                           || holderIsAlive(currentLease.holder)
+                    {
+                        throw ReconcileDatabaseError.leaseHeld(currentLease)
+                    }
+                    guard resume else { throw ReconcileDatabaseError.incomplete(current) }
+                    guard current.desiredHash == desiredHash else {
+                        throw ReconcileDatabaseError.generationChanged
+                    }
+                    try upsertLease(stackID: stackID, holder: holder)
+                    try updateJournal(
+                        id: current.id,
+                        step: current.step,
+                        status: "running",
+                        error: nil
+                    )
+                    try execute("COMMIT;")
+                    return try journal(id: current.id)!
+                }
+                if let currentLease = try lease(stackID: stackID),
+                   currentLease.holder != holder,
+                   currentLease.expiresAt > Date()
+                {
+                    throw ReconcileDatabaseError.leaseHeld(currentLease)
+                }
+                try upsertLease(stackID: stackID, holder: holder)
+                let generation = try nextGeneration(stackID: stackID)
+                let id = UUID().uuidString.lowercased()
+                let now = timestamp()
+                try withStatement(
+                    """
+                    INSERT INTO journal
+                        (id, stack_id, generation, step, status, payload, error, created_at, updated_at)
+                    VALUES (?, ?, ?, 'validate', 'running', ?, NULL, ?, ?);
+                    """
+                ) { statement in
+                    try bind(id, at: 1, to: statement)
+                    try bind(stackID, at: 2, to: statement)
+                    sqlite3_bind_int64(statement, 3, sqlite3_int64(generation))
+                    try bind(payload, at: 4, to: statement)
+                    try bind(now, at: 5, to: statement)
+                    try bind(now, at: 6, to: statement)
+                    try stepDone(statement)
+                }
+                try execute("COMMIT;")
+                return try journal(id: id)!
+            } catch {
+                try? execute("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    func advanceApply(
+        id: String,
+        stackID: String,
+        holder: String,
+        step: String,
+        status: String,
+        error: String?
+    ) throws -> JournalRecord {
+        try reconcileLock.withLock {
+            guard let current = try incompleteJournal(stackID: stackID), current.id == id else {
+                throw ReconcileDatabaseError.noIncomplete
+            }
+            guard let currentLease = try lease(stackID: stackID),
+                  currentLease.holder == holder,
+                  currentLease.expiresAt > Date()
+            else {
+                throw ReconcileDatabaseError.leaseLost
+            }
+            try upsertLease(stackID: stackID, holder: holder)
+            try updateJournal(id: id, step: step, status: status, error: error)
+            return try journal(id: id)!
+        }
+    }
+
+    func finishApply(
+        id: String,
+        stackID: String,
+        holder: String,
+        resourcesJSON: String
+    ) throws {
+        try reconcileLock.withLock {
+            try execute("BEGIN IMMEDIATE;")
+            do {
+                guard let current = try incompleteJournal(stackID: stackID), current.id == id else {
+                    throw ReconcileDatabaseError.noIncomplete
+                }
+                guard let currentLease = try lease(stackID: stackID),
+                      currentLease.holder == holder
+                else {
+                    throw ReconcileDatabaseError.leaseLost
+                }
+                let resources = try JSONDecoder().decode(
+                    [StackResourceRecord].self,
+                    from: Data(resourcesJSON.utf8)
+                )
+                try withStatement(
+                    "DELETE FROM resources WHERE json_extract(labels_json, '$.stack_id') = ?;"
+                ) { statement in
+                    try bind(stackID, at: 1, to: statement)
+                    try stepDone(statement)
+                }
+                for resource in resources {
+                    var labels = resource.labels
+                    labels["stack_id"] = stackID
+                    try withStatement(
+                        """
+                        INSERT INTO resources (id, kind, name, labels_json, state, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?);
+                        """
+                    ) { statement in
+                        try bind("\(stackID):\(resource.kind):\(resource.name)", at: 1, to: statement)
+                        try bind(resource.kind, at: 2, to: statement)
+                        try bind(resource.name, at: 3, to: statement)
+                        try bind(try labelsJSON(labels), at: 4, to: statement)
+                        try bind(resource.state, at: 5, to: statement)
+                        try bind(timestamp(), at: 6, to: statement)
+                        try stepDone(statement)
+                    }
+                }
+                try updateJournal(id: id, step: "done", status: "done", error: nil)
+                try deleteLease(stackID: stackID, holder: holder)
+                try execute("COMMIT;")
+            } catch {
+                try? execute("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    func abortApply(stackID: String, holder: String) throws -> JournalRecord {
+        try reconcileLock.withLock {
+            guard let current = try incompleteJournal(stackID: stackID) else {
+                throw ReconcileDatabaseError.noIncomplete
+            }
+            if let currentLease = try lease(stackID: stackID),
+               currentLease.holder != holder,
+               holderIsAlive(currentLease.holder)
+            {
+                throw ReconcileDatabaseError.leaseHeld(currentLease)
+            }
+            try updateJournal(id: current.id, step: current.step, status: "aborted", error: nil)
+            try deleteLease(stackID: stackID, holder: nil)
+            return try journal(id: current.id)!
+        }
+    }
+
+    private func resources(stackID: String) throws -> [StackResourceRecord] {
+        try withStatement(
+            """
+            SELECT kind, name, labels_json, state
+            FROM resources
+            WHERE json_extract(labels_json, '$.stack_id') = ?
+            ORDER BY kind, name;
+            """
+        ) { statement in
+            try bind(stackID, at: 1, to: statement)
+            var result: [StackResourceRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(
+                    StackResourceRecord(
+                        kind: text(statement, 0),
+                        name: text(statement, 1),
+                        labels: try labels(from: text(statement, 2)),
+                        state: text(statement, 3)
+                    )
+                )
+            }
+            return result
+        }
+    }
+
+    private func incompleteJournal(stackID: String) throws -> JournalRecord? {
+        try withStatement(
+            """
+            SELECT id, stack_id, generation, step, status, payload, error, created_at, updated_at
+            FROM journal
+            WHERE stack_id = ? AND status IN ('pending', 'running', 'failed')
+            ORDER BY generation DESC LIMIT 1;
+            """
+        ) { statement in
+            try bind(stackID, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return journalRecord(statement)
+        }
+    }
+
+    private func journal(id: String) throws -> JournalRecord? {
+        try withStatement(
+            """
+            SELECT id, stack_id, generation, step, status, payload, error, created_at, updated_at
+            FROM journal WHERE id = ?;
+            """
+        ) { statement in
+            try bind(id, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return journalRecord(statement)
+        }
+    }
+
+    private func journalRecord(_ statement: OpaquePointer) -> JournalRecord {
+        JournalRecord(
+            id: text(statement, 0),
+            stackID: text(statement, 1),
+            generation: Int(sqlite3_column_int64(statement, 2)),
+            step: text(statement, 3),
+            status: text(statement, 4),
+            payload: text(statement, 5),
+            error: optionalText(statement, 6),
+            createdAt: text(statement, 7),
+            updatedAt: text(statement, 8)
+        )
+    }
+
+    private func lease(stackID: String) throws -> LeaseRecord? {
+        try withStatement(
+            "SELECT holder, expires_at FROM locks WHERE stack_id = ?;"
+        ) { statement in
+            try bind(stackID, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            let raw = text(statement, 1)
+            return LeaseRecord(
+                holder: text(statement, 0),
+                expiresAt: ISO8601DateFormatter().date(from: raw) ?? .distantPast,
+                expiresAtText: raw
+            )
+        }
+    }
+
+    private func upsertLease(stackID: String, holder: String) throws {
+        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+        try withStatement(
+            """
+            INSERT INTO locks (stack_id, holder, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT(stack_id) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at;
+            """
+        ) { statement in
+            try bind(stackID, at: 1, to: statement)
+            try bind(holder, at: 2, to: statement)
+            try bind(expires, at: 3, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    private func deleteLease(stackID: String, holder: String?) throws {
+        let sql = holder == nil
+            ? "DELETE FROM locks WHERE stack_id = ?;"
+            : "DELETE FROM locks WHERE stack_id = ? AND holder = ?;"
+        try withStatement(sql) { statement in
+            try bind(stackID, at: 1, to: statement)
+            if let holder { try bind(holder, at: 2, to: statement) }
+            try stepDone(statement)
+        }
+    }
+
+    private func updateJournal(
+        id: String,
+        step: String,
+        status: String,
+        error: String?
+    ) throws {
+        try withStatement(
+            "UPDATE journal SET step = ?, status = ?, error = ?, updated_at = ? WHERE id = ?;"
+        ) { statement in
+            try bind(step, at: 1, to: statement)
+            try bind(status, at: 2, to: statement)
+            try bind(error, at: 3, to: statement)
+            try bind(timestamp(), at: 4, to: statement)
+            try bind(id, at: 5, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    private func nextGeneration(stackID: String) throws -> Int {
+        try withStatement(
+            "SELECT COALESCE(MAX(generation), 0) + 1 FROM journal WHERE stack_id = ?;"
+        ) { statement in
+            try bind(stackID, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw databaseError() }
+            return Int(sqlite3_column_int64(statement, 0))
+        }
+    }
+
+    private func timestamp() -> String {
+        ISO8601DateFormatter().string(from: Date())
+    }
+
+    private func holderIsAlive(_ holder: String) -> Bool {
+        guard let rawPID = holder.split(separator: ":").last,
+              let pid = Int32(rawPID),
+              pid > 0
+        else {
+            return true
+        }
+        return Darwin.kill(pid, 0) == 0 || errno == EPERM
+    }
+
     private func withStatement<T>(_ sql: String, body: (OpaquePointer) throws -> T) throws -> T {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
@@ -362,6 +688,60 @@ final class StateDatabase {
     private func databaseError() -> SupervisorError {
         SupervisorError.database(String(cString: sqlite3_errmsg(handle)))
     }
+}
+
+enum ReconcileDatabaseError: Error {
+    case incomplete(JournalRecord)
+    case leaseHeld(LeaseRecord)
+    case generationChanged
+    case noIncomplete
+    case leaseLost
+}
+
+struct StackStateRecord {
+    let resources: [StackResourceRecord]
+    let journal: JournalRecord?
+    let lease: LeaseRecord?
+}
+
+struct StackResourceRecord: Codable {
+    let kind: String
+    let name: String
+    var labels: [String: String]
+    let state: String
+}
+
+struct JournalRecord {
+    let id: String
+    let stackID: String
+    let generation: Int
+    let step: String
+    let status: String
+    let payload: String
+    let error: String?
+    let createdAt: String
+    let updatedAt: String
+
+    var desiredHash: String? {
+        payloadValue("desired_hash") as? String
+    }
+
+    var operationMode: String? {
+        payloadValue("mode") as? String
+    }
+
+    private func payloadValue(_ key: String) -> Any? {
+        guard let data = payload.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return value[key]
+    }
+}
+
+struct LeaseRecord {
+    let holder: String
+    let expiresAt: Date
+    let expiresAtText: String
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
