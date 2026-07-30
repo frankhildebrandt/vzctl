@@ -295,6 +295,58 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return networkErrorResponse(error, request: request)
             }
+        case "net.default.show":
+            do {
+                let result: JSONValue
+                if let (configured, network) = try networkRegistry.defaultNetwork() {
+                    result = configured.json(network: network)
+                } else {
+                    result = .null
+                }
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "net.default.set":
+            do {
+                let params = try networkParams(request.params)
+                let configured = try networkRegistry.setDefault(
+                    name: try requiredString("name", from: params),
+                    cidr: try requiredString("cidr", from: params)
+                )
+                let network = try networkRegistry.defaultNetwork()?.1
+                emit(type: "net.default.changed", data: [
+                    "network": .string(configured.name),
+                    "cidr": .string(configured.cidr),
+                ])
+                return JSONRPCResponse(
+                    result: configured.json(network: network),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "vm.network.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let vmID = try requiredString("vm_id", from: params)
+                let selection = try networkRegistry.ensureVMNetwork(
+                    vmID: vmID,
+                    requestedNetwork: try optionalString("network", from: params),
+                    vmIsStopped: vmIsStopped(vmID)
+                )
+                if selection.created {
+                    emit(type: "net.attached", data: [
+                        "vm_id": .string(selection.attachment.vmID),
+                        "network": .string(selection.attachment.networkName),
+                        "ip": .string(selection.attachment.ip),
+                        "automatic": .bool(selection.automatic),
+                    ])
+                }
+                return JSONRPCResponse(result: selection.json, id: request.id ?? .null)
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "route.apply":
             do {
                 let requestedRouter: String?

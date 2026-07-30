@@ -106,7 +106,25 @@ struct NetworkSnapshot: Sendable {
     }
 }
 
+struct VMNetworkSelection: Sendable {
+    let network: NetworkRecord
+    let attachment: NetworkAttachmentRecord
+    let automatic: Bool
+    let created: Bool
+
+    var json: JSONValue {
+        .object([
+            "network": network.json,
+            "attachment": attachment.json,
+            "automatic": .bool(automatic),
+            "created": .bool(created),
+            "prefix": .number(Double((try? IPv4CIDR(network.cidr).prefix) ?? 0)),
+        ])
+    }
+}
+
 final class NetworkRegistry: @unchecked Sendable {
+    static let automaticLabel = "vzctl.dev/default-attachment"
     private let database: StateDatabase
     private let backend: any NetworkRuntimeBackend
     private let lock = NSLock()
@@ -129,44 +147,14 @@ final class NetworkRegistry: @unchecked Sendable {
     ) throws -> NetworkRecord {
         try lock.withLock {
             try requireRunning()
-            try validateName(name, kind: "network")
-            guard mode == "shared" else {
-                throw NetworkRegistryError.invalid(
-                    "bridged mode is unsupported in v0.1; use --mode shared"
-                )
-            }
-            try validateMetadata(labels: labels, project: project, stack: stack)
-            let cidr: IPv4CIDR
-            do {
-                cidr = try IPv4CIDR(rawCIDR)
-            } catch {
-                throw NetworkRegistryError.invalid(String(describing: error))
-            }
-            let existing = try database.networks()
-            guard !existing.contains(where: { $0.name == name }) else {
-                throw NetworkRegistryError.conflict("network already exists: \(name)")
-            }
-            guard !existing.contains(where: { $0.cidr == cidr.canonical }) else {
-                throw NetworkRegistryError.conflict("CIDR already reserved: \(cidr.canonical)")
-            }
-
-            var record = NetworkRecord(
+            return try createLocked(
                 name: name,
-                cidr: cidr.canonical,
+                cidr: rawCIDR,
                 mode: mode,
                 labels: labels,
                 project: project,
                 stack: stack
             )
-            let handle = try backend.reserve(record)
-            do {
-                try database.insertNetwork(record)
-            } catch {
-                throw NetworkRegistryError.conflict("cannot persist network \(name): \(error)")
-            }
-            handles[name] = handle
-            record.runtimeState = "active"
-            return record
         }
     }
 
@@ -213,13 +201,203 @@ final class NetworkRegistry: @unchecked Sendable {
                 stack: stack ?? network.stack
             )
             do {
-                try database.insertAttachment(record)
+                let current = try database.attachments().filter { $0.vmID == vmID }
+                if let same = current.first(where: { $0.networkName == networkName }),
+                   same.labels[Self.automaticLabel] == "true"
+                {
+                    try database.updateAttachment(record)
+                } else {
+                    try database.insertAttachment(record)
+                }
+                for old in current where old.labels[Self.automaticLabel] == "true"
+                    && old.networkName != networkName
+                {
+                    try database.deleteAttachment(
+                        vmID: old.vmID,
+                        networkName: old.networkName
+                    )
+                }
             } catch {
                 throw NetworkRegistryError.conflict(
                     "cannot attach \(vmID) to \(networkName): VM/network or IP already attached"
                 )
             }
             return record
+        }
+    }
+
+    func setDefault(name: String, cidr rawCIDR: String) throws -> DefaultNetworkRecord {
+        try lock.withLock {
+            try requireRunning()
+            try validateName(name, kind: "network")
+            let cidr: IPv4CIDR
+            do {
+                cidr = try IPv4CIDR(rawCIDR)
+            } catch {
+                throw NetworkRegistryError.invalid(String(describing: error))
+            }
+            _ = try ensureDefaultNetworkLocked(name: name, cidr: cidr.canonical)
+            let current = try database.defaultNetwork()
+            if current?.name == name, current?.cidr == cidr.canonical {
+                return current!
+            }
+            let record = DefaultNetworkRecord(name: name, cidr: cidr.canonical)
+            try database.setDefaultNetwork(record)
+            return record
+        }
+    }
+
+    func defaultNetwork() throws -> (DefaultNetworkRecord, NetworkRecord?)? {
+        try lock.withLock {
+            guard let configured = try database.defaultNetwork() else { return nil }
+            let network = try database.networks().first {
+                $0.name == configured.name
+                    && $0.cidr == configured.cidr
+                    && $0.mode == "shared"
+            }
+            return (configured, network)
+        }
+    }
+
+    func ensureVMNetwork(
+        vmID: String,
+        requestedNetwork: String?,
+        vmIsStopped: Bool
+    ) throws -> VMNetworkSelection {
+        try lock.withLock {
+            try requireRunning()
+            try validateName(vmID, kind: "VM")
+            guard vmIsStopped else {
+                throw NetworkRegistryError.conflict(
+                    "VM \(vmID) must be stopped before changing network attachments"
+                )
+            }
+            let current = try database.attachments().filter { $0.vmID == vmID }
+            let explicit = current.filter { $0.labels[Self.automaticLabel] != "true" }
+
+            let network: NetworkRecord
+            let automatic: Bool
+            if let requestedNetwork {
+                try validateName(requestedNetwork, kind: "network")
+                if let existing = explicit.first {
+                    guard existing.networkName == requestedNetwork,
+                          let selected = try database.networks().first(where: {
+                              $0.name == existing.networkName
+                          })
+                    else {
+                        throw NetworkRegistryError.conflict(
+                            "VM \(vmID) already has explicit network attachments"
+                        )
+                    }
+                    return VMNetworkSelection(
+                        network: selected,
+                        attachment: existing,
+                        automatic: false,
+                        created: false
+                    )
+                }
+                guard let selected = try database.networks().first(where: {
+                    $0.name == requestedNetwork
+                }) else {
+                    throw NetworkRegistryError.notFound("network not found: \(requestedNetwork)")
+                }
+                network = selected
+                automatic = false
+            } else {
+                if let existing = explicit.first,
+                   let selected = try database.networks().first(where: {
+                       $0.name == existing.networkName
+                   })
+                {
+                    return VMNetworkSelection(
+                        network: selected,
+                        attachment: existing,
+                        automatic: false,
+                        created: false
+                    )
+                }
+                guard let configured = try database.defaultNetwork() else {
+                    throw NetworkRegistryError.notFound(
+                        "default network is not configured; run vzctl net default set <name> --cidr <CIDR>"
+                    )
+                }
+                network = try ensureDefaultNetworkLocked(
+                    name: configured.name,
+                    cidr: configured.cidr
+                )
+                automatic = true
+            }
+
+            if let existing = current.first(where: { $0.networkName == network.name }) {
+                if !automatic, existing.labels[Self.automaticLabel] == "true" {
+                    var promoted = existing
+                    promoted.labels.removeValue(forKey: Self.automaticLabel)
+                    promoted.updatedAt = ISO8601DateFormatter().string(from: Date())
+                    try database.updateAttachment(promoted)
+                    return VMNetworkSelection(
+                        network: network,
+                        attachment: promoted,
+                        automatic: false,
+                        created: false
+                    )
+                }
+                return VMNetworkSelection(
+                    network: network,
+                    attachment: existing,
+                    automatic: automatic,
+                    created: false
+                )
+            }
+
+            let used = Set(
+                try database.attachments()
+                    .filter { $0.networkName == network.name }
+                    .map(\.ip)
+            )
+            let cidr = try IPv4CIDR(network.cidr)
+            var offset: UInt32 = 10
+            var ip: String?
+            while let candidate = cidr.guestAddress(offset: offset) {
+                if !used.contains(candidate) {
+                    ip = candidate
+                    break
+                }
+                offset += 1
+            }
+            guard let ip else {
+                throw NetworkRegistryError.conflict(
+                    "no free guest IP in network \(network.name)"
+                )
+            }
+            var labels: [String: String] = [:]
+            if automatic { labels[Self.automaticLabel] = "true" }
+            let record = NetworkAttachmentRecord(
+                vmID: vmID,
+                networkName: network.name,
+                ip: ip,
+                labels: labels,
+                project: network.project,
+                stack: network.stack
+            )
+            do {
+                try database.insertAttachment(record)
+                for old in current where old.labels[Self.automaticLabel] == "true" {
+                    try database.deleteAttachment(
+                        vmID: old.vmID,
+                        networkName: old.networkName
+                    )
+                }
+            } catch {
+                throw NetworkRegistryError.conflict(
+                    "cannot allocate network for \(vmID): \(error)"
+                )
+            }
+            return VMNetworkSelection(
+                network: network,
+                attachment: record,
+                automatic: automatic,
+                created: true
+            )
         }
     }
 
@@ -297,6 +475,77 @@ final class NetworkRegistry: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    private func ensureDefaultNetworkLocked(name: String, cidr: String) throws -> NetworkRecord {
+        if let existing = try database.networks().first(where: { $0.name == name }) {
+            guard existing.cidr == cidr, existing.mode == "shared" else {
+                throw NetworkRegistryError.conflict(
+                    "network \(name) exists with \(existing.cidr), expected \(cidr)"
+                )
+            }
+            guard handles[name] != nil else {
+                throw NetworkRegistryError.runtime(
+                    "network \(name) is not active: \(existing.lastError ?? "rebuild failed")"
+                )
+            }
+            return existing
+        }
+        return try createLocked(
+            name: name,
+            cidr: cidr,
+            mode: "shared",
+            labels: [:],
+            project: nil,
+            stack: nil
+        )
+    }
+
+    private func createLocked(
+        name: String,
+        cidr rawCIDR: String,
+        mode: String,
+        labels: [String: String],
+        project: String?,
+        stack: String?
+    ) throws -> NetworkRecord {
+        try validateName(name, kind: "network")
+        guard mode == "shared" else {
+            throw NetworkRegistryError.invalid(
+                "bridged mode is unsupported in v0.1; use --mode shared"
+            )
+        }
+        try validateMetadata(labels: labels, project: project, stack: stack)
+        let cidr: IPv4CIDR
+        do {
+            cidr = try IPv4CIDR(rawCIDR)
+        } catch {
+            throw NetworkRegistryError.invalid(String(describing: error))
+        }
+        let existing = try database.networks()
+        guard !existing.contains(where: { $0.name == name }) else {
+            throw NetworkRegistryError.conflict("network already exists: \(name)")
+        }
+        guard !existing.contains(where: { $0.cidr == cidr.canonical }) else {
+            throw NetworkRegistryError.conflict("CIDR already reserved: \(cidr.canonical)")
+        }
+        var record = NetworkRecord(
+            name: name,
+            cidr: cidr.canonical,
+            mode: mode,
+            labels: labels,
+            project: project,
+            stack: stack
+        )
+        let handle = try backend.reserve(record)
+        do {
+            try database.insertNetwork(record)
+        } catch {
+            throw NetworkRegistryError.conflict("cannot persist network \(name): \(error)")
+        }
+        handles[name] = handle
+        record.runtimeState = "active"
+        return record
     }
 
     private func requireRunning() throws {

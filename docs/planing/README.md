@@ -27,7 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / #32 abgeschlossen** — Router-Rolle, `.2`-Validierung und idempotentes
-`vzctl route apply` über Helper/Guest-Agent sind implementiert. Der nächste
-Network-Slice ist **#51** konfigurierbares Default-Netzwerk (voller Zugriff);
-danach #33 Firewall-Policies (Epic #30).
+**P2 / #51 abgeschlossen** — das persistente Default-Netz, Auto-IP ab `.10`,
+statische NoCloud-Konfiguration und Explicit-over-Default sind implementiert.
+Der nächste Network-Slice ist **#33** Firewall-Policies (Epic #30).

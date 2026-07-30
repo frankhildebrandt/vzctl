@@ -73,6 +73,12 @@ final class StateDatabase {
                     UNIQUE (network_name, ip),
                     FOREIGN KEY (network_name) REFERENCES networks(name) ON DELETE RESTRICT
                 );
+                CREATE TABLE IF NOT EXISTS network_defaults (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    name TEXT NOT NULL,
+                    cidr TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             try quickCheck()
@@ -204,6 +210,30 @@ final class StateDatabase {
         }
     }
 
+    func updateAttachment(_ record: NetworkAttachmentRecord) throws {
+        try withStatement(
+            """
+            UPDATE network_attachments
+            SET ip = ?, labels_json = ?, project = ?, stack = ?, updated_at = ?
+            WHERE vm_id = ? AND network_name = ?;
+            """
+        ) { statement in
+            try bind(record.ip, at: 1, to: statement)
+            try bind(try labelsJSON(record.labels), at: 2, to: statement)
+            try bind(record.project, at: 3, to: statement)
+            try bind(record.stack, at: 4, to: statement)
+            try bind(record.updatedAt, at: 5, to: statement)
+            try bind(record.vmID, at: 6, to: statement)
+            try bind(record.networkName, at: 7, to: statement)
+            try stepDone(statement)
+            guard sqlite3_changes(handle) == 1 else {
+                throw SupervisorError.database(
+                    "attachment not found: \(record.vmID) on \(record.networkName)"
+                )
+            }
+        }
+    }
+
     func deleteAttachment(vmID: String, networkName: String) throws {
         try withStatement(
             "DELETE FROM network_attachments WHERE vm_id = ? AND network_name = ?;"
@@ -244,6 +274,39 @@ final class StateDatabase {
                 throw databaseError()
             }
             return records
+        }
+    }
+
+    func setDefaultNetwork(_ record: DefaultNetworkRecord) throws {
+        try withStatement(
+            """
+            INSERT INTO network_defaults (singleton, name, cidr, updated_at)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                name = excluded.name,
+                cidr = excluded.cidr,
+                updated_at = excluded.updated_at;
+            """
+        ) { statement in
+            try bind(record.name, at: 1, to: statement)
+            try bind(record.cidr, at: 2, to: statement)
+            try bind(record.updatedAt, at: 3, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func defaultNetwork() throws -> DefaultNetworkRecord? {
+        try withStatement(
+            "SELECT name, cidr, updated_at FROM network_defaults WHERE singleton = 1;"
+        ) { statement in
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW else { throw databaseError() }
+            return DefaultNetworkRecord(
+                name: text(statement, 0),
+                cidr: text(statement, 1),
+                updatedAt: text(statement, 2)
+            )
         }
     }
 

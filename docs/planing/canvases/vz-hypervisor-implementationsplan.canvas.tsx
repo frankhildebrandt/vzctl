@@ -192,10 +192,11 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 + P1 + erster P2-Slice">
+      <Callout tone="success" title="P0 + P1 + P2 Netzwerk-Basis">
         P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
         #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31/#32:
-        vmnet CRUD, Desired Attachments und Router-Apply via Guest-Agent ✅.
+        vmnet CRUD, Desired Attachments, Router-Apply und #51 Default-Netz mit
+        Auto-IP/vollem NAT-Egress ✅.
       </Callout>
 
       <Grid columns={5} gap={12}>
@@ -203,7 +204,7 @@ export default function VzHypervisorImplementationsplan() {
         <Stat value="#22✓" label="image seal" tone="success" />
         <Stat value="#23✓" label="linked clone" tone="success" />
         <Stat value="#24✓" label="identity reset" tone="success" />
-        <Stat value="#32✓" label="router apply" tone="success" />
+        <Stat value="#51✓" label="default network" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -688,10 +689,10 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P1 abgeschlossen · P2 gestartet">
+        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk-Basis">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
-          per-Clone Identity/NoCloud. #31/#32: Network CRUD und Router-Apply.
-          Next: #51 Default-Netzwerk (voller Zugriff), danach #33 Policies.
+          per-Clone Identity/NoCloud. #31/#32/#51: Network CRUD, Router-Apply
+          und Default-Netz mit Auto-IP. Next: #33 Policies.
         </Callout>
       </Stack>
 

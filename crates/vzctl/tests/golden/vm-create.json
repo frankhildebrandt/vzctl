@@ -15,6 +15,15 @@
     "managed-by": "vzctl",
     "roles": []
   },
+  "network": {
+    "name": "lan",
+    "cidr": "10.70.0.0/24",
+    "ip": "10.70.0.10",
+    "prefix": 24,
+    "gateway": "10.70.0.0",
+    "dns": "10.70.0.0",
+    "automatic": true
+  },
   "image": {
     "name": "ubuntu-base",
     "path": "/images/ubuntu-base.raw",
@@ -42,7 +51,8 @@
       {
         "index": 0,
         "mac": "02:12:34:56:78:9a",
-        "address": "dhcp"
+        "address": "10.70.0.10",
+        "network": "lan"
       }
     ]
   },

@@ -125,6 +125,110 @@ import Testing
     #expect(backendState.releases == 2)
 }
 
+@Test func defaultNetworkIsIdempotentPersistentAndAllocatesGuestIPs() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+
+    let first = try fixture.registry.setDefault(name: "lan", cidr: "10.70.0.0/24")
+    let second = try fixture.registry.setDefault(name: "lan", cidr: "10.70.0.0/24")
+    #expect(first.name == "lan")
+    #expect(second == first)
+    #expect(fixture.backendState.reservations == 1)
+    #expect(try fixture.registry.defaultNetwork()?.0 == first)
+
+    let web = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+    let api = try fixture.registry.ensureVMNetwork(
+        vmID: "api",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+    #expect(web.attachment.ip == "10.70.0.10")
+    #expect(api.attachment.ip == "10.70.0.11")
+    #expect(web.automatic)
+    #expect(web.created)
+
+    let repeated = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+    #expect(repeated.attachment == web.attachment)
+    #expect(!repeated.created)
+}
+
+@Test func explicitAttachmentWinsAndReplacesAutomaticDefault() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+    _ = try fixture.registry.setDefault(name: "lan", cidr: "10.70.0.0/24")
+    _ = try fixture.registry.create(
+        name: "dmz",
+        cidr: "10.80.0.0/24",
+        mode: "shared",
+        labels: [:],
+        project: nil,
+        stack: nil
+    )
+    _ = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+
+    let explicit = try fixture.registry.attach(
+        vmID: "web",
+        networkName: "dmz",
+        ip: "10.80.0.10",
+        labels: [:],
+        project: nil,
+        stack: nil,
+        vmIsStopped: true
+    )
+    let attachments = try fixture.registry.snapshot().attachments.filter { $0.vmID == "web" }
+    #expect(attachments == [explicit])
+
+    let selected = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+    #expect(selected.attachment == explicit)
+    #expect(!selected.automatic)
+    #expect(!selected.created)
+}
+
+@Test func requestedCreateNetworkOverridesAutomaticWithoutDoubleAttach() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+    _ = try fixture.registry.setDefault(name: "lan", cidr: "10.70.0.0/24")
+    _ = try fixture.registry.create(
+        name: "dmz",
+        cidr: "10.80.0.0/24",
+        mode: "shared",
+        labels: [:],
+        project: nil,
+        stack: nil
+    )
+    _ = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: nil,
+        vmIsStopped: true
+    )
+
+    let selected = try fixture.registry.ensureVMNetwork(
+        vmID: "web",
+        requestedNetwork: "dmz",
+        vmIsStopped: true
+    )
+    #expect(selected.network.name == "dmz")
+    #expect(selected.attachment.ip == "10.80.0.10")
+    #expect(!selected.automatic)
+    #expect(try fixture.registry.snapshot().attachments.filter { $0.vmID == "web" }.count == 1)
+}
+
 private struct RegistryFixture {
     let directory: URL
     let backendState: BackendState

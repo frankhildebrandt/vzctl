@@ -87,6 +87,8 @@ struct VmCreateOptions {
     from: String,
     data_disk_gib: u64,
     roles: Vec<String>,
+    requested_network: Option<String>,
+    network: Option<network::VmNetworkSelection>,
     format: OutputFormat,
 }
 
@@ -119,6 +121,7 @@ struct VmCreateResult {
     clone_mode: CloneMode,
     filesystem: String,
     identity: VmIdentity,
+    network: Option<network::VmNetworkSelection>,
 }
 
 #[derive(Debug)]
@@ -296,9 +299,11 @@ Commands:
   net list [--format human|json]
   net detach <vm> --network <name> [--format human|json]
   net delete <name> [--format human|json]
+  net default show [--format human|json]
+  net default set <name> --cidr CIDR [--format human|json]
   route apply [--router <vm-id>] [--format human|json]
   image seal <name|path> [--format human|json]
-  vm create <id> --from <sealed> --data-disk <GiB> [--role router] [--format human|json]
+  vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
   help
 
 Stable exit codes:
@@ -842,7 +847,7 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         None => {
             eprintln!(
                 "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                 [--role router] [--format human|json]"
+                 [--network <name>] [--role router] [--format human|json]"
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -851,13 +856,28 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
 
 fn vm_create_command(args: Vec<String>) -> ExitCode {
     let requested_format = requested_output_format(&args);
-    let options = match parse_vm_create_options(args.into_iter()) {
+    let mut options = match parse_vm_create_options(args.into_iter()) {
         Ok(options) => options,
         Err(failure) => {
             emit_vm_create_failure(requested_format, &failure);
             return ExitCode::from(failure.code);
         }
     };
+
+    let socket_path = supervisor_socket_path();
+    let selection = match network::ensure_vm_network(
+        &socket_path,
+        &options.id,
+        options.requested_network.as_deref(),
+    ) {
+        Ok(selection) => selection,
+        Err(failure) => {
+            let failure = VmCreateFailure::new(failure.code, failure.message);
+            emit_vm_create_failure(options.format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
+    options.network = Some(selection.clone());
 
     match create_vm_bundle(&options, &NativeVmDiskBackend) {
         Ok(result) => {
@@ -875,6 +895,7 @@ fn vm_create_command(args: Vec<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(failure) => {
+            network::rollback_vm_network(&socket_path, &selection, &options.id);
             emit_vm_create_failure(options.format, &failure);
             ExitCode::from(failure.code)
         }
@@ -888,6 +909,7 @@ fn parse_vm_create_options(
     let mut from = None;
     let mut data_disk_gib = None;
     let mut roles = Vec::new();
+    let mut requested_network = None;
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
 
@@ -930,6 +952,11 @@ fn parse_vm_create_options(
                     roles.push(role);
                 }
             }
+            "--network" => {
+                requested_network = Some(args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--network requires a network name")
+                })?);
+            }
             "--format" => {
                 let value = args.next().ok_or_else(|| {
                     VmCreateFailure::new(EXIT_USAGE, "--format requires human or json")
@@ -949,7 +976,7 @@ fn parse_vm_create_options(
                 return Err(VmCreateFailure::new(
                     EXIT_USAGE,
                     "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                     [--role router] [--format human|json]",
+                     [--network <name>] [--role router] [--format human|json]",
                 ))
             }
             _ if arg.starts_with('-') => {
@@ -972,7 +999,7 @@ fn parse_vm_create_options(
         VmCreateFailure::new(
             EXIT_USAGE,
             "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-             [--role router] [--format human|json]",
+             [--network <name>] [--role router] [--format human|json]",
         )
     })?;
     if !valid_vm_id(&id) {
@@ -991,6 +1018,8 @@ fn parse_vm_create_options(
         from,
         data_disk_gib,
         roles,
+        requested_network,
+        network: None,
         format,
     })
 }
@@ -1170,6 +1199,7 @@ fn prepare_vm_disks(
         &agent_token_path,
         &identity,
         &options.roles,
+        options.network.as_ref(),
     )?;
 
     let result = VmCreateResult {
@@ -1185,6 +1215,7 @@ fn prepare_vm_disks(
         clone_mode,
         filesystem,
         identity,
+        network: options.network.clone(),
     };
     write_vm_manifest(&result)?;
     Ok(result)
@@ -1222,10 +1253,13 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
             "hostname": result.identity.hostname,
             "fqdn": result.identity.fqdn,
             "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
+                let network = result.network.as_ref();
                 json!({
                     "index": index,
                     "mac": mac,
-                    "address": "dhcp",
+                    "address": network.map(|value| value.ip.as_str()).unwrap_or("dhcp"),
+                    "network": network.map(|value| value.network.as_str()),
+                    "cidr": network.map(|value| value.cidr.as_str()),
                 })
             }).collect::<Vec<_>>(),
         },
@@ -1274,6 +1308,16 @@ fn print_vm_create_human(result: &VmCreateResult) {
     if !result.roles.is_empty() {
         println!("  roles: {}", result.roles.join(", "));
     }
+    if let Some(network) = &result.network {
+        println!(
+            "  network: {} ({}/{}, gateway {}){}",
+            network.network,
+            network.ip,
+            network.prefix,
+            network.gateway,
+            if network.automatic { " [default]" } else { "" }
+        );
+    }
     println!("  cloud-init: {}", result.cidata_path.display());
 }
 
@@ -1301,6 +1345,17 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "managed-by": "vzctl",
             "roles": result.roles,
         },
+        "network": result.network.as_ref().map(|network| {
+            json!({
+                "name": network.network,
+                "cidr": network.cidr,
+                "ip": network.ip,
+                "prefix": network.prefix,
+                "gateway": network.gateway,
+                "dns": network.dns,
+                "automatic": network.automatic,
+            })
+        }),
         "image": {
             "name": result.source.name,
             "path": result.source.source_path,
@@ -1325,10 +1380,12 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "hostname": result.identity.hostname,
             "fqdn": result.identity.fqdn,
             "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
+                let network = result.network.as_ref();
                 json!({
                     "index": index,
                     "mac": mac,
-                    "address": "dhcp",
+                    "address": network.map(|value| value.ip.as_str()).unwrap_or("dhcp"),
+                    "network": network.map(|value| value.network.as_str()),
                 })
             }).collect::<Vec<_>>(),
         },
@@ -1398,6 +1455,7 @@ fn prepare_cloud_init_seed(
     agent_token_path: &Path,
     identity: &VmIdentity,
     roles: &[String],
+    network: Option<&network::VmNetworkSelection>,
 ) -> Result<(), VmCreateFailure> {
     let mut token_bytes = [0_u8; 32];
     File::open("/dev/urandom")
@@ -1435,10 +1493,20 @@ fn prepare_cloud_init_seed(
         "instance-id: {}\nlocal-hostname: {}\n",
         identity.instance_id, identity.hostname
     );
-    let network_config = format!(
-        "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp6: false\n",
-        identity.mac_addresses[0]
-    );
+    let network_config = match network {
+        Some(network) => format!(
+            "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: false\n    dhcp6: false\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}\n    nameservers:\n      addresses:\n        - {}\n",
+            identity.mac_addresses[0],
+            network.ip,
+            network.prefix,
+            network.gateway,
+            network.dns
+        ),
+        None => format!(
+            "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp6: false\n",
+            identity.mac_addresses[0]
+        ),
+    };
     let router_template = if roles.iter().any(|role| role == "router") {
         "\n  - path: /etc/sysctl.d/90-vzctl-router.conf\n    owner: root:root\n    permissions: \"0644\"\n    content: |\n      net.ipv4.ip_forward=1\nruncmd:\n  - sysctl --system\n  - [sh, -c, 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true']\n"
     } else {
@@ -2934,6 +3002,8 @@ mod tests {
             "json",
             "--role",
             "router",
+            "--network",
+            "lan",
             "--from",
             "ubuntu-base",
         ]
@@ -2946,6 +3016,8 @@ mod tests {
                 from: "ubuntu-base".to_string(),
                 data_disk_gib: 64,
                 roles: vec!["router".to_string()],
+                requested_network: Some("lan".to_string()),
+                network: None,
                 format: OutputFormat::Json,
             }
         );
@@ -3005,6 +3077,8 @@ mod tests {
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
                     roles: Vec::new(),
+                    requested_network: None,
+                    network: None,
                     format: OutputFormat::Json,
                 },
                 &backend,
@@ -3076,6 +3150,8 @@ mod tests {
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
                 roles: Vec::new(),
+                requested_network: None,
+                network: None,
                 format: OutputFormat::Human,
             },
             &backend,
@@ -3103,6 +3179,17 @@ mod tests {
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
                 roles: vec!["router".to_string()],
+                requested_network: Some("lan".to_string()),
+                network: Some(network::VmNetworkSelection {
+                    network: "lan".to_string(),
+                    cidr: "10.70.0.0/24".to_string(),
+                    ip: "10.70.0.10".to_string(),
+                    gateway: "10.70.0.0".to_string(),
+                    dns: "10.70.0.0".to_string(),
+                    prefix: 24,
+                    automatic: false,
+                    created: true,
+                }),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -3118,6 +3205,10 @@ mod tests {
         assert!(user_data.contains("/etc/sysctl.d/90-vzctl-router.conf"));
         assert!(user_data.contains("net.ipv4.ip_forward=1"));
         assert!(user_data.contains("iptables -P FORWARD DROP"));
+        let network_config = &backend.seeds()[0].1;
+        assert!(network_config.contains("10.70.0.10/24"));
+        assert!(network_config.contains("via: 10.70.0.0"));
+        assert!(!network_config.contains("dhcp4: true"));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -3134,6 +3225,8 @@ mod tests {
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
                 roles: Vec::new(),
+                requested_network: None,
+                network: None,
                 format: OutputFormat::Json,
             },
             &backend,
@@ -3185,6 +3278,8 @@ mod tests {
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
                     roles: Vec::new(),
+                    requested_network: None,
+                    network: None,
                     format: OutputFormat::Human,
                 },
                 &NativeVmDiskBackend,
@@ -3258,6 +3353,16 @@ mod tests {
                 fqdn: "web".to_string(),
                 mac_addresses: vec!["02:12:34:56:78:9a".to_string()],
             },
+            network: Some(network::VmNetworkSelection {
+                network: "lan".to_string(),
+                cidr: "10.70.0.0/24".to_string(),
+                ip: "10.70.0.10".to_string(),
+                gateway: "10.70.0.0".to_string(),
+                dns: "10.70.0.0".to_string(),
+                prefix: 24,
+                automatic: true,
+                created: true,
+            }),
         };
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/vm-create.json")).unwrap();

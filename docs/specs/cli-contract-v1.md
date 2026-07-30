@@ -116,16 +116,20 @@ Usage liefert `2`, ungültiger bzw. nicht auflösbarer Input `3`, fehlende
 Linux-Builder-Tools `12` und die commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
-### `vzctl vm create <id> --from <sealed> --data-disk <GiB> --format json`
+### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] --format json`
 
-Payloads: `vm`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
+Payloads: `vm`, `network`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
 kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue
 cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
-`cidata.iso` und ein privater Agent-Token. APFS liefert
+`cidata.iso` und ein privater Agent-Token. Ohne `--network` wird das
+konfigurierte Default-Netz verwendet; `network` enthält Name, CIDR, IP,
+Prefix, Gateway/DNS `.0` und `automatic=true`. `--network` oder ein bestehendes
+explizites Attachment gewinnt. APFS liefert
 `disks.root.clone=linked`. Nicht-APFS fällt mit `status=warn`, Exit `0` und
 `clone=full` zurück. Usage liefert `2`, ungültige IDs/Größen/Formate `3`,
 inkonsistenter Seal-State `15` und Fehler bei `clonefile`, Vollkopie,
-Sparse-Image, NoCloud-Seed oder Manifest `16`.
+Sparse-Image, NoCloud-Seed oder Manifest `16`. Fehlende Default-Konfiguration,
+unbekannte Netze und IP-/Attachment-Konflikte liefern `17`.
 
 Die Base wird ausschließlich read-only verwendet. `disks.root` und
 `disks.data` sind die writable VZ-Attachments. Details und manueller
@@ -134,7 +138,7 @@ APFS-Space-Smoke stehen in
 Der Identity-Vertrag und Live-Boot-Nachweis stehen in
 [`p1-identity-reset.md`](../spikes/p1-identity-reset.md).
 
-### `vzctl net create|attach|list|detach|delete`
+### `vzctl net create|attach|list|detach|delete|default`
 
 Kanonische Commands sind `net.create`, `net.attach`, `net.list`, `net.detach`
 und `net.delete`. Alle unterstützen `--format human|json`; JSON verwendet das
@@ -146,6 +150,16 @@ Attachments, NIC-Änderung an einer laufenden VM, Duplicate-IP oder ein
 fehlgeschlagener vmnet-Rebuild – liefern `17`. Labels sind wiederholbare
 `--label key=value`; `--project` und `--stack` ergänzen den Desired State.
 Details: [`docs/network.md`](../network.md).
+
+```bash
+vzctl net default show [--format human|json]
+vzctl net default set <name> --cidr <CIDR> [--format human|json]
+```
+
+Kanonische Commands sind `net.default.show` und `net.default.set`. Das
+JSON-Envelope enthält `default_network`; ohne Konfiguration ist der Wert
+`null`. Bei Konfiguration enthält er `mode=shared`, `access=full`,
+`nat_egress=true` und den Zustand der zugehörigen Network-Row.
 
 ### `vzctl route apply`
 

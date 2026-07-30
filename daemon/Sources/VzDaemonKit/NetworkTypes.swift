@@ -44,6 +44,15 @@ public struct IPv4CIDR: Equatable, Sendable {
         return address == network + 2 || containsGuest(value)
     }
 
+    public func guestAddress(offset: UInt32) -> String? {
+        let broadcast = network | ~mask
+        let address = network + offset
+        guard offset >= 10, address < broadcast else { return nil }
+        return Self.string(address)
+    }
+
+    public var prefix: Int { prefixLength }
+
     public var subnetAddress: in_addr {
         in_addr(s_addr: network.bigEndian)
     }
@@ -175,6 +184,35 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
             "labels": .object(labels.mapValues(JSONValue.string)),
             "project": project.map(JSONValue.string) ?? .null,
             "stack": stack.map(JSONValue.string) ?? .null,
+            "updated_at": .string(updatedAt),
+        ])
+    }
+}
+
+public struct DefaultNetworkRecord: Equatable, Sendable {
+    public var name: String
+    public var cidr: String
+    public var updatedAt: String
+
+    public init(
+        name: String,
+        cidr: String,
+        updatedAt: String = ISO8601DateFormatter().string(from: Date())
+    ) {
+        self.name = name
+        self.cidr = cidr
+        self.updatedAt = updatedAt
+    }
+
+    public func json(network: NetworkRecord?) -> JSONValue {
+        .object([
+            "name": .string(name),
+            "cidr": .string(cidr),
+            "mode": .string("shared"),
+            "access": .string("full"),
+            "nat_egress": .bool(true),
+            "network_exists": .bool(network != nil),
+            "network": network.map(\.json) ?? .null,
             "updated_at": .string(updatedAt),
         ])
     }

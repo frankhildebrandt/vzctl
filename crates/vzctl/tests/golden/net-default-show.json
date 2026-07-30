@@ -1,0 +1,17 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "net.default.show",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "default network configured"
+  },
+  "default_network": {
+    "name": "lan",
+    "cidr": "10.70.0.0/24",
+    "mode": "shared",
+    "access": "full",
+    "nat_egress": true,
+    "network_exists": true
+  }
+}

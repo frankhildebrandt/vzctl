@@ -1,4 +1,4 @@
-# Network CRUD v1
+# Network CRUD und Default-Netz v1
 
 Issue [#31](https://github.com/frankhildebrandt/vzctl/issues/31) implementiert
 Supervisor-owned `shared`-vmnet-Netze und persistente VM-Attachments:
@@ -32,6 +32,35 @@ werden. Bridged Mode ist in v0.1 unsupported.
 IP-Konvention: Host-Gateway und DNS liegen auf der Netzadresse `.0`, Router auf
 `.2`, Gäste beginnen bei `.10`. Eine Attachment-IP muss `.2` oder im
 Guest-Bereich liegen; IPs sind pro Netz eindeutig.
+
+## Default-Netzwerk
+
+Issue [#51](https://github.com/frankhildebrandt/vzctl/issues/51) ergänzt den
+Happy Path für VMs ohne explizites Attachment:
+
+```bash
+vzctl net default set lan --cidr 10.70.0.0/24
+vzctl net default show
+vzctl vm create web --from ubuntu-base --data-disk 4
+# web erhält z. B. 10.70.0.10/24, Gateway/DNS 10.70.0.0
+```
+
+Die Konfiguration aus Name und CIDR liegt als Singleton im SQLite Desired
+State. `set` ist idempotent. Fehlt die zugehörige Network-Row später, erzeugt
+der nächste VM-Create-Pfad sie erneut als `mode=shared`.
+
+Der Supervisor vergibt unter seinem Registry-Lock die erste freie Guest-IP ab
+Offset `.10`. `vm create --network <name>` wählt stattdessen ein vorhandenes
+Netz. Ein bereits per `net attach` gesetztes explizites Attachment gewinnt
+ebenfalls. Automatische Default-Attachments sind intern markiert; ein späteres
+explizites Attachment ersetzt nur dieses automatische Attachment. Explizite
+Multi-NIC-Attachments, etwa für Router, bleiben erhalten.
+
+`shared` lässt NAT44 standardmäßig aktiv und bietet damit Zugriff auf Host und
+Internet. DHCP und vmnet-DNS-Proxy bleiben deaktiviert; die VM erhält ihre
+statische Adresse, Default-Route und `.0` als DNS über den NoCloud-Seed.
+Cross-Net-Traffic wird dadurch nicht freigeschaltet: Dafür bleiben Router plus
+[#33](https://github.com/frankhildebrandt/vzctl/issues/33) zuständig.
 
 ## Unclean Exit
 

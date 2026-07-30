@@ -41,6 +41,11 @@ enum Operation {
     Delete {
         name: String,
     },
+    DefaultShow,
+    DefaultSet {
+        name: String,
+        cidr: String,
+    },
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -57,9 +62,21 @@ struct Options {
 }
 
 #[derive(Debug)]
-struct Failure {
-    code: u8,
-    message: String,
+pub(crate) struct Failure {
+    pub(crate) code: u8,
+    pub(crate) message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VmNetworkSelection {
+    pub(crate) network: String,
+    pub(crate) cidr: String,
+    pub(crate) ip: String,
+    pub(crate) gateway: String,
+    pub(crate) dns: String,
+    pub(crate) prefix: u8,
+    pub(crate) automatic: bool,
+    pub(crate) created: bool,
 }
 
 pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
@@ -98,6 +115,8 @@ impl Options {
             Operation::List => "net.list",
             Operation::Detach { .. } => "net.detach",
             Operation::Delete { .. } => "net.delete",
+            Operation::DefaultShow => "net.default.show",
+            Operation::DefaultSet { .. } => "net.default.set",
         }
     }
 
@@ -126,6 +145,10 @@ impl Options {
                 ("net.detach", json!({ "vm_id": vm_id, "network": network }))
             }
             Operation::Delete { name } => ("net.delete", json!({ "name": name })),
+            Operation::DefaultShow => ("net.default.show", json!({})),
+            Operation::DefaultSet { name, cidr } => {
+                ("net.default.set", json!({ "name": name, "cidr": cidr }))
+            }
         }
     }
 }
@@ -143,7 +166,7 @@ impl Metadata {
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     let operation = args
         .next()
-        .ok_or_else(|| usage("usage: vzctl net create|attach|list|detach|delete ..."))?;
+        .ok_or_else(|| usage("usage: vzctl net create|attach|list|detach|delete|default ..."))?;
     let rest = args.collect::<Vec<_>>();
     match operation.as_str() {
         "create" => parse_create(rest),
@@ -160,7 +183,40 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
         }
         "detach" => parse_detach(rest),
         "delete" => parse_delete(rest),
+        "default" => parse_default(rest),
         _ => Err(usage(format!("unknown net command: {operation}"))),
+    }
+}
+
+fn parse_default(args: Vec<String>) -> Result<Options, Failure> {
+    let action = args
+        .first()
+        .ok_or_else(|| usage("usage: vzctl net default show|set ..."))?;
+    match action.as_str() {
+        "show" => {
+            let (format, values, metadata) = parse_flags(args[1..].to_vec(), &[])?;
+            if !values.is_empty() || metadata != Metadata::default() {
+                return Err(usage("net default show accepts only --format human|json"));
+            }
+            Ok(Options {
+                operation: Operation::DefaultShow,
+                format,
+            })
+        }
+        "set" => {
+            let name = positional(&args[1..], "net default set requires a network name")?;
+            let (format, values, metadata) = parse_flags(args[2..].to_vec(), &["--cidr"])?;
+            if metadata != Metadata::default() {
+                return Err(usage("net default set does not accept metadata"));
+            }
+            let cidr = required(&values, "--cidr")?;
+            validate_cidr(&cidr)?;
+            Ok(Options {
+                operation: Operation::DefaultSet { name, cidr },
+                format,
+            })
+        }
+        _ => Err(usage(format!("unknown net default command: {action}"))),
     }
 }
 
@@ -381,6 +437,63 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
     })
 }
 
+pub(crate) fn ensure_vm_network(
+    socket_path: &Path,
+    vm_id: &str,
+    requested_network: Option<&str>,
+) -> Result<VmNetworkSelection, Failure> {
+    let result = rpc(
+        socket_path,
+        "vm.network.ensure",
+        json!({ "vm_id": vm_id, "network": requested_network }),
+    )?;
+    let network = result
+        .get("network")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("supervisor returned no network"))?;
+    let attachment = result
+        .get("attachment")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("supervisor returned no attachment"))?;
+    let string = |object: &Map<String, Value>, key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| invalid(format!("supervisor returned no {key}")))
+    };
+    Ok(VmNetworkSelection {
+        network: string(network, "name")?,
+        cidr: string(network, "cidr")?,
+        gateway: string(network, "gateway")?,
+        dns: string(network, "dns")?,
+        ip: string(attachment, "ip")?,
+        prefix: result
+            .get("prefix")
+            .and_then(Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| invalid("supervisor returned no network prefix"))?,
+        automatic: result
+            .get("automatic")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        created: result
+            .get("created")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+pub(crate) fn rollback_vm_network(socket_path: &Path, selection: &VmNetworkSelection, vm_id: &str) {
+    if selection.created {
+        let _ = rpc(
+            socket_path,
+            "net.detach",
+            json!({ "vm_id": vm_id, "network": selection.network }),
+        );
+    }
+}
+
 fn success_envelope(command: &str, result: Value) -> Value {
     let mut envelope = Map::from_iter([
         ("apiVersion".to_string(), json!(API_VERSION)),
@@ -431,6 +544,20 @@ fn success_envelope(command: &str, result: Value) -> Value {
             );
             envelope.insert("network".to_string(), result);
         }
+        "net.default.show" | "net.default.set" => {
+            let configured = !result.is_null();
+            envelope.insert(
+                "summary".to_string(),
+                json!({
+                    "message": if configured {
+                        "default network configured"
+                    } else {
+                        "default network is not configured"
+                    }
+                }),
+            );
+            envelope.insert("default_network".to_string(), result);
+        }
         _ => {
             envelope.insert(
                 "summary".to_string(),
@@ -465,6 +592,24 @@ fn print_human(command: &str, envelope: &Value) {
                     attachment["vm_id"].as_str().unwrap_or("-"),
                     attachment["network"].as_str().unwrap_or("-"),
                     attachment["ip"].as_str().unwrap_or("-")
+                );
+            }
+        }
+        "net.default.show" | "net.default.set" => {
+            let network = &envelope["default_network"];
+            if network.is_null() {
+                println!("default network is not configured");
+            } else {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    network["name"].as_str().unwrap_or("-"),
+                    network["cidr"].as_str().unwrap_or("-"),
+                    network["mode"].as_str().unwrap_or("-"),
+                    if network["network_exists"].as_bool().unwrap_or(false) {
+                        "active"
+                    } else {
+                        "missing"
+                    }
                 );
             }
         }
@@ -586,6 +731,58 @@ mod tests {
             .into_iter()
             .map(str::to_string);
         assert_eq!(parse(invalid_ip).unwrap_err().code, EXIT_INVALID);
+    }
+
+    #[test]
+    fn parses_default_show_and_set() {
+        assert_eq!(
+            parse(["default", "show"].into_iter().map(str::to_string)).unwrap(),
+            Options {
+                operation: Operation::DefaultShow,
+                format: Format::Human,
+            }
+        );
+        assert_eq!(
+            parse(
+                [
+                    "default",
+                    "set",
+                    "lan",
+                    "--cidr",
+                    "10.70.0.0/24",
+                    "--format",
+                    "json"
+                ]
+                .into_iter()
+                .map(str::to_string)
+            )
+            .unwrap(),
+            Options {
+                operation: Operation::DefaultSet {
+                    name: "lan".to_string(),
+                    cidr: "10.70.0.0/24".to_string(),
+                },
+                format: Format::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn default_show_envelope_is_cli_v1() {
+        let envelope = success_envelope(
+            "net.default.show",
+            json!({
+                "name": "lan",
+                "cidr": "10.70.0.0/24",
+                "mode": "shared",
+                "access": "full",
+                "nat_egress": true,
+                "network_exists": true,
+            }),
+        );
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/net-default-show.json")).unwrap();
+        assert_eq!(envelope, expected);
     }
 
     #[test]
