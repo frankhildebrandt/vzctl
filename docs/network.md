@@ -73,4 +73,5 @@ oder ein neues Netz mit frischer CIDR anlegen.
 Der gemessene Hintergrund steht in
 [`docs/spikes/g0-network.md`](spikes/g0-network.md). Router-Template,
 deklarative Forward-Policies sowie `route apply|plan|status` sind in
-[`routes.md`](routes.md) beschrieben.
+[`routes.md`](routes.md) beschrieben. Autoritative Records, Dual-UDP-Listener
+und Forwarding sind in [`dns.md`](dns.md) spezifiziert.

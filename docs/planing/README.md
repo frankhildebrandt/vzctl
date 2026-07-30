@@ -27,6 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 Network / Epic #30 implementiert** — CRUD, Router-Apply, Default-Netz und
-deklarative nftables-Forward-Policies mit Plan/Status sind abgeschlossen.
-Nächster P2-Block ist Dual-DNS in Epic #25; der Stack-Reconciler folgt in #34.
+**P2 / #26 abgeschlossen** — Supervisor Dual-DNS (Host `127.0.0.1:15353`,
+Guest Bridge `.0`), Zone/Forwarder/TTL, Hot-Reload und Health/Events.
+Der nächste DNS-Slice ist **#27** macOS `/etc/resolver` (Epic #25); danach
+#28 Query-CLI und #29 Guest nameservers.

@@ -112,8 +112,22 @@ Reserviert für einen erfolgreichen Reconciler-Abschluss.
 Der Alpha-Stub emittiert `apply.started`, `apply.step` und `apply.failed`, bevor
 er wie im CLI Contract v1 mit Exit `12` endet.
 
+### `dns.reloaded`
+
+```json
+{"reason":"net.attach","ok":true,"records":3,"zones":1,"listeners":["10.80.0.0:53","127.0.0.1:15353"],"ttl":15,"upstream":"system","error":null}
+```
+
+`reason` benennt den Registry-Auslöser oder `startup`. `records` zählt
+A-Adressen, nicht nur Namen.
+
+### `dns.reload_failed`
+
+Gleiches Schema wie `dns.reloaded`, aber `ok=false` und `error` enthält die
+Snapshot- oder Bind-Ursache. Bereits erfolgreiche Listener bleiben aktiv.
+
 ## Reservierte v1-Namen
 
-`vm.net_orphaned`, `vm.agent_ready`, `net.changed` und `dns.reloaded` sind
+`vm.net_orphaned`, `vm.agent_ready` und `net.changed` bleiben
 Schema-Platzhalter. Ihre Producer und stabilen `data`-Felder folgen in den
-jeweiligen Netzwerk-/DNS-Slices.
+jeweiligen Slices.

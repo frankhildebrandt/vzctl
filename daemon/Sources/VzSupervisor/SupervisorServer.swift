@@ -33,6 +33,7 @@ final class SupervisorServer: @unchecked Sendable {
     private var ownsSocket = false
     private let database: StateDatabase
     private let networkRegistry: NetworkRegistry
+    private let dnsServer: DNSServer
     private var helpers: [String: HelperRecord] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
 
@@ -50,6 +51,7 @@ final class SupervisorServer: @unchecked Sendable {
         databasePath = stateDirectory.appendingPathComponent("state.sqlite").path
         database = try StateDatabase(path: databasePath)
         networkRegistry = try NetworkRegistry(database: database)
+        dnsServer = DNSServer()
     }
 
     func run() throws {
@@ -73,6 +75,7 @@ final class SupervisorServer: @unchecked Sendable {
             guard Darwin.listen(fd, 16) == 0 else {
                 throw SupervisorError.system("listen", errno)
             }
+            reloadDNS(reason: "startup")
 
             while true {
                 let client = Darwin.accept(fd, nil, nil)
@@ -129,6 +132,7 @@ final class SupervisorServer: @unchecked Sendable {
         for client in state.2 {
             Darwin.shutdown(client, SHUT_RDWR)
         }
+        dnsServer.shutdown()
         networkRegistry.shutdown()
     }
 
@@ -185,15 +189,18 @@ final class SupervisorServer: @unchecked Sendable {
             let orphanedNetworks = networkSnapshot?.networks.filter {
                 $0.runtimeState != "active"
             }.count ?? 0
+            let dnsHealth = dnsServer.health()
             return JSONRPCResponse(
                 result: .object([
-                    "ok": .bool(true),
+                    "ok": .bool(dnsHealth.ok),
                     "version": .string(VzDaemonKit.version),
                     "pid": .number(Double(getpid())),
                     "uptime_ms": .number(Double(uptimeMilliseconds)),
                     "db_ok": .bool(true),
                     "networks": .number(Double(networkSnapshot?.networks.count ?? 0)),
                     "network_orphans": .number(Double(orphanedNetworks)),
+                    "dns_ok": .bool(dnsHealth.ok),
+                    "dns": dnsHealth.json,
                 ]),
                 id: request.id ?? .null
             )
@@ -218,6 +225,7 @@ final class SupervisorServer: @unchecked Sendable {
                     project: try optionalString("project", from: params),
                     stack: try optionalString("stack", from: params)
                 )
+                reloadDNS(reason: "net.create")
                 emit(type: "net.created", data: ["network": .string(record.name)])
                 return JSONRPCResponse(result: record.json, id: request.id ?? .null)
             } catch {
@@ -236,6 +244,7 @@ final class SupervisorServer: @unchecked Sendable {
                     stack: try optionalString("stack", from: params),
                     vmIsStopped: vmIsStopped(vmID)
                 )
+                reloadDNS(reason: "net.attach")
                 emit(
                     type: "net.attached",
                     data: [
@@ -258,6 +267,7 @@ final class SupervisorServer: @unchecked Sendable {
                     networkName: network,
                     vmIsStopped: vmIsStopped(vmID)
                 )
+                reloadDNS(reason: "net.detach")
                 emit(
                     type: "net.detached",
                     data: ["vm_id": .string(vmID), "network": .string(network)]
@@ -278,6 +288,7 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let name = try requiredString("name", from: params)
                 try networkRegistry.delete(name: name)
+                reloadDNS(reason: "net.delete")
                 emit(type: "net.deleted", data: ["network": .string(name)])
                 return JSONRPCResponse(
                     result: .object(["name": .string(name), "deleted": .bool(true)]),
@@ -315,6 +326,7 @@ final class SupervisorServer: @unchecked Sendable {
                     cidr: try requiredString("cidr", from: params)
                 )
                 let network = try networkRegistry.defaultNetwork()?.1
+                reloadDNS(reason: "net.default.set")
                 emit(type: "net.default.changed", data: [
                     "network": .string(configured.name),
                     "cidr": .string(configured.cidr),
@@ -336,6 +348,7 @@ final class SupervisorServer: @unchecked Sendable {
                     vmIsStopped: vmIsStopped(vmID)
                 )
                 if selection.created {
+                    reloadDNS(reason: "vm.network.ensure")
                     emit(type: "net.attached", data: [
                         "vm_id": .string(selection.attachment.vmID),
                         "network": .string(selection.attachment.networkName),
@@ -750,6 +763,29 @@ final class SupervisorServer: @unchecked Sendable {
                 subscribers.removeValue(forKey: id)
             }
         }
+    }
+
+    private func reloadDNS(reason: String) {
+        let health: DNSHealth
+        do {
+            health = dnsServer.reload(snapshot: try networkRegistry.snapshot())
+        } catch {
+            emit(type: "dns.reload_failed", data: [
+                "reason": .string(reason),
+                "error": .string(String(describing: error)),
+            ])
+            return
+        }
+        emit(type: health.ok ? "dns.reloaded" : "dns.reload_failed", data: [
+            "reason": .string(reason),
+            "ok": .bool(health.ok),
+            "records": .number(Double(health.records)),
+            "zones": .number(Double(health.zones)),
+            "listeners": .array(health.listeners.map(JSONValue.string)),
+            "ttl": .number(Double(health.ttl)),
+            "upstream": .string(health.upstream),
+            "error": health.lastError.map(JSONValue.string) ?? .null,
+        ])
     }
 
     private func prepareSocketPath() throws {

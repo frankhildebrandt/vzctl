@@ -6,6 +6,16 @@ user-only UDS. Er broadcastet den versionierten
 `vz-helper` owns exactly one `VZVirtualMachine` per process, per
 [ADR 0002](../docs/adr/0002-process-ownership.md).
 
+Der Supervisor betreibt außerdem den autoritativen
+[Dual-DNS](../docs/dns.md): Host `127.0.0.1:15353`, Guest-Bridge `.0:53`,
+Actual-State-A-Records und UDP-Forwarding. Für lokale unprivilegierte Läufe:
+
+```sh
+VZCTL_DNS_GUEST_PORT=15353 \
+VZCTL_DNS_UPSTREAM=system \
+daemon/.build/debug/vz-supervisor serve
+```
+
 ## Build and sign
 
 ```sh

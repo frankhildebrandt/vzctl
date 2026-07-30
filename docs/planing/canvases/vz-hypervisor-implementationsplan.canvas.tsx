@@ -414,6 +414,11 @@ export default function VzHypervisorImplementationsplan() {
 
       <Stack gap={12}>
         <H2>DNS — Dual Listener + *.vz.test</H2>
+        <Callout tone="success" title="#26 implementiert">
+          Supervisor-owned UDP-Listener, Actual-State A-Records, TTL 5–30s,
+          Hot-Reload, System-/expliziter Forwarder sowie DNS-Health und Events.
+          #27/#28/#29 bleiben.
+        </Callout>
         <Callout tone="danger" title="Nicht auth.localhost in Guests">
           RFC 6761: *.localhost = Guest-Loopback. Kanonisch{" "}
           <Code>{"{vm}.{net}.{project}.vz.test"}</Code>. OIDC Issuer ={" "}
@@ -436,7 +441,8 @@ export default function VzHypervisorImplementationsplan() {
             <CardHeader>Guest</CardHeader>
             <CardBody>
               <Text size="small" tone="secondary">
-                Listener auf Host-Bridge-<Code>.0:UDP</Code> (gemessen).{" "}
+                Listener auf Host-Bridge-<Code>.0:53/UDP</Code> (gemessen;
+                Dev-Port 15353).{" "}
                 <Code>.1</Code> nicht. cloud-init <Code>nameservers: [.0]</Code>.
                 Host parallel <Code>127.0.0.1</Code> +{" "}
                 <Code>/etc/resolver</Code>.
@@ -689,11 +695,12 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk-Basis">
+        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk + DNS-Server">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
           per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
-          Router-Apply, Default-Netz und deklarative nftables-Policies. Next:
-          Dual-DNS #25 und Stack-Reconciler #34.
+          Router-Apply, Default-Netz und deklarative nftables-Policies. #26:
+          autoritative DNS-Zone, Forwarder, TTL und Hot-Reload. Next:
+          #27 macOS resolver, dann #28/#29; Stack-Reconciler #34.
         </Callout>
       </Stack>
 

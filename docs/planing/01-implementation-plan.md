@@ -105,6 +105,8 @@ Kanonisch: `{vm}.{net}.{project}.vz.test`
 - Zone autoritativ für `*.{project}.vz.test`
 - **Forwarding** für externe Namen (Upstream = System-DNS / konfigurierbar; VPN-Verhalten dokumentieren)
 - TTL klein (z. B. 5–30s) für schnelle apply-Updates
+- **Implementiert in #26:** Supervisor-owned Dual-UDP-Listener,
+  Actual-State-VM-/Service-A-Records, Hot-Reload, Forwarder und DNS-Health/Events
 - `vzctl dns query` spricht **direkt** den vzctl-DNS (nicht nur libc/`dig`)
 - `install-resolver` / Cleanup verwaister `/etc/resolver/*` bei purge
 
