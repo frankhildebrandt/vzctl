@@ -45,6 +45,7 @@ Before `vzctl image seal` (#22), verify:
 
 - `/usr/local/sbin/vzctl-agent` is a static ARM64 Linux binary;
 - `vzctl-agent.service` is enabled and runs as `vzctl-agent`;
+- the service bounding/ambient capability set contains only `CAP_SYS_TIME`;
 - `/usr/lib/vzctl-agent/image-metadata.json` records agent version, protocol
   `1` and vsock port `21950`;
 - `/etc/machine-id` is empty; dbus machine ID, SSH host keys and cloud-init

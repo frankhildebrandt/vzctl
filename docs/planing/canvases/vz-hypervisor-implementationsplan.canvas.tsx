@@ -193,14 +193,15 @@ export default function VzHypervisorImplementationsplan() {
         Epic #7 closed (#9 UDS/SQLite, #10 Helper+VZ, #11 Reconnect). Guest-Agent
         Spec #13 + Base #14 seal-ready (<Code>guest-agent/</Code>, vsock :21950).
         Live Helper↔Agent E2E (#15) Unit/Client ✅; Live-Boot Residual.
-        Time-Sync → #16.
+        Time-Sync (#16) Code/Unit ✅; Live-Sleep Residual.
+        Nächster P0-Slice: doctor (#20).
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
-        <Stat value="#7✓" label="Ownership" tone="success" />
-        <Stat value="#16" label="Time-Sync next" tone="info" />
+        <Stat value="#12✓" label="Guest-Agent" tone="success" />
+        <Stat value="#20" label="doctor next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -295,19 +296,20 @@ export default function VzHypervisorImplementationsplan() {
             </CardBody>
           </Card>
           <Card>
-            <CardHeader trailing={<Pill tone="success" size="sm" active>#13–#15</Pill>}>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#12✓</Pill>}>
               vsock Guest-Agent
             </CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  Spec v1 + Base + Helper-Client (exec/report_ip/timeouts)
+                  Spec + Base + Helper E2E + <Code>time_hint</Code> Clock-Step
                 </Text>
                 <Text size="small" tone="secondary">
-                  Port <Code>21950</Code> · Token <Code>0600</Code> · kein SSH Happy Path
+                  Port <Code>21950</Code> · Token <Code>0600</Code> ·{" "}
+                  <Code>vm.clock_corrected</Code>
                 </Text>
                 <Text size="small" tone="secondary">
-                  Live-Boot Residual (Base-Raw) · <Code>time_hint</Code> → #16
+                  Live-Boot/Sleep Residual bis Base-Raw vom Builder
                 </Text>
               </Stack>
             </CardBody>
@@ -383,7 +385,7 @@ export default function VzHypervisorImplementationsplan() {
                   Kill -9: VM tot, Subnet verbrannt, frische CIDR OK
                 </Text>
                 <Text size="small" tone="secondary">
-                  ADR 0002+0003 ✓ · Helper ✓ · Agent Spec/Base/E2E ✓ · #16 next
+                  ADR+Ownership+Agent Epic ✓ · P0 Rest: doctor (#20)
                 </Text>
                 <Text size="small" tone="secondary">
                   <Code>phase-d-crash.sh</Code> ·{" "}
@@ -673,7 +675,7 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           rowTone={[
             "success",
             "success",
-            "info",
+            "success",
             "info",
             "info",
             "success",
@@ -685,9 +687,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          #16 Guest-Agent Time-Sync nach Host-Sleep (
-          <Code>time_hint</Code> Clock-Set). Optional parallel: doctor (#20) oder
-          Live-Boot-Smoke sobald Base-Raw vom Builder da ist.
+          #20 <Code>vzctl doctor</Code> ausbauen: Entitlements, APFS/clonefile,
+          DNS-Ports, Disk-Space; JSON-Format (#18) optional. Live-Boot/Sleep-
+          Smokes nachziehen sobald Base-Raw vorliegt.
         </Callout>
       </Stack>
 

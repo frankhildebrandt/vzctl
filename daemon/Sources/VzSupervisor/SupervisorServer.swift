@@ -180,6 +180,23 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
             )
+        case "vm.clock_corrected":
+            guard case let .object(params)? = request.params,
+                  case .string? = params["vm_id"],
+                  case .string? = params["reason"],
+                  case .number? = params["observed_guest_unix_ms"],
+                  case .number? = params["offset_ms"],
+                  params["action"] == .string("stepped")
+            else {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -32602, message: "Invalid clock event params"),
+                    id: request.id ?? .null
+                )
+            }
+            return JSONRPCResponse(
+                result: .object(["ok": .bool(true)]),
+                id: request.id ?? .null
+            )
         default:
             return JSONRPCResponse(
                 error: JSONRPCError(code: -32601, message: "Method not found"),

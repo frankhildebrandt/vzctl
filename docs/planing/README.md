@@ -27,6 +27,5 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P0 Foundation** — #15 Helper↔Agent ist implementiert und lokal getestet;
-offen ist nur der Live-Boot-Smoke mit dem auf ARM64-Linux gebauten Base-Image.
-Danach folgt #16 (`time_hint`/Clock-Set); #20 (`doctor`) kann parallel laufen.
+**P0** — #20 `vzctl doctor` ausbauen (Entitlements, APFS, DNS-Ports, Disk).
+Guest-Agent Epic #12 closed (#13–#16); Live-Boot/Sleep Residual bis Base-Raw.

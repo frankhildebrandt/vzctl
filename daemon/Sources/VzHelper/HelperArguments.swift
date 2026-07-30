@@ -16,6 +16,7 @@ struct RunOptions: Sendable {
     let diskURL: URL
     let cidataURL: URL?
     let agentTokenURL: URL
+    let timeHintReason: AgentTimeHintReason?
     let mock: Bool
     let stateDirectory: URL
 }
@@ -85,6 +86,17 @@ enum HelperArguments {
         let agentTokenURL = values["--agent-token"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? bundleURL.appendingPathComponent("agent.token")
+        let timeHintReason: AgentTimeHintReason?
+        if let rawReason = values["--time-hint"] {
+            guard let reason = AgentTimeHintReason(rawValue: rawReason) else {
+                throw HelperError.usage(
+                    "--time-hint must be handshake, wake or manual"
+                )
+            }
+            timeHintReason = reason
+        } else {
+            timeHintReason = nil
+        }
 
         return RunOptions(
             vmID: vmID,
@@ -93,6 +105,7 @@ enum HelperArguments {
             diskURL: diskURL,
             cidataURL: cidataURL,
             agentTokenURL: agentTokenURL,
+            timeHintReason: timeHintReason,
             mock: values["--mock"] != nil,
             stateDirectory: stateDirectory
         )
@@ -101,7 +114,7 @@ enum HelperArguments {
     private static func parseValues(_ arguments: [String]) throws -> [String: String] {
         let valueFlags = Set([
             "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--cidata", "--agent-token",
-            "--executable",
+            "--executable", "--time-hint",
         ])
         let booleanFlags = Set(["--mock"])
         var values: [String: String] = [:]

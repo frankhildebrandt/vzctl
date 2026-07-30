@@ -45,6 +45,28 @@ final class SupervisorReporter: @unchecked Sendable {
         }
     }
 
+    func reportClockCorrection(
+        _ result: AgentTimeHintResult,
+        reason: AgentTimeHintReason
+    ) {
+        let request = JSONRPCRequest(
+            method: "vm.clock_corrected",
+            params: .object([
+                "vm_id": .string(vmID),
+                "reason": .string(reason.rawValue),
+                "observed_guest_unix_ms": .number(Double(result.observedGuestUnixMS)),
+                "offset_ms": .number(Double(result.offsetMS)),
+                "action": .string(result.action.rawValue),
+            ]),
+            id: .number(Double.random(in: 1...9_000_000))
+        )
+        do {
+            _ = try send(request)
+        } catch {
+            fputs("supervisor unavailable; clock correction report deferred\n", stderr)
+        }
+    }
+
     private func send(_ request: JSONRPCRequest) throws -> JSONRPCResponse {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw HelperError.system("socket", errno) }

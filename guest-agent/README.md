@@ -11,10 +11,12 @@ P0 agent slice implements:
   helper/agent deadlines;
 - argv-only execution with 256 KiB stdin/stdout/stderr caps and truncation;
 - active non-loopback address reporting that rejects reserved IPv4 `.0`;
-- explicit `unsupported` responses for `time_hint`.
+- `time_hint` measurement and thresholded `CLOCK_REALTIME` stepping.
 
-Only implemented command methods are advertised as capabilities. Clock handling
-remains #16.
+Only implemented command methods are advertised as capabilities. `time_hint`
+defaults to a 1-second threshold. The hardened systemd service grants the
+dedicated agent user only `CAP_SYS_TIME`; no shell or privileged time daemon is
+used.
 
 ## Build and test
 
@@ -32,6 +34,9 @@ file vzctl-agent
 ```
 
 The release build has no C runtime dependency and is an ARM64 Linux ELF.
+
+For a no-write validation run, append `--time-hint-dry-run`. Override the
+threshold with e.g. `--time-hint-threshold 1500ms`.
 
 ## Runtime
 

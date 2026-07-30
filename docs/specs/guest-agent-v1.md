@@ -11,7 +11,7 @@ and the `vzctl-agent` inside its guest. It covers transport, framing,
 authentication, commands, deadlines, cancellation and stable errors.
 
 The agent binary and image integration are #14. Helper↔agent E2E wiring is #15.
-Clock correction is #16; v1 only reserves the `time_hint` message shape.
+Clock correction and helper wake wiring are #16.
 
 ## Ownership and transport
 
@@ -268,8 +268,8 @@ expose secrets, arbitrary files or process environments.
 }
 ```
 
-`reason` is one of `handshake`, `wake` or `manual`. In this spec slice the
-agent only measures and responds:
+`reason` is one of `handshake`, `wake` or `manual`. The agent samples its wall
+clock before any correction and responds:
 
 ```json
 {
@@ -284,8 +284,23 @@ agent only measures and responds:
 }
 ```
 
-Changing the guest clock, thresholds and any narrowly scoped privilege belong
-to #16. The v1 agent is not privileged by default.
+`offset_ms` is `host_unix_ms - observed_guest_unix_ms`. `action` has these
+stable values:
+
+- `none`: absolute offset is at or below the configured threshold;
+- `stepped`: the agent set `CLOCK_REALTIME` to `host_unix_ms`;
+- `skipped`: correction was required but the agent runs in dry-run mode.
+
+The default threshold is 1 second and is configurable with
+`--time-hint-threshold`. `--time-hint-dry-run` never changes the clock. A
+failed real clock step returns `internal`; it must not be reported as
+`skipped`.
+
+The Linux service runs as the dedicated `vzctl-agent` user and receives only
+`CAP_SYS_TIME`. The agent calls `clock_settime` directly: it does not invoke a
+shell, `chrony`, `timedatectl` or `date -s`, and it does not receive root or
+unrelated capabilities. `ProtectClock` is disabled only for this service
+because systemd would otherwise block the narrowly scoped capability.
 
 ## Deadlines and cancellation
 

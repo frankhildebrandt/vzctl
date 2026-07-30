@@ -59,6 +59,13 @@ enum VzHelperMain {
             let health = try client.health()
             print("hello=ok version=\(hello.version) ping=ok health=\(health)")
 
+            if let reason = options.timeHintReason {
+                let result = try client.timeHint(reason: reason)
+                printTimeHint(result, reason: reason)
+                await runtime.stop()
+                return
+            }
+
             let executed = try client.exec(
                 argv: ["/bin/sh", "-c", "printf helper-stdout; printf helper-stderr >&2"]
             )
@@ -176,7 +183,7 @@ enum VzHelperMain {
     }
 
     private static func requireCapabilities(_ capabilities: [String]) throws {
-        let required = Set(["ping", "version", "health", "exec", "report_ip"])
+        let required = Set(["ping", "version", "health", "exec", "report_ip", "time_hint"])
         let missing = required.subtracting(capabilities)
         guard missing.isEmpty else {
             throw GuestAgentError.protocolViolation(
@@ -219,6 +226,12 @@ enum VzHelperMain {
 
         var runtime: VirtualMachineRuntime?
         do {
+            let timeSyncToken: String?
+            if FileManager.default.fileExists(atPath: options.agentTokenURL.path) {
+                timeSyncToken = try AgentToken.load(from: options.agentTokenURL)
+            } else {
+                timeSyncToken = nil
+            }
             let created = try VirtualMachineRuntime(options: options)
             runtime = created
             try await created.start()
@@ -228,6 +241,9 @@ enum VzHelperMain {
             fflush(stdout)
             reporter.report(.running)
             let heartbeat = heartbeatTask(reporter: reporter, state: .running)
+            let timeSync = timeSyncToken.map {
+                guestTimeSyncTask(runtime: created, token: $0, reporter: reporter)
+            }
 
             let outcome = await withTaskGroup(of: RunOutcome.self) { group in
                 group.addTask {
@@ -242,6 +258,7 @@ enum VzHelperMain {
                 return first
             }
             heartbeat.cancel()
+            timeSync?.cancel()
 
             switch outcome {
             case .terminate:
@@ -272,6 +289,78 @@ enum VzHelperMain {
         }
     }
 
+    private static func guestTimeSyncTask(
+        runtime: VirtualMachineRuntime,
+        token: String,
+        reporter: SupervisorReporter
+    ) -> Task<Void, Never> {
+        Task.detached {
+            await sendTimeHint(
+                runtime: runtime,
+                token: token,
+                reason: .handshake,
+                reporter: reporter,
+                connectTimeout: 90
+            )
+
+            var detector = HostWakeDetector()
+            _ = detector.observe(Date())
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+                if detector.observe(Date()) {
+                    await sendTimeHint(
+                        runtime: runtime,
+                        token: token,
+                        reason: .wake,
+                        reporter: reporter,
+                        connectTimeout: 30
+                    )
+                }
+            }
+        }
+    }
+
+    private static func sendTimeHint(
+        runtime: VirtualMachineRuntime,
+        token: String,
+        reason: AgentTimeHintReason,
+        reporter: SupervisorReporter,
+        connectTimeout: TimeInterval
+    ) async {
+        do {
+            let client = try await connectReady(
+                runtime: runtime,
+                token: token,
+                timeout: connectTimeout
+            )
+            defer { client.close() }
+            let result = try client.timeHint(reason: reason)
+            printTimeHint(result, reason: reason)
+            if result.action == .stepped {
+                reporter.reportClockCorrection(result, reason: reason)
+            }
+        } catch {
+            fputs("time_hint reason=\(reason.rawValue) failed: \(error)\n", stderr)
+        }
+    }
+
+    private static func printTimeHint(
+        _ result: AgentTimeHintResult,
+        reason: AgentTimeHintReason
+    ) {
+        let event = result.action == .stepped ? "vm.clock_corrected" : "vm.clock_checked"
+        print(
+            "event=\(event) reason=\(reason.rawValue) "
+                + "observed_guest_unix_ms=\(result.observedGuestUnixMS) "
+                + "offset_ms=\(result.offsetMS) action=\(result.action.rawValue)"
+        )
+        fflush(stdout)
+    }
+
     private static func terminationSignals() -> SignalStream {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
@@ -295,12 +384,15 @@ enum VzHelperMain {
             [--supervisor-sock <path>]
           vz-helper agent-smoke --vm-id <id> --bundle <dir>
             [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--time-hint handshake|wake|manual]
           vz-helper launchd-plist --vm-id <id> --bundle <dir>
             [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
             [--supervisor-sock <path>]
             [--executable <path>]
 
         Bundle defaults: disk.raw, optional cidata.iso, agent.token, generated nvram.bin.
+        run sends time_hint after agent handshake and after detected host wake when agent.token exists.
+        agent-smoke --time-hint sends one hint and skips the destructive exec/down checks.
         Development only: --mock holds lifecycle/lock without creating a VM.
         """
 }

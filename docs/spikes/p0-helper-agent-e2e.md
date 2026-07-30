@@ -22,7 +22,9 @@
   Truncation, Prozessgruppen-Abbruch und maximal 600 Sekunden Laufzeit.
 - `report_ip` liefert nur aktive Nicht-Loopback-Interfaces. Reservierte
   IPv4-`.0`-Adressen werden Agent- und Helper-seitig verworfen.
-- `time_hint` bleibt bewusst Shape-only/`unsupported` bis #16.
+- Der damalige #15-Stand ließ `time_hint` Shape-only; #16 implementiert es
+  inzwischen vollständig, siehe
+  [`p0-agent-time-sync.md`](p0-agent-time-sync.md).
 
 ## Lokale Verifikation
 
@@ -68,5 +70,5 @@ nicht vorgetäuscht und bleibt als ops Residual.
 
 ## Nächster Schritt
 
-#16 `time_hint`/Clock-Set nach Host-Sleep. #20 (`doctor`) parallel möglich.
-Live-Boot-Smoke nachziehen, sobald Base-Raw vom Builder da ist.
+#20 (`doctor`) oder P1 #17. Live-Boot- und Sleep-Smoke nachziehen, sobald das
+Base-Raw vom Builder da ist.

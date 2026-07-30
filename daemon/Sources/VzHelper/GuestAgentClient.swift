@@ -46,6 +46,20 @@ struct AgentInterface {
     let addresses: [String]
 }
 
+enum AgentTimeHintReason: String, Sendable {
+    case handshake, wake, manual
+}
+
+enum AgentTimeHintAction: String, Sendable {
+    case none, stepped, skipped
+}
+
+struct AgentTimeHintResult: Sendable {
+    let observedGuestUnixMS: Int64
+    let offsetMS: Int64
+    let action: AgentTimeHintAction
+}
+
 final class GuestAgentClient: @unchecked Sendable {
     private let fileDescriptor: Int32
     private let ownsFileDescriptor: Bool
@@ -167,6 +181,31 @@ final class GuestAgentClient: @unchecked Sendable {
             }
             return AgentInterface(name: name, mac: mac, addresses: addresses)
         }
+    }
+
+    func timeHint(
+        hostUnixMS: Int64 = Int64(Date().timeIntervalSince1970 * 1_000),
+        reason: AgentTimeHintReason,
+        timeout: TimeInterval = 2
+    ) throws -> AgentTimeHintResult {
+        let result = try request(
+            method: "time_hint",
+            params: ["host_unix_ms": hostUnixMS, "reason": reason.rawValue],
+            timeout: timeout
+        )
+        guard
+            let observed = (result["observed_guest_unix_ms"] as? NSNumber)?.int64Value,
+            let offset = (result["offset_ms"] as? NSNumber)?.int64Value,
+            let rawAction = result["action"] as? String,
+            let action = AgentTimeHintAction(rawValue: rawAction)
+        else {
+            throw GuestAgentError.protocolViolation("invalid time_hint result")
+        }
+        return AgentTimeHintResult(
+            observedGuestUnixMS: observed,
+            offsetMS: offset,
+            action: action
+        )
     }
 
     private func request(

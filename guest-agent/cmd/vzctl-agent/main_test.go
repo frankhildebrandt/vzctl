@@ -49,7 +49,7 @@ func TestHelloPingVersionHealthExecAndReportIP(t *testing.T) {
 	assertOK(t, hello)
 	result := hello["result"].(map[string]any)
 	caps := result["capabilities"].([]any)
-	if len(caps) != 5 {
+	if len(caps) != 6 {
 		t.Fatalf("capabilities = %#v", caps)
 	}
 
@@ -92,6 +92,78 @@ func TestHelloPingVersionHealthExecAndReportIP(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+func TestTimeHintNoneBelowThreshold(t *testing.T) {
+	now := time.UnixMilli(1_785_387_600_000)
+	req := request{
+		V: 1, ID: "time-none", Method: "time_hint",
+		Params: json.RawMessage(`{"host_unix_ms":1785387600500,"reason":"handshake"}`),
+	}
+	got := handleRequestWithPolicy(context.Background(), req, timeHintPolicy{
+		thresholdMS: 1_000,
+		now:         func() time.Time { return now },
+		step: func(time.Time) error {
+			t.Fatal("clock must not be stepped")
+			return nil
+		},
+	})
+	if !got.OK {
+		t.Fatalf("response = %#v", got)
+	}
+	result := got.Result.(map[string]any)
+	if result["observed_guest_unix_ms"] != int64(1_785_387_600_000) ||
+		result["offset_ms"] != int64(500) || result["action"] != "none" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestTimeHintStepsAboveThreshold(t *testing.T) {
+	now := time.UnixMilli(1_785_387_590_000)
+	var steppedTo time.Time
+	req := request{
+		V: 1, ID: "time-step", Method: "time_hint",
+		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"wake"}`),
+	}
+	got := handleRequestWithPolicy(context.Background(), req, timeHintPolicy{
+		thresholdMS: 1_000,
+		now:         func() time.Time { return now },
+		step:        func(value time.Time) error { steppedTo = value; return nil },
+	})
+	if !got.OK || got.Result.(map[string]any)["action"] != "stepped" {
+		t.Fatalf("response = %#v", got)
+	}
+	if steppedTo.UnixMilli() != 1_785_387_600_000 {
+		t.Fatalf("stepped to %d", steppedTo.UnixMilli())
+	}
+}
+
+func TestTimeHintDryRunSkipsAndValidatesReason(t *testing.T) {
+	now := time.UnixMilli(1_785_387_590_000)
+	policy := timeHintPolicy{
+		thresholdMS: 1_000,
+		dryRun:      true,
+		now:         func() time.Time { return now },
+		step: func(time.Time) error {
+			t.Fatal("dry-run must not step")
+			return nil
+		},
+	}
+	got := handleRequestWithPolicy(context.Background(), request{
+		V: 1, ID: "time-dry", Method: "time_hint",
+		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"manual"}`),
+	}, policy)
+	if !got.OK || got.Result.(map[string]any)["action"] != "skipped" {
+		t.Fatalf("response = %#v", got)
+	}
+
+	invalid := handleRequestWithPolicy(context.Background(), request{
+		V: 1, ID: "time-invalid", Method: "time_hint",
+		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"resume"}`),
+	}, policy)
+	if invalid.OK || invalid.Error == nil || invalid.Error.Code != "proto" {
+		t.Fatalf("response = %#v", invalid)
 	}
 }
 

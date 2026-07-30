@@ -22,7 +22,9 @@ import Testing
                     "result": [
                         "v": 1,
                         "agent_version": "test",
-                        "capabilities": ["ping", "version", "exec", "report_ip", "health"],
+                        "capabilities": [
+                            "ping", "version", "exec", "report_ip", "health", "time_hint",
+                        ],
                     ],
                 ],
                 to: pair.server
@@ -35,6 +37,44 @@ import Testing
     #expect(hello.version == "test")
     #expect(hello.capabilities.contains("exec"))
     #expect(serverDone.wait(timeout: .now() + 1) == .success)
+}
+
+@Test func timeHintSendsHostTimeAndDecodesCorrection() throws {
+    let pair = try SocketPair()
+    let observedReason = LockedValue<String?>(nil)
+    DispatchQueue.global().async {
+        do {
+            let request = try readObject(from: pair.server)
+            guard
+                let id = request["id"] as? String,
+                let params = request["params"] as? [String: Any]
+            else { return }
+            observedReason.set(params["reason"] as? String)
+            try writeObject(
+                [
+                    "v": 1,
+                    "id": id,
+                    "ok": true,
+                    "result": [
+                        "observed_guest_unix_ms": 1_785_387_590_000,
+                        "offset_ms": 10_000,
+                        "action": "stepped",
+                    ],
+                ],
+                to: pair.server
+            )
+        } catch {}
+    }
+
+    let client = GuestAgentClient(fileDescriptor: pair.client, ownsFileDescriptor: false)
+    let result = try client.timeHint(
+        hostUnixMS: 1_785_387_600_000,
+        reason: .wake
+    )
+    #expect(observedReason.get() == "wake")
+    #expect(result.observedGuestUnixMS == 1_785_387_590_000)
+    #expect(result.offsetMS == 10_000)
+    #expect(result.action == .stepped)
 }
 
 @Test func helperDeadlineSendsCancelAndCloses() throws {

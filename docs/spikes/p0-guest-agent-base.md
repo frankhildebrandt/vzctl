@@ -8,8 +8,9 @@
 - `vzctl-agent` baut statisch für Linux ARM64 und bindet AF_VSOCK Port `21950`.
 - Protocol-v1-Minimum ist getestet: Framing, `hello`/Token, `ping`, `version`
   und `health`.
-- `exec`, `report_ip` und `time_hint` antworten stabil mit `unsupported` und
-  werden nicht als Capability beworben.
+- Im damaligen #14-Slice antworteten `exec`, `report_ip` und `time_hint`
+  stabil mit `unsupported`; #15/#16 haben diese Capabilities anschließend
+  implementiert.
 - systemd startet den Agent als dedizierten unprivilegierten User nach
   `cloud-final.service`, sobald das NoCloud-Token mit Mode `0600` vorliegt.
 - Die Offline-Pipeline installiert Binary und Unit vor dem Seal, schreibt
@@ -39,6 +40,7 @@ nicht vorgezogen.
 
 - #15 implementiert Helper-Handshake, `exec`, `report_ip`, Timeouts und den
   echten Host↔Guest-Test.
-- #16 ergänzt `time_hint`/Clock-Handling.
+- #16 ergänzt `time_hint`/Clock-Handling, dokumentiert in
+  [`p0-agent-time-sync.md`](p0-agent-time-sync.md).
 - #22 übernimmt die Seal-Checks, Immutable-Markierung und Clone-Mechanik; der
   Agent muss dabei installiert bleiben.

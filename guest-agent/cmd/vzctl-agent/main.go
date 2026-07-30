@@ -25,20 +25,21 @@ import (
 )
 
 const (
-	protocolVersion = 1
-	defaultPort     = 21950
-	defaultToken    = "/run/vzctl/agent.token"
-	maxFrameSize    = 1_048_576
-	maxIDBytes      = 128
-	authFailureWait = 250 * time.Millisecond
-	maxExecTimeout  = 600 * time.Second
-	defaultExecTime = 30 * time.Second
-	maxExecStream   = 256 * 1024
-	maxExecStdin    = 256 * 1024
-	maxExecArgs     = 256
-	maxExecArgBytes = 256 * 1024
-	maxExecEnv      = 128
-	maxExecEnvBytes = 64 * 1024
+	protocolVersion          = 1
+	defaultPort              = 21950
+	defaultToken             = "/run/vzctl/agent.token"
+	maxFrameSize             = 1_048_576
+	maxIDBytes               = 128
+	authFailureWait          = 250 * time.Millisecond
+	maxExecTimeout           = 600 * time.Second
+	defaultExecTime          = 30 * time.Second
+	maxExecStream            = 256 * 1024
+	maxExecStdin             = 256 * 1024
+	maxExecArgs              = 256
+	maxExecArgBytes          = 256 * 1024
+	maxExecEnv               = 128
+	maxExecEnvBytes          = 64 * 1024
+	defaultTimeHintThreshold = time.Second
 )
 
 var (
@@ -46,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "report_ip", "health"}
+var capabilities = []string{"ping", "version", "exec", "report_ip", "health", "time_hint"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -70,7 +71,15 @@ type wireError struct {
 }
 
 type server struct {
-	token []byte
+	token    []byte
+	timeHint timeHintPolicy
+}
+
+type timeHintPolicy struct {
+	thresholdMS int64
+	dryRun      bool
+	now         func() time.Time
+	step        func(time.Time) error
 }
 
 type responseWriter struct {
@@ -110,6 +119,16 @@ func (w *cappedBuffer) Write(payload []byte) (int, error) {
 func main() {
 	port := flag.Uint("port", defaultPort, "virtio-vsock listen port")
 	tokenPath := flag.String("token-file", defaultToken, "authentication token file")
+	timeHintThreshold := flag.Duration(
+		"time-hint-threshold",
+		defaultTimeHintThreshold,
+		"minimum absolute clock offset before stepping",
+	)
+	timeHintDryRun := flag.Bool(
+		"time-hint-dry-run",
+		false,
+		"measure time hints without changing the guest clock",
+	)
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -119,6 +138,9 @@ func main() {
 	}
 	if *port == 0 || *port > 65535 {
 		log.Fatal("invalid vsock port")
+	}
+	if *timeHintThreshold < time.Millisecond {
+		log.Fatal("time-hint threshold must be at least 1ms")
 	}
 
 	token, err := loadToken(*tokenPath)
@@ -133,7 +155,15 @@ func main() {
 	defer listener.Close()
 
 	log.Printf("vzctl-agent %s listening on virtio-vsock port %d", version, *port)
-	s := &server{token: token}
+	s := &server{
+		token: token,
+		timeHint: timeHintPolicy{
+			thresholdMS: timeHintThreshold.Milliseconds(),
+			dryRun:      *timeHintDryRun,
+			now:         time.Now,
+			step:        setSystemClock,
+		},
+	}
 	var connectionID atomic.Uint64
 	for {
 		conn, err := listener.Accept()
@@ -263,7 +293,7 @@ func (s *server) serveConn(conn net.Conn) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			response := handleRequest(requestContext, req)
+			response := handleRequestWithPolicy(requestContext, req, s.timeHint)
 			inflightMu.Lock()
 			_ = writer.write(response)
 			delete(inflight, req.ID)
@@ -321,6 +351,10 @@ func handleCancel(req request, mu *sync.Mutex, inflight map[string]context.Cance
 }
 
 func handleRequest(ctx context.Context, req request) response {
+	return handleRequestWithPolicy(ctx, req, timeHintPolicy{})
+}
+
+func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy) response {
 	if req.V != protocolVersion {
 		return errorResponse(req.ID, "proto", "unsupported protocol version", map[string]any{
 			"supported_versions": []int{protocolVersion},
@@ -368,14 +402,68 @@ func handleRequest(ctx context.Context, req request) response {
 		}
 		return successResponse(req.ID, map[string]any{"interfaces": interfaces})
 	case "time_hint":
-		return errorResponse(req.ID, "unsupported", "method is not implemented in the boot-proof slice", map[string]any{
-			"method": req.Method,
-		})
+		return handleTimeHint(req, policy)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,
 		})
 	}
+}
+
+func handleTimeHint(req request, policy timeHintPolicy) response {
+	var params struct {
+		HostUnixMS int64  `json:"host_unix_ms"`
+		Reason     string `json:"reason"`
+	}
+	if err := decodeParams(req.Params, &params); err != nil || params.HostUnixMS <= 0 {
+		return errorResponse(req.ID, "proto", "invalid time_hint parameters", nil)
+	}
+	switch params.Reason {
+	case "handshake", "wake", "manual":
+	default:
+		return errorResponse(req.ID, "proto", "invalid time_hint reason", nil)
+	}
+
+	policy = policy.normalized()
+	observedGuestUnixMS := policy.now().UnixMilli()
+	offsetMS := params.HostUnixMS - observedGuestUnixMS
+	result := map[string]any{
+		"observed_guest_unix_ms": observedGuestUnixMS,
+		"offset_ms":              offsetMS,
+		"action":                 "none",
+	}
+	if absoluteMilliseconds(offsetMS) <= policy.thresholdMS {
+		return successResponse(req.ID, result)
+	}
+	if policy.dryRun {
+		result["action"] = "skipped"
+		return successResponse(req.ID, result)
+	}
+	if err := policy.step(time.UnixMilli(params.HostUnixMS)); err != nil {
+		return errorResponse(req.ID, "internal", "cannot step guest clock", nil)
+	}
+	result["action"] = "stepped"
+	return successResponse(req.ID, result)
+}
+
+func (p timeHintPolicy) normalized() timeHintPolicy {
+	if p.thresholdMS == 0 {
+		p.thresholdMS = defaultTimeHintThreshold.Milliseconds()
+	}
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.step == nil {
+		p.step = setSystemClock
+	}
+	return p
+}
+
+func absoluteMilliseconds(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func handleExec(parent context.Context, req request) response {
