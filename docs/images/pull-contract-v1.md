@@ -92,7 +92,9 @@ Der kanonische JSON-Command ist `image.pull`. Erfolg enthält
 `summary.change=pulled|unchanged`, `image` mit Alias, Release, Raw-SHA256,
 Pfad und Seal-State sowie `source` mit URL, Format und Upstream-Digest. Ein
 frischer Pull liefert `sealed=false`; ein unveränderter Re-Pull eines danach
-versiegelten Alias darf `sealed=true` melden.
+versiegelten Alias darf `sealed=true` melden. Fortschritt (Phasenmeldungen,
+Download-Bar, `qemu-img`-Convert) geht nur auf stderr und nur wenn stderr ein
+TTY ist; stdout bleibt das Ergebnisdokument.
 
 | Exit | Bedeutung |
 |---|---|

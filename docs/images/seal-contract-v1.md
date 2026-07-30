@@ -21,9 +21,17 @@ exakte Name sowie `.raw`, `.qcow`, `.qcow2` und `.img` geprüft. Zusätzlich
 werden durch [`image pull`](pull-contract-v1.md) registrierte
 `aliases/<name>.json` auf content-addressed Raw-Objekte aufgelöst.
 
-Die Offline-Anpassung benötigt auf einem Linux-Builder `qemu-img` und
-`virt-customize` aus `libguestfs-tools`. Fehlt das Backend auf macOS, endet
-der Command kontrolliert mit Exit `12`.
+Die Offline-Anpassung benötigt auf einem Linux-Host `qemu-img` und
+`virt-customize` aus `libguestfs-tools`. Auf macOS startet `vzctl` stattdessen
+eine gepinnte Builder-Appliance (ephemerer `vz-helper`) und hängt das Ziel als
+Data-Disk an. Der Builder-Pfad unterstützt nur **raw**-Images (Pull-Aliases sind
+bereits normalisiert). Fehlt sowohl lokales Backend als auch die Appliance,
+endet der Command kontrolliert mit Exit `12`.
+
+Ergebnis der Builder-VM erscheint als Serial-Marker
+`VZCTL_BUILDER_RESULT {…}`; Erfolg gilt erst nach `sync` und Guest-Shutdown.
+Override: `VZCTL_IMAGE_BACKEND=local|builder`, Appliance:
+`VZCTL_BUILDER_IMAGE` oder `images/builder/vzctl-builder.raw`.
 
 ## Seal-Pipeline
 

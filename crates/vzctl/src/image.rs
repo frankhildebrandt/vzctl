@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256, Sha512};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -331,7 +331,17 @@ trait Fetcher {
     fn download(&self, url: &str, destination: &Path) -> Result<(), PullFailure>;
 }
 
-struct CurlFetcher;
+struct CurlFetcher {
+    progress: bool,
+}
+
+impl CurlFetcher {
+    fn new() -> Self {
+        Self {
+            progress: io::stderr().is_terminal(),
+        }
+    }
+}
 
 impl Fetcher for CurlFetcher {
     fn text(&self, url: &str) -> Result<String, PullFailure> {
@@ -362,14 +372,15 @@ impl Fetcher for CurlFetcher {
     }
 
     fn download(&self, url: &str, destination: &Path) -> Result<(), PullFailure> {
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--output",
-            ])
+        let mut command = Command::new("curl");
+        command.arg("--fail").arg("--location");
+        if self.progress {
+            command.arg("--progress-bar");
+        } else {
+            command.arg("--silent").arg("--show-error");
+        }
+        let status = command
+            .arg("--output")
             .arg(destination)
             .arg(url)
             .status()
@@ -390,8 +401,18 @@ impl Fetcher for CurlFetcher {
     }
 }
 
+fn progress_enabled() -> bool {
+    io::stderr().is_terminal()
+}
+
+fn progress_status(message: &str) {
+    if progress_enabled() {
+        eprintln!("{message}");
+    }
+}
+
 pub fn pull(alias: &str, images_dir: &Path) -> Result<PullResult, PullFailure> {
-    pull_with(alias, images_dir, &CurlFetcher, true)
+    pull_with(alias, images_dir, &CurlFetcher::new(), true)
 }
 
 fn pull_with(
@@ -418,6 +439,7 @@ fn pull_with(
             ),
         )
     })?;
+    progress_status(&format!("Resolving {alias}…"));
     let source = resolve_source(entry, fetcher)?;
     validate_digest_text(source.algorithm, &source.digest)?;
 
@@ -426,6 +448,7 @@ fn pull_with(
     fs::create_dir_all(images_dir.join(".tmp")).map_err(state_error)?;
 
     if let Some(result) = unchanged_result(alias, entry, &source, images_dir)? {
+        progress_status(&format!("Image {alias} is unchanged"));
         return Ok(result);
     }
 
@@ -439,7 +462,9 @@ fn pull_with(
     fs::create_dir(&work_dir).map_err(state_error)?;
     let downloaded = work_dir.join(&source.filename);
     let operation = (|| {
+        progress_status(&format!("Downloading {}…", source.filename));
         fetcher.download(&source.url, &downloaded)?;
+        progress_status("Verifying checksum…");
         let actual = hash_file(&downloaded, source.algorithm)?;
         if actual != source.digest.to_ascii_lowercase() {
             return Err(PullFailure::new(
@@ -455,6 +480,7 @@ fn pull_with(
         }
 
         let normalized = work_dir.join("normalized.raw");
+        progress_status("Normalizing image…");
         normalize(&downloaded, source.format, &normalized, &work_dir)?;
         let normalized_digest = hash_file(&normalized, HashAlgorithm::Sha256)?;
         let relative_object = format!("objects/{normalized_digest}.raw");
@@ -866,14 +892,13 @@ fn decode(program: &str, source: &Path, destination: &Path) -> Result<(), PullFa
 }
 
 fn qemu_convert(source: &Path, destination: &Path) -> Result<(), PullFailure> {
+    let mut command = Command::new("qemu-img");
+    command.arg("convert");
+    if progress_enabled() {
+        command.arg("-p");
+    }
     run_checked(
-        Command::new("qemu-img")
-            .arg("convert")
-            .arg("-p")
-            .arg("-O")
-            .arg("raw")
-            .arg(source)
-            .arg(destination),
+        command.arg("-O").arg("raw").arg(source).arg(destination),
         "qemu-img",
     )
 }
@@ -1113,7 +1138,14 @@ pub fn prepare_alias_for_seal(images_dir: &Path, alias: &str) -> Result<Option<P
         return resolve_alias(images_dir, alias);
     }
 
-    let source = images_dir.join(safe_object_path(&manifest).map_err(|error| error.message)?);
+    let source = if manifest.get("baked") == Some(&Value::Bool(true)) {
+        images_dir.join(
+            safe_relative_image_path(&manifest, &["baked_image", "path"], "baked")
+                .map_err(|error| error.message)?,
+        )
+    } else {
+        images_dir.join(safe_object_path(&manifest).map_err(|error| error.message)?)
+    };
     if !source.is_file() {
         return Err(format!(
             "alias {alias} references missing image {}",
@@ -1150,6 +1182,189 @@ pub fn prepare_alias_for_seal(images_dir: &Path, alias: &str) -> Result<Option<P
     fs::set_permissions(&destination, permissions)
         .map_err(|error| format!("cannot make {} writable: {error}", destination.display()))?;
     Ok(Some(destination))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct BakeResult {
+    pub requested_alias: String,
+    pub canonical_alias: String,
+    pub image_path: PathBuf,
+    pub agent_version: String,
+    pub unchanged: bool,
+}
+
+pub fn prepare_alias_for_bake(
+    images_dir: &Path,
+    alias: &str,
+) -> Result<(PathBuf, Value, PathBuf), String> {
+    if !is_safe_alias(alias) {
+        return Err(format!("invalid image alias {alias}"));
+    }
+    let manifest_path = images_dir.join("aliases").join(format!("{alias}.json"));
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "alias {alias} not found; run `vzctl image pull {alias}` first"
+        ));
+    }
+    let bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "invalid alias manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    if manifest["apiVersion"] != "vzctl.dev/image-alias/v1" {
+        return Err(format!(
+            "unsupported alias manifest {}",
+            manifest_path.display()
+        ));
+    }
+    if manifest["sealed"] == true {
+        return Err(format!(
+            "alias {alias} is already sealed; bake before seal, or pull a fresh image"
+        ));
+    }
+    let canonical = manifest["canonical_alias"]
+        .as_str()
+        .filter(|value| is_safe_alias(value))
+        .ok_or_else(|| "alias manifest has invalid canonical_alias".to_string())?
+        .to_string();
+    let source = images_dir.join(safe_object_path(&manifest).map_err(|error| error.message)?);
+    if !source.is_file() {
+        return Err(format!(
+            "alias {alias} references missing image {}",
+            source.display()
+        ));
+    }
+    let baked_directory = images_dir.join("baked");
+    fs::create_dir_all(&baked_directory)
+        .map_err(|error| format!("cannot create {}: {error}", baked_directory.display()))?;
+    let destination = baked_directory.join(format!("{canonical}.raw"));
+    if destination.exists() {
+        let mut permissions = fs::metadata(&destination)
+            .map_err(|error| format!("cannot inspect {}: {error}", destination.display()))?
+            .permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&destination, permissions)
+            .map_err(|error| format!("cannot make {} writable: {error}", destination.display()))?;
+    }
+    fs::copy(&source, &destination)
+        .map_err(|error| format!("cannot materialize bake target for {alias}: {error}"))?;
+    let mut permissions = fs::metadata(&destination)
+        .map_err(|error| format!("cannot inspect {}: {error}", destination.display()))?
+        .permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(&destination, permissions)
+        .map_err(|error| format!("cannot make {} writable: {error}", destination.display()))?;
+    Ok((destination, manifest, manifest_path))
+}
+
+pub fn mark_aliases_baked(
+    images_dir: &Path,
+    baked_path: &Path,
+    agent_version: &str,
+) -> Result<(), String> {
+    let aliases_directory = images_dir.join("aliases");
+    if !aliases_directory.is_dir() {
+        return Ok(());
+    }
+    let relative_baked = baked_path.strip_prefix(images_dir).map_err(|_| {
+        format!(
+            "baked image {} is outside {}",
+            baked_path.display(),
+            images_dir.display()
+        )
+    })?;
+    let digest = hash_file(baked_path, HashAlgorithm::Sha256).map_err(|error| error.message)?;
+    for entry in fs::read_dir(&aliases_directory)
+        .map_err(|error| format!("cannot read {}: {error}", aliases_directory.display()))?
+    {
+        let manifest_path = entry
+            .map_err(|error| format!("cannot read alias entry: {error}"))?
+            .path();
+        if manifest_path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = fs::read(&manifest_path)
+            .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
+        let mut manifest: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "invalid alias manifest {}: {error}",
+                manifest_path.display()
+            )
+        })?;
+        if manifest["apiVersion"] != "vzctl.dev/image-alias/v1" {
+            continue;
+        }
+        let Some(canonical) = manifest["canonical_alias"]
+            .as_str()
+            .filter(|value| is_safe_alias(value))
+        else {
+            continue;
+        };
+        if PathBuf::from(format!("baked/{canonical}.raw")) != relative_baked {
+            continue;
+        }
+        manifest["baked"] = Value::Bool(true);
+        manifest["baked_image"] = json!({
+            "path": relative_baked,
+            "format": "raw",
+            "sha256": digest,
+            "agent_version": agent_version,
+        });
+        write_json_atomic(&manifest_path, &manifest).map_err(|error| error.message)?;
+    }
+    Ok(())
+}
+
+pub fn already_baked(
+    images_dir: &Path,
+    alias: &str,
+    agent_version: &str,
+) -> Result<Option<BakeResult>, String> {
+    if !is_safe_alias(alias) {
+        return Ok(None);
+    }
+    let manifest_path = images_dir.join("aliases").join(format!("{alias}.json"));
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "invalid alias manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    if manifest.get("baked") != Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    let recorded = manifest
+        .pointer("/baked_image/agent_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if recorded != agent_version {
+        return Ok(None);
+    }
+    let path = images_dir.join(
+        safe_relative_image_path(&manifest, &["baked_image", "path"], "baked")
+            .map_err(|error| error.message)?,
+    );
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(BakeResult {
+        requested_alias: alias.to_string(),
+        canonical_alias: manifest["canonical_alias"]
+            .as_str()
+            .unwrap_or(alias)
+            .to_string(),
+        image_path: path,
+        agent_version: agent_version.to_string(),
+        unchanged: true,
+    }))
 }
 
 pub fn mark_aliases_sealed(
@@ -1534,7 +1749,7 @@ mod tests {
     #[ignore = "requires upstream network access; no image payloads are downloaded"]
     fn live_catalog_metadata_resolves_every_alias() {
         for entry in CATALOG {
-            let source = resolve_source(entry, &CurlFetcher)
+            let source = resolve_source(entry, &CurlFetcher::new())
                 .unwrap_or_else(|error| panic!("{}: {}", entry.canonical, error.message));
             validate_digest_text(source.algorithm, &source.digest).unwrap();
             assert!(source.url.starts_with("https://"), "{}", entry.canonical);

@@ -27,13 +27,16 @@ Wichtige Hinweise:
   `com.apple.security.virtualization` enthalten. Für lokale Builds genügt
   ad-hoc Codesigning mit `daemon/VzHelper.entitlements`.
 - Das Images-Verzeichnis soll auf APFS liegen; nur dann steht `clonefile` für
-  Linked Clones zur Verfügung. Dieser Hinweis ist die Host-Voraussetzung für
-  den [Seal/Clone-Lifecycle](images/seal-contract-v1.md); das Sealing selbst
-  kann auf einem Linux-Builder laufen.
+  Linked Clones zur Verfügung. Seal/Bake laufen lokal per `virt-customize` oder
+  über die Builder-Appliance (siehe `image.backend`).
 - Freier Port `127.0.0.1:15353` ist vor dem DNS-Start normal. Existiert zugleich
   eine passende `/etc/resolver/*.vz.test`, ist sie wahrscheinlich verwaist.
 - vmnet wird nicht live angelegt. `doctor` bestätigt nur die macOS-26-Baseline
   und erinnert an die G0-Konvention: Host/DNS `.0`, Router `.2`, Gäste `.10+`.
+- `image.backend` prüft offline, ob lokales `virt-customize`/`qemu-img` oder
+  eine gecachte Builder-Appliance unter `images/builder/` verfügbar ist.
+  Fehlender Cache ist WARN (First-Use-Download bzw.
+  `scripts/build-builder-appliance.sh`), kein FAIL.
 - Ist der Supervisor erreichbar, meldet `doctor` WARN, sobald persistierte
   vmnet-Netze nach einem Restart nicht rekonstruiert werden konnten. Nach einem
   unclean Exit kann die CIDR bis zum Host-Reboot als `orphaned` blockiert sein;

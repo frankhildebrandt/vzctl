@@ -168,12 +168,21 @@ Konvertierungswerkzeuge `12`, Store-/Normalisierungsfehler `15`,
 Netzwerk-/Metadatenfehler `21`, Checksumfehler `22` und unsupported Arch `23`.
 Details: [Image Pull Contract v1](../images/pull-contract-v1.md).
 
+### `vzctl image bake <alias> --format json`
+
+Payload: `image`; kanonischer Command ist `image.bake`.
+`summary.change` ist `baked` oder `unchanged`. Bake schreibt
+`baked/<canonical>.raw` und setzt `baked_image` im Alias-Manifest; das
+Pull-Objekt bleibt unverändert. Details:
+[Image Bake Contract v1](../images/bake-contract-v1.md).
+
 ### `vzctl image seal <name|path> --format json`
 
 Payload: `image`, `cleanup` und `preserved`; kanonischer Command ist
 `image.seal`. Erfolg und idempotentes „already sealed“ liefern Exit `0`.
-Usage liefert `2`, ungültiger bzw. nicht auflösbarer Input `3`, fehlende
-Linux-Builder-Tools `12` und die commandspezifischen Fehler `13`–`15`.
+Usage liefert `2`, ungültiger bzw. nicht auflösbarer Input `3`, fehlendes
+Customize-Backend (lokal oder Builder-Appliance) `12` und die
+commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
 ### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] --format json`

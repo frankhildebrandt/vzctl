@@ -32,6 +32,7 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 19 | Ownership ADR | VZ=Helper; vmnet+DNS+Journal=Supervisor; Reconnect spezifiziert |
 | 20 | Apply | **Journal + Resume/Abort** — [ADR 0003](../adr/0003-apply-state.md) |
 | 21 | Guest-Agent | **In sealed Base vorinstalliert** (nicht First-Boot-Install) |
+| 25 | Image Customize Backend | **Builder-VM** mit gepinnter Appliance auf macOS; lokales `virt-customize` wenn vorhanden (CI/Linux). Seal und Bake teilen das Backend, bleiben getrennte Contracts. |
 | 22 | MVP Label | v0.1 = **Alpha**; virtiofs + Docker-Polish → **v0.1.x** |
 | 23 | Guest-DNS-IP | Host-Bridge **`.0`** (UDP gemessen); Host-Listener parallel `127.0.0.1` |
 | 24 | G0 Verdict | **Go**; ADR 0002+0003 accepted |

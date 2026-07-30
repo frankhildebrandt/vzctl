@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod builder;
 mod config;
 mod dns;
 mod image;
@@ -33,19 +34,19 @@ const EXIT_IMAGE_CUSTOMIZE_FAILED: u8 = 13;
 const EXIT_IMAGE_INVARIANT_FAILED: u8 = 14;
 const EXIT_IMAGE_STATE_FAILED: u8 = 15;
 const EXIT_VM_DISK_PREP_FAILED: u8 = 16;
-const IMAGE_PRESERVATION_CHECKS: &[&str] = &[
+pub(crate) const IMAGE_PRESERVATION_CHECKS: &[&str] = &[
     "test -x /usr/local/sbin/vzctl-agent && test -s /usr/local/sbin/vzctl-agent",
     "test -s /etc/systemd/system/vzctl-agent.service",
     "test -s /usr/lib/vzctl-agent/image-metadata.json",
     "test -L /etc/systemd/system/multi-user.target.wants/vzctl-agent.service",
 ];
-const IMAGE_CLEANUP_COMMANDS: &[&str] = &[
+pub(crate) const IMAGE_CLEANUP_COMMANDS: &[&str] = &[
     "cloud-init clean --logs --machine-id",
     "truncate -s 0 /etc/machine-id",
     "rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed",
     "sync",
 ];
-const IMAGE_CLONE_SAFE_CHECKS: &[&str] = &[
+pub(crate) const IMAGE_CLONE_SAFE_CHECKS: &[&str] = &[
     "test ! -s /etc/machine-id",
     "test ! -e /var/lib/dbus/machine-id",
     "! find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*' -print -quit | grep -q .",
@@ -177,6 +178,16 @@ trait ImageSealBackend {
     fn verify_preserved(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
     fn customize(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
     fn verify_clone_safe(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
+
+    /// One logical seal operation. Local backends run the steps sequentially;
+    /// Builder-VM backends override this to use a single appliance boot.
+    fn seal_pipeline(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
+        self.verify_preserved(path, image_format)?;
+        self.customize(path, image_format)?;
+        self.verify_preserved(path, image_format)?;
+        self.verify_clone_safe(path, image_format)?;
+        Ok(())
+    }
 }
 
 trait VmDiskBackend {
@@ -192,6 +203,10 @@ trait VmDiskBackend {
 }
 
 struct LibguestfsBackend;
+struct BuilderVmBackend {
+    images_dir: PathBuf,
+    progress: bool,
+}
 struct NativeVmDiskBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -326,6 +341,7 @@ Commands:
   dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
   image pull <alias> [--format human|json]
+  image bake <alias> [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
   help
@@ -397,6 +413,7 @@ fn version_json(version: &str) -> Value {
 fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
         Some("pull") => image_pull_command(args.collect()),
+        Some("bake") => image_bake_command(args.collect()),
         Some("seal") => image_seal_command(args.collect()),
         Some(command) => {
             eprintln!("unknown image command: {command}");
@@ -405,6 +422,7 @@ fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         None => {
             eprintln!(
                 "usage: vzctl image pull <alias> [--format human|json] | \
+                 image bake <alias> [--format human|json] | \
                  image seal <name|path> [--format human|json]"
             );
             ExitCode::from(EXIT_USAGE)
@@ -557,6 +575,313 @@ fn emit_image_pull_failure(format: OutputFormat, failure: &image::PullFailure) {
     }
 }
 
+fn image_bake_command(args: Vec<String>) -> ExitCode {
+    let requested_format = requested_output_format(&args);
+    let options = match parse_image_bake_options(args.into_iter()) {
+        Ok(options) => options,
+        Err(failure) => {
+            emit_bake_failure(requested_format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
+    match bake_image(&options) {
+        Ok(result) => {
+            match options.format {
+                OutputFormat::Human => {
+                    println!(
+                        "Image {} {}",
+                        result.requested_alias,
+                        if result.unchanged {
+                            "bake unchanged"
+                        } else {
+                            "baked"
+                        }
+                    );
+                    println!("  agent: {}", result.agent_version);
+                    println!("  path: {}", result.image_path.display());
+                }
+                OutputFormat::Json => println!("{}", image_bake_json(&result)),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            emit_bake_failure(options.format, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ImageBakeOptions {
+    alias: String,
+    format: OutputFormat,
+}
+
+fn parse_image_bake_options(
+    args: impl Iterator<Item = String>,
+) -> Result<ImageBakeOptions, SealFailure> {
+    let mut alias = None;
+    let mut format = OutputFormat::Human;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--format" => {
+                let value = args.next().ok_or_else(|| SealFailure {
+                    code: EXIT_USAGE,
+                    message: "--format requires human or json".to_string(),
+                })?;
+                format = match value.as_str() {
+                    "human" => OutputFormat::Human,
+                    "json" => OutputFormat::Json,
+                    _ => {
+                        return Err(SealFailure {
+                            code: EXIT_USAGE,
+                            message: format!("unsupported image bake format: {value}"),
+                        })
+                    }
+                };
+            }
+            "-h" | "--help" => {
+                return Err(SealFailure {
+                    code: EXIT_USAGE,
+                    message: "usage: vzctl image bake <alias> [--format human|json]".to_string(),
+                })
+            }
+            _ if arg.starts_with('-') => {
+                return Err(SealFailure {
+                    code: EXIT_USAGE,
+                    message: format!("unknown image bake option: {arg}"),
+                })
+            }
+            _ if alias.is_none() => alias = Some(arg),
+            _ => {
+                return Err(SealFailure {
+                    code: EXIT_USAGE,
+                    message: format!("unexpected image bake argument: {arg}"),
+                })
+            }
+        }
+    }
+    let alias = alias.ok_or_else(|| SealFailure {
+        code: EXIT_USAGE,
+        message: "usage: vzctl image bake <alias> [--format human|json]".to_string(),
+    })?;
+    Ok(ImageBakeOptions { alias, format })
+}
+
+fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailure> {
+    let images = images_dir();
+    let agent_version = agent_version_string()?;
+    if let Some(existing) = image::already_baked(&images, &options.alias, &agent_version)
+        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+    {
+        return Ok(existing);
+    }
+
+    let (target, manifest, _manifest_path) =
+        image::prepare_alias_for_bake(&images, &options.alias)
+            .map_err(|error| SealFailure::new(EXIT_INVALID_INPUT, error))?;
+    let canonical = manifest["canonical_alias"]
+        .as_str()
+        .unwrap_or(&options.alias)
+        .to_string();
+
+    let staging = build_agent_staging(&agent_version)?;
+    let progress = io::stderr().is_terminal() && options.format == OutputFormat::Human;
+    let backend_kind = builder::select_backend_kind().map_err(|failure| {
+        SealFailure::new(failure.code, failure.message)
+    })?;
+
+    match backend_kind {
+        builder::ImageBackendKind::Local => {
+            bake_with_virt_customize(&target, &staging)?;
+        }
+        builder::ImageBackendKind::Builder => {
+            if progress {
+                eprintln!("Baking via builder VM…");
+            }
+            let appliance = builder::resolve_builder_image(&images)
+                .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
+            let runbook = builder::bake_runbook("staging");
+            builder::run_builder_vm(builder::BuilderRunOptions {
+                appliance: &appliance,
+                target_raw: &target,
+                runbook: &runbook,
+                staging_dir: Some(&staging),
+                timeout: builder::default_timeout(),
+                progress,
+            })
+            .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
+        }
+    }
+
+    let _ = fs::remove_dir_all(&staging);
+    image::mark_aliases_baked(&images, &target, &agent_version)
+        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+    Ok(image::BakeResult {
+        requested_alias: options.alias.clone(),
+        canonical_alias: canonical,
+        image_path: target,
+        agent_version,
+        unchanged: false,
+    })
+}
+
+fn agent_version_string() -> Result<String, SealFailure> {
+    if let Ok(version) = std::env::var("VZCTL_AGENT_VERSION") {
+        return Ok(version.trim().to_string());
+    }
+    let version_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent/VERSION");
+    fs::read_to_string(&version_path)
+        .map(|value| value.trim().to_string())
+        .or_else(|_| Ok("0.1.0".to_string()))
+}
+
+fn build_agent_staging(agent_version: &str) -> Result<PathBuf, SealFailure> {
+    let staging = std::env::temp_dir().join(format!(
+        "vzctl-bake-staging-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&staging).map_err(|error| {
+        SealFailure::new(EXIT_UNAVAILABLE, format!("cannot create bake staging: {error}"))
+    })?;
+
+    let agent_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent");
+    let binary = staging.join("vzctl-agent");
+    let status = Command::new("go")
+        .current_dir(&agent_root)
+        .env("CGO_ENABLED", "0")
+        .env("GOOS", "linux")
+        .env("GOARCH", "arm64")
+        .args([
+            "build",
+            "-trimpath",
+            "-ldflags",
+            &format!("-s -w -buildid= -X main.version={agent_version}"),
+            "-o",
+        ])
+        .arg(&binary)
+        .arg("./cmd/vzctl-agent")
+        .status()
+        .map_err(|error| {
+            SealFailure::new(
+                EXIT_UNAVAILABLE,
+                format!("go is required to cross-build vzctl-agent: {error}"),
+            )
+        })?;
+    if !status.success() {
+        return Err(SealFailure::new(
+            EXIT_IMAGE_CUSTOMIZE_FAILED,
+            "go build of vzctl-agent failed",
+        ));
+    }
+    fs::copy(
+        agent_root.join("systemd/vzctl-agent.service"),
+        staging.join("vzctl-agent.service"),
+    )
+    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
+    fs::copy(
+        agent_root.join("systemd/vzctl-agent-tmpfiles.conf"),
+        staging.join("vzctl-agent-tmpfiles.conf"),
+    )
+    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
+    fs::write(
+        staging.join("image-metadata.json"),
+        format!(
+            "{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"
+        ),
+    )
+    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
+    Ok(staging)
+}
+
+fn bake_with_virt_customize(target: &Path, staging: &Path) -> Result<(), SealFailure> {
+    let output = Command::new("virt-customize")
+        .args(["--format", "raw", "-a"])
+        .arg(target)
+        .arg("--mkdir")
+        .arg("/usr/lib/vzctl-agent")
+        .arg("--copy-in")
+        .arg(format!("{}:/usr/local/sbin", staging.join("vzctl-agent").display()))
+        .arg("--copy-in")
+        .arg(format!(
+            "{}:/etc/systemd/system",
+            staging.join("vzctl-agent.service").display()
+        ))
+        .arg("--copy-in")
+        .arg(format!(
+            "{}:/usr/lib/tmpfiles.d",
+            staging.join("vzctl-agent-tmpfiles.conf").display()
+        ))
+        .arg("--copy-in")
+        .arg(format!(
+            "{}:/usr/lib/vzctl-agent",
+            staging.join("image-metadata.json").display()
+        ))
+        .arg("--run-command")
+        .arg("id -u vzctl-agent >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vzctl-agent")
+        .arg("--run-command")
+        .arg("chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json")
+        .arg("--run-command")
+        .arg("systemctl enable vzctl-agent.service")
+        .output()
+        .map_err(|error| {
+            SealFailure::new(
+                EXIT_UNAVAILABLE,
+                format!("virt-customize is required for local image bake: {error}"),
+            )
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(SealFailure::new(
+            EXIT_IMAGE_CUSTOMIZE_FAILED,
+            format!("image bake failed: {}", command_text(&output)),
+        ))
+    }
+}
+
+fn image_bake_json(result: &image::BakeResult) -> Value {
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "image.bake",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": if result.unchanged { "image bake unchanged" } else { "image baked" },
+            "change": if result.unchanged { "unchanged" } else { "baked" },
+        },
+        "image": {
+            "alias": result.requested_alias,
+            "canonical_alias": result.canonical_alias,
+            "path": result.image_path,
+            "format": "raw",
+            "baked": true,
+            "agent_version": result.agent_version,
+        },
+    })
+}
+
+fn emit_bake_failure(format: OutputFormat, failure: &SealFailure) {
+    eprintln!("{}", failure.message);
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": CLI_API_VERSION,
+                "command": "image.bake",
+                "status": "fail",
+                "exit_code": failure.code,
+                "summary": { "message": failure.message },
+            })
+        );
+    }
+}
+
 fn image_seal_command(args: Vec<String>) -> ExitCode {
     let requested_format = requested_output_format(&args);
     let options = match parse_image_seal_options(args.into_iter()) {
@@ -567,7 +892,29 @@ fn image_seal_command(args: Vec<String>) -> ExitCode {
         }
     };
 
-    match seal_image(&options, &LibguestfsBackend) {
+    let images = images_dir();
+    let progress = io::stderr().is_terminal() && options.format == OutputFormat::Human;
+    let backend_kind = match builder::select_backend_kind() {
+        Ok(kind) => kind,
+        Err(failure) => {
+            emit_seal_failure(
+                options.format,
+                &SealFailure::new(failure.code, failure.message),
+            );
+            return ExitCode::from(failure.code);
+        }
+    };
+    let result = match backend_kind {
+        builder::ImageBackendKind::Local => seal_image(&options, &LibguestfsBackend),
+        builder::ImageBackendKind::Builder => seal_image(
+            &options,
+            &BuilderVmBackend {
+                images_dir: images,
+                progress,
+            },
+        ),
+    };
+    match result {
         Ok(result) => {
             match options.format {
                 OutputFormat::Human => print_image_seal_human(&result),
@@ -697,10 +1044,7 @@ fn seal_image_in_dir(
         ));
     }
 
-    backend.verify_preserved(&source_path, &image_format)?;
-    backend.customize(&source_path, &image_format)?;
-    backend.verify_preserved(&source_path, &image_format)?;
-    backend.verify_clone_safe(&source_path, &image_format)?;
+    backend.seal_pipeline(&source_path, &image_format)?;
 
     let result = ImageSealResult {
         name,
@@ -1826,41 +2170,7 @@ fn emit_vm_create_failure(format: OutputFormat, failure: &VmCreateFailure) {
 
 impl ImageSealBackend for LibguestfsBackend {
     fn inspect_format(&self, path: &Path) -> Result<String, SealFailure> {
-        let output = Command::new("qemu-img")
-            .args(["info", "--output=json"])
-            .arg(path)
-            .output()
-            .map_err(|error| {
-                SealFailure::new(
-                    EXIT_UNAVAILABLE,
-                    format!("qemu-img is required to inspect images: {error}"),
-                )
-            })?;
-        if !output.status.success() {
-            return Err(SealFailure::new(
-                EXIT_INVALID_INPUT,
-                format!(
-                    "qemu-img cannot inspect {}: {}",
-                    path.display(),
-                    command_text(&output)
-                ),
-            ));
-        }
-        let info: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
-            SealFailure::new(
-                EXIT_INVALID_INPUT,
-                format!(
-                    "qemu-img returned invalid JSON for {}: {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        info["format"].as_str().map(str::to_string).ok_or_else(|| {
-            SealFailure::new(
-                EXIT_INVALID_INPUT,
-                format!("qemu-img did not report a format for {}", path.display()),
-            )
-        })
+        inspect_image_format(path)
     }
 
     fn verify_preserved(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
@@ -1892,6 +2202,113 @@ impl ImageSealBackend for LibguestfsBackend {
             "clone-safe cleanup verification failed",
         )
     }
+}
+
+impl ImageSealBackend for BuilderVmBackend {
+    fn inspect_format(&self, path: &Path) -> Result<String, SealFailure> {
+        if builder::qemu_img_available() {
+            return inspect_image_format(path);
+        }
+        // Raw-only heuristic when qemu-img is missing: reject qcow magic.
+        let mut header = [0_u8; 4];
+        let mut file = File::open(path).map_err(|error| {
+            SealFailure::new(
+                EXIT_INVALID_INPUT,
+                format!("cannot open {}: {error}", path.display()),
+            )
+        })?;
+        use std::io::Read;
+        let _ = file.read(&mut header);
+        if &header == b"QFI\xfb" {
+            return Err(SealFailure::new(
+                EXIT_INVALID_INPUT,
+                "builder backend supports raw images only; convert qcow2 on the host or use a sealed alias",
+            ));
+        }
+        Ok("raw".to_string())
+    }
+
+    fn verify_preserved(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+        Ok(())
+    }
+
+    fn customize(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+        Ok(())
+    }
+
+    fn verify_clone_safe(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+        Ok(())
+    }
+
+    fn seal_pipeline(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
+        if image_format != "raw" {
+            return Err(SealFailure::new(
+                EXIT_INVALID_INPUT,
+                format!(
+                    "builder backend supports raw images only (got {image_format}); \
+                     pull aliases are normalized to raw"
+                ),
+            ));
+        }
+        if self.progress {
+            eprintln!("Resolving builder appliance…");
+        }
+        let appliance = builder::resolve_builder_image(&self.images_dir).map_err(|failure| {
+            SealFailure::new(failure.code, failure.message)
+        })?;
+        let runbook = builder::seal_runbook();
+        if self.progress {
+            eprintln!("Sealing via builder VM (one boot)…");
+        }
+        builder::run_builder_vm(builder::BuilderRunOptions {
+            appliance: &appliance,
+            target_raw: path,
+            runbook: &runbook,
+            staging_dir: None,
+            timeout: builder::default_timeout(),
+            progress: self.progress,
+        })
+        .map(|_| ())
+        .map_err(|failure| SealFailure::new(failure.code, failure.message))
+    }
+}
+
+fn inspect_image_format(path: &Path) -> Result<String, SealFailure> {
+    let output = Command::new("qemu-img")
+        .args(["info", "--output=json"])
+        .arg(path)
+        .output()
+        .map_err(|error| {
+            SealFailure::new(
+                EXIT_UNAVAILABLE,
+                format!("qemu-img is required to inspect images: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!(
+                "qemu-img cannot inspect {}: {}",
+                path.display(),
+                command_text(&output)
+            ),
+        ));
+    }
+    let info: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!(
+                "qemu-img returned invalid JSON for {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    info["format"].as_str().map(str::to_string).ok_or_else(|| {
+        SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("qemu-img did not report a format for {}", path.display()),
+        )
+    })
 }
 
 impl VmDiskBackend for NativeVmDiskBackend {
@@ -2258,6 +2675,7 @@ fn doctor(options: DoctorOptions) -> ExitCode {
     checks.push(dns_port_check);
     checks.push(check_resolvers(dns_port, dns_port_free));
     checks.push(check_vmnet_hint(macos_version));
+    checks.push(check_image_backend(&images_dir));
     checks.push(check_supervisor());
 
     let exit_code = if macos_version.unwrap_or(0) < 26 {
@@ -2804,6 +3222,16 @@ fn check_vmnet_hint(macos_version: Option<u32>) -> Check {
             json!({ "live_create_tested": false }),
         )
     }
+}
+
+fn check_image_backend(images_dir: &Path) -> Check {
+    let (status, message, details) = builder::doctor_builder_check(images_dir);
+    let status = match status.as_str() {
+        "ok" => CheckStatus::Ok,
+        "fail" => CheckStatus::Fail,
+        _ => CheckStatus::Warn,
+    };
+    Check::new("image.backend", status, message, details)
 }
 
 fn check_supervisor() -> Check {

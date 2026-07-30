@@ -4,10 +4,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 const API_VERSION: &str = "vzctl.dev/v1";
@@ -426,16 +426,11 @@ fn ensure_images(environment: &Environment) -> Result<(), Failure> {
         let existing = crate::image::resolve_alias(&crate::images_dir(), &image.from)
             .map_err(|error| Failure::new(EXIT_STEP, error))?
             .is_some();
-        let seal_input = if existing {
-            image.from.clone()
-        } else {
-            let output = run_self(&["image", "pull", &image.from, "--format", "json"])?;
-            output["image"]["path"]
-                .as_str()
-                .ok_or_else(|| Failure::new(EXIT_STEP, "image pull returned no path"))?
-                .to_string()
-        };
-        run_self(&["image", "seal", &seal_input, "--format", "json"])?;
+        if !existing {
+            run_self(&["image", "pull", &image.from, "--format", "json"])?;
+        }
+        run_self(&["image", "bake", &image.from, "--format", "json"])?;
+        run_self(&["image", "seal", &image.from, "--format", "json"])?;
     }
     Ok(())
 }
@@ -1032,19 +1027,51 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
 fn run_self(args: &[&str]) -> Result<Value, Failure> {
     let executable = std::env::current_exe()
         .map_err(|error| Failure::new(EXIT_STEP, format!("resolve vzctl executable: {error}")))?;
-    let output = Command::new(executable)
+    let mut child = Command::new(executable)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
         .map_err(|error| {
             Failure::new(EXIT_STEP, format!("run vzctl {}: {error}", args.join(" ")))
         })?;
-    if !output.status.success() {
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .as_mut()
+        .ok_or_else(|| {
+            Failure::new(
+                EXIT_STEP,
+                format!("vzctl {}: missing stdout", args.join(" ")),
+            )
+        })?
+        .read_to_end(&mut stdout)
+        .map_err(|error| {
+            Failure::new(
+                EXIT_STEP,
+                format!("read vzctl {} stdout: {error}", args.join(" ")),
+            )
+        })?;
+    let status = child.wait().map_err(|error| {
+        Failure::new(EXIT_STEP, format!("wait vzctl {}: {error}", args.join(" ")))
+    })?;
+    if !status.success() {
+        let message = serde_json::from_slice::<Value>(&stdout)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/summary/message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("vzctl {} failed", args.join(" ")));
         return Err(Failure::new(
-            output.status.code().unwrap_or(EXIT_STEP as i32) as u8,
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            status.code().unwrap_or(EXIT_STEP as i32) as u8,
+            message,
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(|error| {
+    serde_json::from_slice(&stdout).map_err(|error| {
         Failure::new(
             EXIT_STEP,
             format!("vzctl {} returned invalid JSON: {error}", args.join(" ")),
