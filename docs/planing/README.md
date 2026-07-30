@@ -27,7 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / #27 abgeschlossen** — macOS `/etc/resolver/{project}.vz.test` install/
-uninstall (atomar, idempotent, collision-safe) gegen Supervisor-DNS
-`127.0.0.1:15353`. Der nächste DNS-Slice ist **#28** `vzctl dns query`
-(Epic #25); danach #29 Guest nameservers.
+**P2 / #28 abgeschlossen** — `vzctl dns query` spricht den Supervisor-DNS
+direkt auf `127.0.0.1:15353` an (UDP, A/AAAA, CLI-v1), unabhängig von
+`/etc/resolver`. Der nächste DNS-Slice ist **#29** Guest-Nameserver
+(Epic #25).

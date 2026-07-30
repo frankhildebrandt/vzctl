@@ -127,9 +127,61 @@ curl http://web.dmz.edge-dmz.vz.test
 
 `curl`, Browser und andere libc-Clients verwenden den macOS-Systemresolver.
 `dig` bildet die macOS-Split-DNS-Auswahl dagegen nicht zuverlässig ab und kann
-`/etc/resolver` ohne explizites `@server` umgehen. Für direkte,
-reproduzierbare DNS-Abfragen folgt `vzctl dns query` in
-[#28](https://github.com/frankhildebrandt/vzctl/issues/28).
+`/etc/resolver` ohne explizites `@server` umgehen.
+
+### Direkter CLI-Query
+
+`vzctl dns query` baut selbst ein DNS-Paket und sendet es per UDP direkt an
+den Host-Listener. Es liest weder `/etc/resolver` noch den libc-Resolver:
+
+```sh
+vzctl dns query web.dmz.edge-dmz.vz.test
+vzctl dns query --type A --server 127.0.0.1:15353 \
+  web.dmz.edge-dmz.vz.test
+vzctl dns query --type AAAA web.dmz.edge-dmz.vz.test --format json
+```
+
+Default-Server ist `127.0.0.1:15353`, Default-Typ `A`; unterstützt werden `A`
+und `AAAA`. Die Human-Ausgabe verwendet das Format
+`NAME TTL CLASS TYPE DATA`. Das CLI-v1-JSON enthält Query, RCODE,
+Authoritative-/Truncated-Flags und `answers[]`:
+
+```json
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "dns.query",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "web.dmz.edge-dmz.vz.test A via 127.0.0.1:15353: 1 answer(s), NOERROR",
+    "answers": 1,
+    "rcode": "NOERROR"
+  },
+  "query": {
+    "name": "web.dmz.edge-dmz.vz.test",
+    "type": "A",
+    "server": "127.0.0.1:15353"
+  },
+  "rcode": "NOERROR",
+  "rcode_code": 0,
+  "authoritative": true,
+  "truncated": false,
+  "answers": [
+    {
+      "name": "web.dmz.edge-dmz.vz.test",
+      "type": "A",
+      "class": "IN",
+      "ttl": 15,
+      "data": "10.80.0.10"
+    }
+  ]
+}
+```
+
+`NOERROR` liefert Exit `0`, auch ohne Answers. `NXDOMAIN`, `SERVFAIL` und
+andere Fehler-RCODES liefern Exit `20`, behalten RCODE und Answers aber im
+Fail-Envelope. Timeout, ungültige Antworten und das UDP-`TC`-Bit liefern
+ebenfalls Exit `20`; Usage ist `2`, ungültiger Input `3`.
 
 ## Health und Events
 
@@ -147,4 +199,4 @@ weiterlaufen.
 
 - UDP only; TCP-Fallback und DNSSEC-Validierung sind nicht implementiert.
 - Der Forwarder unterstützt IPv4-Upstreams.
-- `vzctl dns query` (#28) und Guest-cloud-init (#29) bleiben eigene Slices.
+- Guest-cloud-init mit `.0` als Nameserver bleibt Slice #29.

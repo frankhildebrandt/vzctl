@@ -1,0 +1,29 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "dns.query",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "web.dmz.edge-dmz.vz.test A via 127.0.0.1:15353: 1 answer(s), NOERROR",
+    "answers": 1,
+    "rcode": "NOERROR"
+  },
+  "query": {
+    "name": "web.dmz.edge-dmz.vz.test",
+    "type": "A",
+    "server": "127.0.0.1:15353"
+  },
+  "rcode": "NOERROR",
+  "rcode_code": 0,
+  "authoritative": true,
+  "truncated": false,
+  "answers": [
+    {
+      "name": "web.dmz.edge-dmz.vz.test",
+      "type": "A",
+      "class": "IN",
+      "ttl": 15,
+      "data": "10.80.0.10"
+    }
+  ]
+}

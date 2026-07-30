@@ -414,11 +414,12 @@ export default function VzHypervisorImplementationsplan() {
 
       <Stack gap={12}>
         <H2>DNS — Dual Listener + *.vz.test</H2>
-        <Callout tone="success" title="#26 + #27 implementiert">
+        <Callout tone="success" title="#26 + #27 + #28 implementiert">
           Supervisor-owned UDP-Listener, Actual-State A-Records, TTL 5–30s,
           Hot-Reload, System-/expliziter Forwarder sowie DNS-Health und Events.
           macOS-Resolver werden atomar, idempotent und collision-safe pro
-          Projekt/Config verwaltet. #28/#29 bleiben.
+          Projekt/Config verwaltet. Direkte UDP-Queries liefern A/AAAA,
+          RCODE/Answers und CLI-v1-Exitcodes ohne /etc/resolver. #29 bleibt.
         </Callout>
         <Callout tone="danger" title="Nicht auth.localhost in Guests">
           RFC 6761: *.localhost = Guest-Loopback. Kanonisch{" "}
@@ -701,8 +702,8 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
           per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
           Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
-          Dual-DNS plus macOS resolver install/cleanup. Next: #28 dns query,
-          dann #29 Guest nameservers; Stack-Reconciler #34.
+          Dual-DNS, macOS resolver install/cleanup und direkter dns query.
+          Next: #29 Guest nameservers; Stack-Reconciler #34.
         </Callout>
       </Stack>
 

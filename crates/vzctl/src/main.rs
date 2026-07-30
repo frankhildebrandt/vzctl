@@ -305,6 +305,7 @@ Commands:
   net default set <name> --cidr CIDR [--format human|json]
   route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
   route status [--router <vm-id>] [--format human|json]
+  dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
@@ -325,7 +326,8 @@ Stable exit codes:
   16  VM root/data disk preparation failed
   17  network operation failed
   18  route operation failed
-  19  resolver operation failed"
+  19  resolver operation failed
+  20  DNS query failed or returned a non-zero rcode"
     );
 }
 
@@ -2888,6 +2890,7 @@ mod tests {
         assert_eq!(network::EXIT_NETWORK, 17);
         assert_eq!(route::EXIT_ROUTE, 18);
         assert_eq!(dns::EXIT_RESOLVER, 19);
+        assert_eq!(dns::EXIT_DNS_QUERY, 20);
     }
 
     #[test]

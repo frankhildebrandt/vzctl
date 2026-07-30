@@ -15,7 +15,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | G0 — Spike Gate | Netz+DNS+Crash Go/No-Go | **closed** (Go) |
 | P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **complete** (#20 closed) |
 | P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | **core complete** |
-| P2 — Net + DNS | vmnet, Dual-DNS, Policies | network epic complete; #26 DNS + #27 Resolver ✅; query/guest config remain |
+| P2 — Net + DNS | vmnet, Dual-DNS, Policies | network epic complete; #26 DNS + #27 Resolver + #28 Query ✅; guest config remains |
 | P3 — Stacks | hypernetwork reconcile | open |
 | P4 — Docker + Ports | SSH Context, Ports basic | open |
 | v0.1.x — Polish | virtiofs, Docker polish | open |
@@ -30,7 +30,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | **closed** (Live Sleep/Base-Raw residual) |
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; CLI surface rest open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | **complete** |
-| [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (#26 server + #27 Resolver ✅; #28/#29 remain) |
+| [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | open (#26 server + #27 Resolver + #28 Query ✅; #29 remains) |
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | **implementation complete** (#31/#32/#51/#33 ✅) |
 | [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | open (ADR 0003 ✅) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Docker Context + Ports | P4 | open |
@@ -87,7 +87,8 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#33](https://github.com/frankhildebrandt/vzctl/issues/33) | Firewall-Policies | **complete** (nftables, plan/status JSON, edge-dmz) |
 | [#26](https://github.com/frankhildebrandt/vzctl/issues/26) | Autoritative DNS-Zone + Forwarder | **complete** (Dual-UDP, TTL, reload, health/events) |
 | [#27](https://github.com/frankhildebrandt/vzctl/issues/27) | macOS `/etc/resolver` install/cleanup | **complete** (atomic, scoped, idempotent, collision-safe) |
-| [#28](https://github.com/frankhildebrandt/vzctl/issues/28) | `vzctl dns query` | ← **next DNS slice** |
+| [#28](https://github.com/frankhildebrandt/vzctl/issues/28) | `vzctl dns query` | **complete** (direktes UDP, A/AAAA, CLI-v1, Exit 20) |
+| [#29](https://github.com/frankhildebrandt/vzctl/issues/29) | Guest-Nameserver `.0` | ← **next DNS slice** |
 
 ## Label-Schema
 

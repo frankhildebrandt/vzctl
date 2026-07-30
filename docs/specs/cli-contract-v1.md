@@ -85,6 +85,7 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `17` | Network-Operation fehlgeschlagen | Konflikt, nicht gefunden, vmnet-Rebuild |
 | `18` | Route-/Policy-Operation fehlgeschlagen | Guest-Agent oder nftables |
 | `19` | macOS-Resolver-Operation fehlgeschlagen | Rechte, Kollision, unsicherer Pfad |
+| `20` | DNS-Query fehlgeschlagen | Timeout, Protokollfehler oder DNS-RCODE ungleich `NOERROR` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -181,7 +182,28 @@ Das v1-Ergebnis enthält `routers[]`, `summary.changed` und pro Router
 Exit `18` steht für Route-/Guest-Apply-/Statusfehler, Exit `3` für ungültige
 Konfiguration, Rollen oder Topologien.
 
-### `vzctl dns install-resolver|uninstall-resolver`
+### `vzctl dns query|install-resolver|uninstall-resolver`
+
+```bash
+vzctl dns query <name> \
+  [--type A|AAAA] [--server <IP:port>] [--format human|json]
+```
+
+`dns.query` sendet ein UDP-DNS-Paket direkt an den angegebenen Server. Der
+Default ist `127.0.0.1:15353`; der Command hängt nicht von `/etc/resolver` oder
+der libc-Namensauflösung ab. Der Default-Typ ist `A`, zusätzlich wird `AAAA`
+unterstützt.
+
+Das JSON-Envelope enthält `query`, `rcode`, `rcode_code`, `authoritative`,
+`truncated` und `answers[]`. Jeder Answer enthält `name`, `type`, `class`,
+`ttl` und `data`. `NOERROR` liefert Exit `0`, auch bei leerer Answer-Liste.
+Timeouts, ungültige/truncated Antworten und RCODES ungleich `NOERROR` liefern
+Exit `20`; soweit eine DNS-Antwort vorliegt, bleiben deren RCODE und Answers im
+Fail-Envelope erhalten. Usage liefert `2`, ungültige Namen, Typen und
+Server-Endpunkte liefern `3`.
+
+Der v1-Client ist UDP-only. Eine Antwort mit gesetztem `TC`-Bit wird deshalb
+als Exit `20` gemeldet; TCP-Fallback ist nicht Teil dieses Slices.
 
 ```bash
 vzctl dns install-resolver|uninstall-resolver \

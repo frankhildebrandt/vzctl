@@ -2,9 +2,11 @@ use serde_json::json;
 use serde_yaml::Value as YamlValue;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const API_VERSION: &str = "vzctl.dev/v1";
 const DEFAULT_CONFIG: &str = "hypernetwork.config.yaml";
@@ -12,7 +14,11 @@ const DEFAULT_DNS_PORT: u16 = 15353;
 const EXIT_USAGE: u8 = 2;
 const EXIT_INVALID: u8 = 3;
 pub(crate) const EXIT_RESOLVER: u8 = 19;
+pub(crate) const EXIT_DNS_QUERY: u8 = 20;
 const MANAGED_MARKER: &str = "# managed-by: vzctl";
+const DEFAULT_DNS_SERVER: &str = "127.0.0.1:15353";
+const DNS_TIMEOUT: Duration = Duration::from_secs(2);
+const DNS_HEADER_LENGTH: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Format {
@@ -24,6 +30,7 @@ enum Format {
 enum Action {
     Install,
     Uninstall,
+    Query,
 }
 
 impl Action {
@@ -31,6 +38,29 @@ impl Action {
         match self {
             Self::Install => "dns.install-resolver",
             Self::Uninstall => "dns.uninstall-resolver",
+            Self::Query => "dns.query",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueryType {
+    A,
+    Aaaa,
+}
+
+impl QueryType {
+    fn code(self) -> u16 {
+        match self {
+            Self::A => 1,
+            Self::Aaaa => 28,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
         }
     }
 }
@@ -42,6 +72,9 @@ struct Options {
     config: PathBuf,
     config_explicit: bool,
     format: Format,
+    query_name: Option<String>,
+    query_type: QueryType,
+    server: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -89,13 +122,21 @@ impl Failure {
 pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     let args = args.collect::<Vec<_>>();
     let requested_format = requested_format(&args);
+    let command_hint = if args.first().is_some_and(|argument| argument == "query") {
+        "dns.query"
+    } else {
+        "dns"
+    };
     let options = match parse(args.into_iter()) {
         Ok(options) => options,
         Err(failure) => {
-            emit_failure(requested_format, "dns", &failure);
+            emit_failure(requested_format, command_hint, &failure);
             return ExitCode::from(failure.code);
         }
     };
+    if options.action == Action::Query {
+        return query_command(&options);
+    }
     let scope = match resolve_scope(&options) {
         Ok(scope) => scope,
         Err(failure) => {
@@ -116,6 +157,7 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     let result = match options.action {
         Action::Install => install(&resolver_dir, &scope, port),
         Action::Uninstall => uninstall(&resolver_dir, &scope),
+        Action::Query => unreachable!("query returned before resolver handling"),
     };
     match result {
         Ok((path, change)) => {
@@ -133,21 +175,37 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     let action = match args.next().as_deref() {
         Some("install-resolver") => Action::Install,
         Some("uninstall-resolver") => Action::Uninstall,
+        Some("query") => Action::Query,
         _ => return Err(Failure::new(EXIT_USAGE, usage())),
     };
     let mut project = None;
     let mut config = PathBuf::from(DEFAULT_CONFIG);
     let mut config_explicit = false;
     let mut format = Format::Human;
+    let mut query_name = None;
+    let mut query_type = QueryType::A;
+    let mut server = DEFAULT_DNS_SERVER.to_string();
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--project" => {
+                if action == Action::Query {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--project is not valid for dns query",
+                    ));
+                }
                 let value = next_value(&mut args, "--project requires a project")?;
                 if project.replace(value).is_some() {
                     return Err(Failure::new(EXIT_USAGE, "--project may only be used once"));
                 }
             }
             "--config" => {
+                if action == Action::Query {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--config is not valid for dns query",
+                    ));
+                }
                 let value = next_value(&mut args, "--config requires a path")?;
                 if config_explicit {
                     return Err(Failure::new(EXIT_USAGE, "--config may only be used once"));
@@ -168,7 +226,43 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                     }
                 };
             }
+            "--type" => {
+                if action != Action::Query {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--type is only valid for dns query",
+                    ));
+                }
+                let value = next_value(&mut args, "--type requires A or AAAA")?;
+                query_type = match value.to_ascii_uppercase().as_str() {
+                    "A" => QueryType::A,
+                    "AAAA" => QueryType::Aaaa,
+                    _ => {
+                        return Err(Failure::new(
+                            EXIT_INVALID,
+                            format!("unsupported DNS query type: {value}"),
+                        ))
+                    }
+                };
+            }
+            "--server" => {
+                if action != Action::Query {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--server is only valid for dns query",
+                    ));
+                }
+                server = next_value(&mut args, "--server requires an IP:port")?;
+            }
             "-h" | "--help" => return Err(Failure::new(EXIT_USAGE, usage())),
+            _ if action == Action::Query && !argument.starts_with('-') => {
+                if query_name.replace(argument).is_some() {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "dns query accepts exactly one name",
+                    ));
+                }
+            }
             _ => {
                 return Err(Failure::new(
                     EXIT_USAGE,
@@ -177,12 +271,18 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
             }
         }
     }
+    if action == Action::Query && query_name.is_none() {
+        return Err(Failure::new(EXIT_USAGE, "dns query requires a name"));
+    }
     Ok(Options {
         action,
         project,
         config,
         config_explicit,
         format,
+        query_name,
+        query_type,
+        server,
     })
 }
 
@@ -309,6 +409,377 @@ fn dns_port() -> Result<u16, Failure> {
             format!("invalid VZCTL_DNS_PORT: {error}"),
         )),
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct DnsAnswer {
+    name: String,
+    record_type: String,
+    class: String,
+    ttl: u32,
+    data: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct QueryResponse {
+    name: String,
+    query_type: QueryType,
+    server: String,
+    rcode: u8,
+    authoritative: bool,
+    truncated: bool,
+    answers: Vec<DnsAnswer>,
+}
+
+fn query_command(options: &Options) -> ExitCode {
+    let result = execute_query(
+        options
+            .query_name
+            .as_deref()
+            .expect("query name was parsed"),
+        options.query_type,
+        &options.server,
+    );
+    match result {
+        Ok(response) => {
+            let exit_code = if response.rcode == 0 && !response.truncated {
+                0
+            } else {
+                EXIT_DNS_QUERY
+            };
+            emit_query(options.format, &response, exit_code);
+            ExitCode::from(exit_code)
+        }
+        Err(failure) => {
+            emit_query_failure(options.format, options, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn execute_query(
+    name: &str,
+    query_type: QueryType,
+    server: &str,
+) -> Result<QueryResponse, Failure> {
+    let canonical_name = validate_query_name(name)?;
+    let server_address = server.parse::<SocketAddr>().map_err(|_| {
+        Failure::new(
+            EXIT_INVALID,
+            format!("invalid DNS server {server}; expected IP:port"),
+        )
+    })?;
+    if server_address.port() == 0 {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            format!("invalid DNS server {server}; port must be greater than zero"),
+        ));
+    }
+    let transaction_id = transaction_id();
+    let request = build_query(transaction_id, &canonical_name, query_type);
+    let bind_address = match server_address.ip() {
+        IpAddr::V4(_) => "0.0.0.0:0",
+        IpAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_address)
+        .map_err(|error| dns_query_failure(server, "create UDP socket", error))?;
+    socket
+        .set_read_timeout(Some(DNS_TIMEOUT))
+        .map_err(|error| dns_query_failure(server, "set UDP timeout", error))?;
+    socket
+        .connect(server_address)
+        .map_err(|error| dns_query_failure(server, "connect UDP socket", error))?;
+    socket
+        .send(&request)
+        .map_err(|error| dns_query_failure(server, "send UDP query", error))?;
+
+    let mut buffer = [0_u8; u16::MAX as usize];
+    let count = socket
+        .recv(&mut buffer)
+        .map_err(|error| dns_query_failure(server, "receive UDP response", error))?;
+    parse_response(
+        &buffer[..count],
+        transaction_id,
+        &canonical_name,
+        query_type,
+        server,
+    )
+}
+
+fn validate_query_name(name: &str) -> Result<String, Failure> {
+    let canonical = name.trim_end_matches('.').to_ascii_lowercase();
+    let valid = !canonical.is_empty()
+        && canonical.len() <= 253
+        && canonical.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        });
+    if valid {
+        Ok(canonical)
+    } else {
+        Err(Failure::new(
+            EXIT_INVALID,
+            "DNS name must contain non-empty ASCII labels of at most 63 characters",
+        ))
+    }
+}
+
+fn transaction_id() -> u16 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    (nanos as u16) ^ (std::process::id() as u16)
+}
+
+fn build_query(transaction_id: u16, name: &str, query_type: QueryType) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(DNS_HEADER_LENGTH + name.len() + 6);
+    append_u16(&mut packet, transaction_id);
+    append_u16(&mut packet, 0x0100);
+    append_u16(&mut packet, 1);
+    append_u16(&mut packet, 0);
+    append_u16(&mut packet, 0);
+    append_u16(&mut packet, 0);
+    for label in name.split('.') {
+        packet.push(label.len() as u8);
+        packet.extend_from_slice(label.as_bytes());
+    }
+    packet.push(0);
+    append_u16(&mut packet, query_type.code());
+    append_u16(&mut packet, 1);
+    packet
+}
+
+fn parse_response(
+    packet: &[u8],
+    transaction_id: u16,
+    query_name: &str,
+    query_type: QueryType,
+    server: &str,
+) -> Result<QueryResponse, Failure> {
+    if packet.len() < DNS_HEADER_LENGTH {
+        return Err(protocol_failure(
+            server,
+            "response is shorter than DNS header",
+        ));
+    }
+    if read_u16(packet, 0) != Some(transaction_id) {
+        return Err(protocol_failure(
+            server,
+            "response transaction ID does not match",
+        ));
+    }
+    let flags = read_u16(packet, 2).expect("header length checked");
+    if flags & 0x8000 == 0 {
+        return Err(protocol_failure(server, "packet is not a DNS response"));
+    }
+    let question_count = read_u16(packet, 4).expect("header length checked") as usize;
+    let answer_count = read_u16(packet, 6).expect("header length checked") as usize;
+    if question_count != 1 {
+        return Err(protocol_failure(
+            server,
+            "response must contain exactly one question",
+        ));
+    }
+    let mut offset = DNS_HEADER_LENGTH;
+    let response_name = decode_name(packet, &mut offset)?;
+    let response_type = read_u16(packet, offset)
+        .ok_or_else(|| protocol_failure(server, "truncated response question type"))?;
+    let response_class = read_u16(packet, offset + 2)
+        .ok_or_else(|| protocol_failure(server, "truncated response question class"))?;
+    checked_advance(packet, &mut offset, 4, server)?;
+    if response_name.to_ascii_lowercase() != query_name
+        || response_type != query_type.code()
+        || response_class != 1
+    {
+        return Err(protocol_failure(
+            server,
+            "response question does not match query",
+        ));
+    }
+
+    let mut answers = Vec::with_capacity(answer_count);
+    for _ in 0..answer_count {
+        let name = decode_name(packet, &mut offset)?;
+        let record_type = read_u16(packet, offset)
+            .ok_or_else(|| protocol_failure(server, "truncated answer type"))?;
+        let class = read_u16(packet, offset + 2)
+            .ok_or_else(|| protocol_failure(server, "truncated answer class"))?;
+        let ttl = read_u32(packet, offset + 4)
+            .ok_or_else(|| protocol_failure(server, "truncated answer TTL"))?;
+        let data_length = read_u16(packet, offset + 8)
+            .ok_or_else(|| protocol_failure(server, "truncated answer length"))?
+            as usize;
+        checked_advance(packet, &mut offset, 10, server)?;
+        let data_offset = offset;
+        checked_advance(packet, &mut offset, data_length, server)?;
+        let data = decode_record_data(packet, data_offset, data_length, record_type, server)?;
+        answers.push(DnsAnswer {
+            name,
+            record_type: record_type_name(record_type),
+            class: if class == 1 {
+                "IN".to_string()
+            } else {
+                class.to_string()
+            },
+            ttl,
+            data,
+        });
+    }
+
+    Ok(QueryResponse {
+        name: query_name.to_string(),
+        query_type,
+        server: server.to_string(),
+        rcode: (flags & 0x000f) as u8,
+        authoritative: flags & 0x0400 != 0,
+        truncated: flags & 0x0200 != 0,
+        answers,
+    })
+}
+
+fn decode_name(packet: &[u8], offset: &mut usize) -> Result<String, Failure> {
+    let mut labels = Vec::new();
+    let mut cursor = *offset;
+    let mut jumped = false;
+    let mut jumps = 0;
+    loop {
+        let length = *packet
+            .get(cursor)
+            .ok_or_else(|| protocol_failure("DNS response", "truncated name"))?;
+        if length == 0 {
+            if !jumped {
+                *offset = cursor + 1;
+            }
+            return Ok(labels.join("."));
+        }
+        if length & 0xc0 == 0xc0 {
+            let next = *packet
+                .get(cursor + 1)
+                .ok_or_else(|| protocol_failure("DNS response", "truncated name pointer"))?;
+            if !jumped {
+                *offset = cursor + 2;
+            }
+            cursor = (usize::from(length & 0x3f) << 8) | usize::from(next);
+            jumped = true;
+            jumps += 1;
+            if jumps > packet.len() {
+                return Err(protocol_failure("DNS response", "name pointer loop"));
+            }
+            continue;
+        }
+        if length & 0xc0 != 0 || length > 63 {
+            return Err(protocol_failure("DNS response", "invalid name label"));
+        }
+        let start = cursor + 1;
+        let end = start + usize::from(length);
+        let label = packet
+            .get(start..end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or_else(|| protocol_failure("DNS response", "invalid name label data"))?;
+        labels.push(label.to_string());
+        cursor = end;
+        if !jumped {
+            *offset = cursor;
+        }
+    }
+}
+
+fn decode_record_data(
+    packet: &[u8],
+    offset: usize,
+    length: usize,
+    record_type: u16,
+    server: &str,
+) -> Result<String, Failure> {
+    let bytes = packet
+        .get(offset..offset + length)
+        .ok_or_else(|| protocol_failure(server, "truncated answer data"))?;
+    match (record_type, length) {
+        (1, 4) => Ok(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string()),
+        (28, 16) => {
+            let octets: [u8; 16] = bytes
+                .try_into()
+                .map_err(|_| protocol_failure(server, "invalid AAAA answer"))?;
+            Ok(Ipv6Addr::from(octets).to_string())
+        }
+        (2 | 5 | 12, _) => {
+            let mut name_offset = offset;
+            decode_name(packet, &mut name_offset)
+        }
+        _ => Ok(bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join("")),
+    }
+}
+
+fn checked_advance(
+    packet: &[u8],
+    offset: &mut usize,
+    count: usize,
+    server: &str,
+) -> Result<(), Failure> {
+    let end = offset
+        .checked_add(count)
+        .filter(|end| *end <= packet.len())
+        .ok_or_else(|| protocol_failure(server, "truncated DNS response"))?;
+    *offset = end;
+    Ok(())
+}
+
+fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(
+        packet.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn read_u32(packet: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        packet.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn append_u16(packet: &mut Vec<u8>, value: u16) {
+    packet.extend_from_slice(&value.to_be_bytes());
+}
+
+fn record_type_name(record_type: u16) -> String {
+    match record_type {
+        1 => "A".to_string(),
+        2 => "NS".to_string(),
+        5 => "CNAME".to_string(),
+        12 => "PTR".to_string(),
+        28 => "AAAA".to_string(),
+        value => format!("TYPE{value}"),
+    }
+}
+
+fn rcode_name(rcode: u8) -> &'static str {
+    match rcode {
+        0 => "NOERROR",
+        1 => "FORMERR",
+        2 => "SERVFAIL",
+        3 => "NXDOMAIN",
+        4 => "NOTIMP",
+        5 => "REFUSED",
+        _ => "UNKNOWN",
+    }
+}
+
+fn dns_query_failure(server: &str, operation: &str, error: io::Error) -> Failure {
+    Failure::new(EXIT_DNS_QUERY, format!("{operation} via {server}: {error}"))
+}
+
+fn protocol_failure(server: &str, message: &str) -> Failure {
+    Failure::new(
+        EXIT_DNS_QUERY,
+        format!("invalid DNS response from {server}: {message}"),
+    )
 }
 
 fn install(resolver_dir: &Path, scope: &Scope, port: u16) -> Result<(PathBuf, Change), Failure> {
@@ -517,6 +988,103 @@ fn emit_success(
     }
 }
 
+fn emit_query(format: Format, response: &QueryResponse, exit_code: u8) {
+    match format {
+        Format::Human => {
+            for answer in &response.answers {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    answer.name, answer.ttl, answer.class, answer.record_type, answer.data
+                );
+            }
+            if response.answers.is_empty() {
+                println!(
+                    "{} {}: {} (no answers)",
+                    response.name,
+                    response.query_type.as_str(),
+                    rcode_name(response.rcode)
+                );
+            }
+            if response.rcode != 0 {
+                eprintln!(
+                    "DNS server {} returned {}",
+                    response.server,
+                    rcode_name(response.rcode)
+                );
+            }
+        }
+        Format::Json => println!("{}", query_json(response, exit_code)),
+    }
+}
+
+fn emit_query_failure(format: Format, options: &Options, failure: &Failure) {
+    match format {
+        Format::Human => eprintln!("{}", failure.message),
+        Format::Json => println!("{}", query_failure_json(options, failure)),
+    }
+}
+
+fn query_failure_json(options: &Options, failure: &Failure) -> serde_json::Value {
+    json!({
+        "apiVersion": API_VERSION,
+        "command": "dns.query",
+        "status": "fail",
+        "exit_code": failure.code,
+        "summary": {
+            "message": failure.message,
+            "answers": 0,
+            "rcode": serde_json::Value::Null,
+        },
+        "query": {
+            "name": options.query_name,
+            "type": options.query_type.as_str(),
+            "server": options.server,
+        },
+        "rcode": serde_json::Value::Null,
+        "rcode_code": serde_json::Value::Null,
+        "authoritative": false,
+        "truncated": false,
+        "answers": [],
+    })
+}
+
+fn query_json(response: &QueryResponse, exit_code: u8) -> serde_json::Value {
+    let rcode = rcode_name(response.rcode);
+    json!({
+        "apiVersion": API_VERSION,
+        "command": "dns.query",
+        "status": if exit_code == 0 { "ok" } else { "fail" },
+        "exit_code": exit_code,
+        "summary": {
+            "message": format!(
+                "{} {} via {}: {} answer(s), {rcode}",
+                response.name,
+                response.query_type.as_str(),
+                response.server,
+                response.answers.len()
+            ),
+            "answers": response.answers.len(),
+            "rcode": rcode,
+        },
+        "query": {
+            "name": response.name,
+            "type": response.query_type.as_str(),
+            "server": response.server,
+        },
+        "rcode": rcode,
+        "rcode_code": response.rcode,
+        "authoritative": response.authoritative,
+        "truncated": response.truncated,
+        "answers": response.answers.iter().map(|answer| json!({
+            "name": answer.name,
+            "type": answer.record_type,
+            "class": answer.class,
+            "ttl": answer.ttl,
+            "data": answer.data,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn emit_failure(format: Format, command: &str, failure: &Failure) {
     match format {
         Format::Human => eprintln!("{}", failure.message),
@@ -547,7 +1115,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]"
+    "usage: vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]"
 }
 
 #[cfg(test)]
@@ -555,7 +1123,7 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::os::unix::fs::symlink;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
 
     fn temp_dir(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -647,6 +1215,9 @@ mod tests {
             config: config.clone(),
             config_explicit: false,
             format: Format::Human,
+            query_name: None,
+            query_type: QueryType::A,
+            server: DEFAULT_DNS_SERVER.to_string(),
         };
         let resolved = resolve_scope(&options).unwrap();
         assert_eq!(resolved.project, "edge-dmz");
@@ -672,5 +1243,180 @@ mod tests {
         });
         assert_eq!(value["command"], "dns.install-resolver");
         assert_eq!(value["apiVersion"], API_VERSION);
+    }
+
+    #[test]
+    fn query_options_accept_name_flags_in_any_order() {
+        let options = parse(
+            [
+                "query",
+                "--format",
+                "json",
+                "--type",
+                "aaaa",
+                "--server",
+                "[::1]:15353",
+                "web.dmz.edge-dmz.vz.test.",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(options.action, Action::Query);
+        assert_eq!(
+            options.query_name.as_deref(),
+            Some("web.dmz.edge-dmz.vz.test.")
+        );
+        assert_eq!(options.query_type, QueryType::Aaaa);
+        assert_eq!(options.server, "[::1]:15353");
+        assert_eq!(options.format, Format::Json);
+    }
+
+    #[test]
+    fn query_rejects_missing_name_and_unsupported_type() {
+        let missing = parse(["query"].into_iter().map(str::to_string)).unwrap_err();
+        assert_eq!(missing.code, EXIT_USAGE);
+        let unsupported = parse(
+            ["query", "web.vz.test", "--type", "MX"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap_err();
+        assert_eq!(unsupported.code, EXIT_INVALID);
+    }
+
+    #[test]
+    fn direct_udp_query_decodes_authoritative_a_answer() {
+        let (server, handle) = dns_fixture(0, Some([10, 80, 0, 10]));
+        let response = execute_query("web.dmz.edge-dmz.vz.test", QueryType::A, &server).unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(response.rcode, 0);
+        assert!(response.authoritative);
+        assert!(!response.truncated);
+        assert_eq!(
+            response.answers,
+            vec![DnsAnswer {
+                name: "web.dmz.edge-dmz.vz.test".to_string(),
+                record_type: "A".to_string(),
+                class: "IN".to_string(),
+                ttl: 15,
+                data: "10.80.0.10".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn nxdomain_keeps_rcode_and_answers_in_failure_envelope() {
+        let (server, handle) = dns_fixture(3, None);
+        let response =
+            execute_query("missing.dmz.edge-dmz.vz.test", QueryType::A, &server).unwrap();
+        handle.join().unwrap();
+        let value = query_json(&response, EXIT_DNS_QUERY);
+
+        assert_eq!(value["status"], "fail");
+        assert_eq!(value["exit_code"], EXIT_DNS_QUERY);
+        assert_eq!(value["rcode"], "NXDOMAIN");
+        assert_eq!(value["rcode_code"], 3);
+        assert_eq!(value["answers"], json!([]));
+    }
+
+    #[test]
+    fn response_parser_decodes_aaaa_answer() {
+        let transaction_id = 0x1234;
+        let request = build_query(transaction_id, "db.dmz.edge-dmz.vz.test", QueryType::Aaaa);
+        let mut response = Vec::new();
+        append_u16(&mut response, transaction_id);
+        append_u16(&mut response, 0x8480);
+        append_u16(&mut response, 1);
+        append_u16(&mut response, 1);
+        append_u16(&mut response, 0);
+        append_u16(&mut response, 0);
+        response.extend_from_slice(&request[DNS_HEADER_LENGTH..]);
+        append_u16(&mut response, 0xc00c);
+        append_u16(&mut response, 28);
+        append_u16(&mut response, 1);
+        response.extend_from_slice(&15_u32.to_be_bytes());
+        append_u16(&mut response, 16);
+        response.extend_from_slice(&Ipv6Addr::LOCALHOST.octets());
+
+        let parsed = parse_response(
+            &response,
+            transaction_id,
+            "db.dmz.edge-dmz.vz.test",
+            QueryType::Aaaa,
+            DEFAULT_DNS_SERVER,
+        )
+        .unwrap();
+        assert_eq!(parsed.answers[0].record_type, "AAAA");
+        assert_eq!(parsed.answers[0].data, "::1");
+    }
+
+    #[test]
+    fn transport_failure_envelope_keeps_query_shape() {
+        let options = parse(
+            ["query", "web.dmz.edge-dmz.vz.test", "--format", "json"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        let value = query_failure_json(
+            &options,
+            &Failure::new(EXIT_DNS_QUERY, "receive UDP response: timed out"),
+        );
+        assert_eq!(value["command"], "dns.query");
+        assert_eq!(value["exit_code"], EXIT_DNS_QUERY);
+        assert!(value["rcode"].is_null());
+        assert_eq!(value["answers"], json!([]));
+        assert_eq!(value["query"]["server"], DEFAULT_DNS_SERVER);
+    }
+
+    #[test]
+    fn query_json_matches_cli_v1_golden_shape() {
+        let response = QueryResponse {
+            name: "web.dmz.edge-dmz.vz.test".to_string(),
+            query_type: QueryType::A,
+            server: DEFAULT_DNS_SERVER.to_string(),
+            rcode: 0,
+            authoritative: true,
+            truncated: false,
+            answers: vec![DnsAnswer {
+                name: "web.dmz.edge-dmz.vz.test".to_string(),
+                record_type: "A".to_string(),
+                class: "IN".to_string(),
+                ttl: 15,
+                data: "10.80.0.10".to_string(),
+            }],
+        };
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/dns-query.json")).unwrap();
+        assert_eq!(query_json(&response, 0), expected);
+    }
+
+    fn dns_fixture(rcode: u16, address: Option<[u8; 4]>) -> (String, thread::JoinHandle<()>) {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let endpoint = socket.local_addr().unwrap().to_string();
+        let handle = thread::spawn(move || {
+            let mut request = [0_u8; 512];
+            let (count, peer) = socket.recv_from(&mut request).unwrap();
+            let mut response = Vec::new();
+            response.extend_from_slice(&request[..2]);
+            append_u16(&mut response, 0x8480 | rcode);
+            append_u16(&mut response, 1);
+            append_u16(&mut response, u16::from(address.is_some()));
+            append_u16(&mut response, 0);
+            append_u16(&mut response, 0);
+            response.extend_from_slice(&request[DNS_HEADER_LENGTH..count]);
+            if let Some(address) = address {
+                append_u16(&mut response, 0xc00c);
+                append_u16(&mut response, 1);
+                append_u16(&mut response, 1);
+                response.extend_from_slice(&15_u32.to_be_bytes());
+                append_u16(&mut response, 4);
+                response.extend_from_slice(&address);
+            }
+            socket.send_to(&response, peer).unwrap();
+        });
+        (endpoint, handle)
     }
 }
