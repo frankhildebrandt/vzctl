@@ -24,7 +24,7 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 11 | DNS Forward | Extern ja (Upstream = system, VPN dokumentieren) |
 | 12 | `dns query` | Spricht **direkt** vzctl-DNS (nicht nur libc/dig) |
 | 13 | Spike Timing | **G0 vor P0** — Go/No-Go für Netz/Entitlements |
-| 14 | macOS Baseline | Empfehlung **macOS 26-only** für v0.1 (Spike bestätigt) |
+| 14 | macOS Baseline | **Fest: Mindestversion macOS 26**; Pre-26 unsupported |
 | 15 | Bridged | v0.1 **out of scope** |
 | 16 | IP-Precedence | **cloud-init static** Primär; kein wildes DHCP+static |
 | 17 | Router-IP | Nicht mit vmnet-Gateway kollidieren (Konvention aus Spike) |
@@ -36,10 +36,10 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 
 ## Offen (Spike / ADR)
 
-- Exakte Gateway-/Router-IP-Konvention
-- Guest-DNS-Bind-Adresse (welche Host-IP auf welchem vmnet)
+- Exakte Gateway-/Router-IP-Konvention (G0)
+- Guest-DNS-Bind-Adresse (welche Host-IP auf welchem vmnet) (G0)
 - launchd-Plist-Details / XPC vs. UDS für Helper
-- Ob Pre-26 jemals supportet wird (Default: nein in v0.1)
+- ~~Ob Pre-26 jemals supportet wird~~ → **nein** (ADR 0001: macOS 26+)
 
 ## Positionierung
 

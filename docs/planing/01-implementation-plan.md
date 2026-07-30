@@ -26,7 +26,7 @@ Devstack-Supervisor auf **Virtualization.framework**:
 | # | Gate | Abbruch wenn |
 |---|---|---|
 | G0 | **Netzwerk-Spike vor P0** (2 Netze, Router, feste IP, Host↔Guest, Sleep, Supervisor-Crash) | Isolation/Entitlements unmöglich |
-| G1 | **macOS-Baseline** entschieden (Default-Empfehlung: **macOS 26-only** für v0.1) | — |
+| G1 | **macOS-Baseline** | **Erledigt:** Mindestversion **macOS 26** ([ADR 0001](../adr/0001-macos-baseline.md), #2) |
 | G2 | **Process-/Ownership-ADR** (VZ, vmnet, DNS, Helper-Lifecycle) | — |
 | G3 | **State/Apply-Spez** (Journal, Idempotenz, Resume, Löschregeln) | — |
 | G4 | MVP-Exit-Kriterien messbar; virtiofs + Docker-Polish → **v0.1.x** | Scope sprengt 8–10 Wo |
@@ -127,10 +127,10 @@ spec:
 
 | Mode | IP-Vergabe (v0.1) | Hinweis |
 |---|---|---|
-| shared (vmnet ≥26) | **cloud-init static** Primär; optional DHCP reservation aligned | Kein wildes DHCP+static Mix |
+| shared (vmnet ≥26) | **cloud-init static** Primär; optional DHCP reservation aligned | Kein wildes DHCP+static Mix; **Host ≥ macOS 26** |
 | host | wie shared | |
-| bridged | v0.1 **out of scope** (Entitlement) | |
-| pre-26 | nur wenn Baseline ≠ 26; sonst unsupported | Kein stiller Fallback |
+| bridged | **out of scope** (Entitlement) | |
+| pre-26 | **unsupported** (ADR 0001) | Kein Compatibility-Layer |
 
 - Router-IPs **nicht** `.1` wenn Gateway `.1` ist — Spike legt Gateway-CIDR-Konvention fest (z. B. Router `.2` / Gateway `.1` oder umgekehrt)
 - `routes:` + **`policies:`** (forward allow/deny) für echte DMZ-Semantik
