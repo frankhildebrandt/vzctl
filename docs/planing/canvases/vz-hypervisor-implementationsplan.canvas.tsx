@@ -20,29 +20,42 @@ import {
 } from "cursor/canvas";
 
 const PHASES = [
-  { id: "G0", name: "Spike", weeks: "0–1", goal: "Netz+DNS+Crash Go/No-Go (Host ≥26)" },
-  { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor" },
-  { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity" },
-  { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies" },
-  { id: "P3", name: "Stacks", weeks: "5–7", goal: "hypernetwork up/down/apply + Lease + Resume" },
-  { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic" },
-  { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose" },
-  { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias" },
+  { id: "G0", name: "Spike", weeks: "0–1", goal: "Netz+DNS+Crash Go/No-Go (Host ≥26)", done: true },
+  { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor", done: true },
+  { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity", done: true },
+  { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
+  { id: "P3", name: "Stacks", weeks: "5–7", goal: "Schema+Validate+#52 ✅ · open: up/down/apply + Lease (#37)", done: false },
+  { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: false },
+  { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
+  { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
 ] as const;
 
 const EPICS = [
-  { n: 1, title: "G0 Spike", ms: "G0" },
-  { n: 7, title: "Ownership / Helper", ms: "P0" },
-  { n: 12, title: "vsock Guest-Agent", ms: "P0" },
-  { n: 17, title: "CLI Contracts", ms: "P1" },
-  { n: 21, title: "Clones / Identity", ms: "P1" },
-  { n: 25, title: "Dual-DNS + Resolver", ms: "P2" },
-  { n: 30, title: "Net + Policies", ms: "P2" },
-  { n: 34, title: "Stack Reconciler", ms: "P3" },
-  { n: 39, title: "Docker + Ports", ms: "P4" },
-  { n: 43, title: "Ingress / CA / OIDC", ms: "v0.2" },
-  { n: 48, title: "DX Logs / Docs", ms: "P1" },
+  { n: 1, title: "G0 Spike", ms: "G0", done: true },
+  { n: 7, title: "Ownership / Helper", ms: "P0", done: true },
+  { n: 12, title: "vsock Guest-Agent", ms: "P0", done: true },
+  { n: 17, title: "CLI Contracts", ms: "P1", done: "partial" as const },
+  { n: 21, title: "Clones / Identity", ms: "P1", done: true },
+  { n: 25, title: "Dual-DNS + Resolver", ms: "P2", done: true },
+  { n: 30, title: "Net + Policies", ms: "P2", done: true },
+  { n: 34, title: "Stack Reconciler", ms: "P3", done: "partial" as const },
+  { n: 39, title: "Docker + Ports", ms: "P4", done: false },
+  { n: 43, title: "Ingress / CA / OIDC", ms: "v0.2", done: false },
+  { n: 48, title: "DX Logs / Docs", ms: "P1", done: false },
 ] as const;
+
+function Struck({ children }: { children: string }) {
+  return (
+    <Text
+      as="span"
+      size="small"
+      tone="secondary"
+      style={{ textDecoration: "line-through" }}
+    >
+      {children}
+    </Text>
+  );
+}
 
 function ArchitectureDiagram() {
   const theme = useHostTheme();
@@ -153,7 +166,7 @@ export default function VzHypervisorImplementationsplan() {
             macOS 26+
           </Pill>
           <Pill tone="success" size="sm" active>
-            G1 Baseline closed
+            G0–P2 done
           </Pill>
           <Pill tone="success" size="sm" active>
             Helper 1:1
@@ -161,23 +174,23 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             Agent Spec+Base
           </Pill>
-          <Pill size="sm" active>
+          <Pill tone="success" size="sm" active>
             Dual-DNS *.vz.test
           </Pill>
           <Pill tone="success" size="sm" active>
-            G0 Go
-          </Pill>
-          <Pill tone="success" size="sm" active>
-            #33 policies
+            Net+Policies
           </Pill>
           <Pill tone="success" size="sm" active>
             #36 schema
           </Pill>
+          <Pill tone="success" size="sm" active>
+            #52 pull
+          </Pill>
+          <Pill tone="warning" size="sm">
+            #37 apply open
+          </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
-          </Pill>
-          <Pill tone="info" size="sm">
-            50 Issues tracked
           </Pill>
         </Row>
       </Stack>
@@ -206,16 +219,17 @@ export default function VzHypervisorImplementationsplan() {
         #36 implementiert <Code>hypernetwork/v1</Code> als Serde-Typen plus
         exportierbares JSON Schema. <Code>vzctl validate -C</Code> prüft Schema,
         Referenzen, IPv4/CIDR, DependsOn-DAG und DHCP/static-Kollisionen mit
-        JSON-Pfaden. Next: Image-Pull #52 (<Code>*-latest</Code> Bases), dann #37.
+        JSON-Pfaden. #52 ergänzt 14 ARM64-<Code>*-latest</Code>-Aliase,
+        Digestprüfung und den content-addressed Raw-Store. Next: #37.
       </Callout>
 
       <Grid columns={6} gap={12}>
-        <Stat value="26+" label="min. macOS" tone="success" />
+        <Stat value="G0–P2" label="phases done" tone="success" />
         <Stat value="#22✓" label="image seal" tone="success" />
-        <Stat value="#23✓" label="linked clone" tone="success" />
-        <Stat value="#24✓" label="identity reset" tone="success" />
-        <Stat value="#51✓" label="default network" tone="success" />
-        <Stat value="#36✓" label="config schema" tone="success" />
+        <Stat value="#36✓" label="validate" tone="success" />
+        <Stat value="#51✓" label="default net" tone="success" />
+        <Stat value="#52✓" label="image pull" tone="success" />
+        <Stat value="#37" label="apply next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -330,14 +344,19 @@ export default function VzHypervisorImplementationsplan() {
           </Card>
         </Grid>
         <Card>
-          <CardHeader>Apply-Vertrag</CardHeader>
+          <CardHeader trailing={<Pill tone="success" size="sm" active>ADR 0003✓</Pill>}>
+            Apply-Vertrag
+          </CardHeader>
           <CardBody>
-            <Text size="small" tone="secondary">
-              Desired=YAML · Actual=SQLite · Lockfile=Instanz-Map · Journal
-              (id/gen/step/status) · <Code>apply --resume|--abort</Code> · Lease
-              gegen Parallelität · purge nur <Code>managed-by=vzctl</Code> +
-              Resolver-Dateien · <Code>adopt</Code> für Orphans
-            </Text>
+            <Stack gap={6}>
+              <Struck>
+                Desired=YAML · Actual=SQLite · Spec ADR 0003 · validate (#36)
+              </Struck>
+              <Text size="small" tone="secondary">
+                Offen: Journal-Runtime · <Code>apply --resume|--abort</Code> ·
+                Lease · Lockfile · purge/adopt (#37)
+              </Text>
+            </Stack>
           </CardBody>
         </Card>
       </Stack>
@@ -500,30 +519,34 @@ export default function VzHypervisorImplementationsplan() {
         <H2>Plattenmodell</H2>
         <Grid columns={3} gap={12}>
           <Card>
-            <CardHeader>1. Base</CardHeader>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#22✓</Pill>}>
+              1. Base
+            </CardHeader>
             <CardBody>
-              <Text size="small" tone="secondary">
-                Sealed, immutable, Guest-Agent vorinstalliert.{" "}
-                <Code>vzctl image seal</Code>
-              </Text>
+              <Struck>
+                Sealed, immutable, Guest-Agent vorinstalliert. vzctl image seal
+              </Struck>
             </CardBody>
           </Card>
           <Card>
-            <CardHeader>2. Linked Clone</CardHeader>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#23✓</Pill>}>
+              2. Linked Clone
+            </CardHeader>
             <CardBody>
-              <Text size="small" tone="secondary">
-                APFS <Code>clonefile</Code> COW Root-Disk. Pro Clone neue MAC,
-                machine-id, SSH keys und instance-id.
-              </Text>
+              <Struck>
+                APFS clonefile COW Root-Disk. Pro Clone neue MAC, machine-id,
+                SSH keys und instance-id.
+              </Struck>
             </CardBody>
           </Card>
           <Card>
-            <CardHeader>3. dataDisk</CardHeader>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#24✓ #52✓</Pill>}>
+              3. dataDisk + Pull
+            </CardHeader>
             <CardBody>
-              <Text size="small" tone="secondary">
-                Neues leeres Image pro VM. Purge löscht Clone+dataDisk; Base
-                bleibt.
-              </Text>
+              <Struck>
+                dataDisk pro VM · image pull *-latest Aliase · Digest/Raw-Store
+              </Struck>
             </CardBody>
           </Card>
         </Grid>
@@ -537,20 +560,20 @@ export default function VzHypervisorImplementationsplan() {
           headers={["Phase", "Name", "Zeit", "Deliverable"]}
           columnAlign={["center", "left", "center", "left"]}
           rows={PHASES.map((p) => [
-            <Pill size="sm" active>
-              {p.id}
+            <Pill size="sm" active={p.done || p.id === "P3"}>
+              {p.done ? `${p.id}✓` : p.id}
             </Pill>,
-            p.name,
+            p.done ? <Struck>{p.name}</Struck> : p.name,
             p.weeks,
-            p.goal,
+            p.done ? <Struck>{p.goal}</Struck> : p.goal,
           ])}
           rowTone={[
-            "danger",
+            "success",
             "success",
             "success",
             "success",
             "info",
-            "info",
+            "neutral",
             "warning",
             "warning",
           ]}
@@ -564,20 +587,16 @@ export default function VzHypervisorImplementationsplan() {
             <CardHeader>v0.1 Alpha Muss</CardHeader>
             <CardBody>
               <Stack gap={6}>
+                <Struck>Host macOS 26+ · G0 bestanden</Struck>
+                <Struck>Supervisor + Helper + Agent-in-Base</Struck>
+                <Struck>Dual-DNS *.vz.test + Resolver</Struck>
+                <Struck>Clones · Seal · Identity · Net/Policies · image pull</Struck>
+                <Struck>hypernetwork Schema + validate (#36)</Struck>
                 <Text size="small" tone="secondary">
-                  Host macOS 26+ · G0 bestanden
+                  Offen: Stacks up/down/apply + Journal/Resume (#37)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Supervisor + Helper + Agent-in-Base
-                </Text>
-                <Text size="small" tone="secondary">
-                  Dual-DNS *.vz.test + Resolver
-                </Text>
-                <Text size="small" tone="secondary">
-                  Stacks + Journal/Resume + Clones
-                </Text>
-                <Text size="small" tone="secondary">
-                  Docker SSH-Context + Ports basic + logs
+                  Offen: Docker SSH-Context + Ports basic + logs (#39/#49)
                 </Text>
               </Stack>
             </CardBody>
@@ -632,7 +651,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu:24.04, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
     lan: { cidr: 10.90.0.0/24, mode: shared }
@@ -669,15 +688,20 @@ spec:
 
       <Stack gap={12}>
         <H2>CLI (Zielbild)</H2>
-        <Code>{`vzctl up|down|apply|diff|ps|validate|adopt
-vzctl apply --resume|--abort
-vzctl vm create|start|stop|delete|list|info|exec|console|logs
-vzctl image pull|seal|list
-vzctl net create|attach|list|delete
-vzctl route add|apply   &&   vzctl policy apply
-vzctl dns status|query|reload|install-resolver|uninstall-resolver
-vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
-# v0.2: ingress | certs | oidc`}</Code>
+        <Stack gap={4}>
+          <Struck>vzctl validate · --schema</Struck>
+          <Struck>vzctl vm create|… (create/from/data-disk/role)</Struck>
+          <Struck>vzctl image pull|seal</Struck>
+          <Struck>vzctl net create|attach|list|detach|delete|default</Struck>
+          <Struck>vzctl route apply|plan|status</Struck>
+          <Struck>vzctl dns query|install-resolver|uninstall-resolver</Struck>
+          <Struck>vzctl events subscribe · vzctl doctor</Struck>
+          <Text size="small" tone="secondary">
+            Offen: <Code>up|down|apply|diff|ps|adopt</Code> ·{" "}
+            <Code>apply --resume|--abort</Code> · <Code>vm logs</Code> ·{" "}
+            <Code>docker …</Code> · v0.2 <Code>ingress|certs|oidc</Code>
+          </Text>
+        </Stack>
       </Stack>
 
       <Divider />
@@ -689,25 +713,32 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           Docs: docs/planing/06-github-tracking.md
         </Text>
         <Table
-          headers={["#", "Epic", "Milestone"]}
-          columnAlign={["center", "left", "left"]}
+          headers={["#", "Epic", "Milestone", "Status"]}
+          columnAlign={["center", "left", "left", "left"]}
           rows={EPICS.map((e) => [
-            <Pill size="sm" active>
-              #{e.n}
+            <Pill size="sm" active={e.done === true || e.done === "partial"}>
+              {e.done === true ? `#${e.n}✓` : `#${e.n}`}
             </Pill>,
-            e.title,
+            e.done === true ? <Struck>{e.title}</Struck> : e.title,
             e.ms,
+            e.done === true
+              ? "done"
+              : e.done === "partial"
+                ? e.n === 34
+                  ? "#36/#52 ✓ · #37 open"
+                  : "contract ✓ · CLI surface rest"
+                : "open",
           ])}
           rowTone={[
             "success",
             "success",
             "success",
             "info",
-            "info",
             "success",
             "success",
+            "success",
             "info",
-            "info",
+            "neutral",
             "warning",
             "neutral",
           ]}
@@ -719,19 +750,22 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           Dual-DNS, macOS resolver install/cleanup und direkter dns query. #29:
           Guest-NoCloud mit Bridge-.0 als einzigem DNS, on-link Default-Route
           und Projekt-Search-Domain. #36: hypernetwork/v1 Schema, Serde und
-          Validate mit JSON-Pfaden. Next: Image-Pull #52, dann Apply-Engine #37.
+          Validate mit JSON-Pfaden. #52: ARM64 Image-Pull mit 14 Aliasen,
+          Digestprüfung und Raw-Normalisierung. Next: Apply-Engine #37.
         </Callout>
       </Stack>
 
       <Stack gap={12}>
         <H2>Repo-Layout (Ist)</H2>
         <Code>{`vzctl/
-  crates/vzctl/     # Rust CLI (doctor + supervisor health)
+  crates/vzctl/     # Rust CLI (validate, dns, net, image, doctor, …)
   daemon/           # vz-supervisor + vz-helper (ADR 0002)
   guest-agent/      # Go vzctl-agent + systemd + NoCloud seed
   docs/adr/         # 0001–0003 Accepted
-  docs/specs/       # guest-agent-v1.md
-  docs/spikes/      # g0-network, p0-helper, p0-guest-agent-base
+  docs/specs/       # guest-agent-v1, cli-contract-v1, hypernetwork-v1, events-v1
+  docs/images/      # seal + pull contracts
+  docs/spikes/      # g0/p0/p1 spikes
+  examples/edge-dmz/
   spikes/g0/        # G0 measurement harness
   scripts/          # build/smoke guest-agent-base`}</Code>
       </Stack>

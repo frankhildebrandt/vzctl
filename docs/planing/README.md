@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P3 / #36 abgeschlossen** — `hypernetwork/v1` Serde-Typen, JSON-Schema-Export,
-`vzctl validate` und Fixture-Tests mit JSON-Pfaden. Als Nächstes: Image-Pull
-**#52** (`*-latest` Bases); Apply-Engine #37 bleibt parallel im Epic #34.
+**P3 / #52 abgeschlossen** — `vzctl image pull` für 14 `*-latest`-Aliase mit
+Digestprüfung und content-addressed Raw-Store. Der nächste Slice ist
+**#37** Reconcile-/Apply-Engine (Epic #34, ADR 0003).

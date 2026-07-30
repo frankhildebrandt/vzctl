@@ -17,8 +17,9 @@ vzctl image seal ubuntu-base --format json
 Ein Pfad wird direkt verwendet. Ein Name wird lokal unter
 `VZCTL_IMAGES_DIR` oder standardmäßig unter
 `~/Library/Application Support/vzctl/images/` gesucht. Dabei werden der
-exakte Name sowie `.raw`, `.qcow`, `.qcow2` und `.img` geprüft. Ein
-Registry-Pull ist in #22 noch nicht implementiert.
+exakte Name sowie `.raw`, `.qcow`, `.qcow2` und `.img` geprüft. Zusätzlich
+werden durch [`image pull`](pull-contract-v1.md) registrierte
+`aliases/<name>.json` auf content-addressed Raw-Objekte aufgelöst.
 
 Die Offline-Anpassung benötigt auf einem Linux-Builder `qemu-img` und
 `virt-customize` aus `libguestfs-tools`. Fehlt das Backend auf macOS, endet

@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod config;
 mod dns;
+mod image;
 mod network;
 mod route;
 
@@ -71,6 +72,12 @@ struct EventsOptions {
 #[derive(Debug, Eq, PartialEq)]
 struct ImageSealOptions {
     input: String,
+    format: OutputFormat,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ImagePullOptions {
+    alias: String,
     format: OutputFormat,
 }
 
@@ -311,6 +318,7 @@ Commands:
   route status [--router <vm-id>] [--format human|json]
   dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
+  image pull <alias> [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
   help
@@ -331,7 +339,10 @@ Stable exit codes:
   17  network operation failed
   18  route operation failed
   19  resolver operation failed
-  20  DNS query failed or returned a non-zero rcode"
+  20  DNS query failed or returned a non-zero rcode
+  21  image download/metadata network failure
+  22  image checksum mismatch or invalid checksum metadata
+  23  image architecture unsupported"
     );
 }
 
@@ -378,15 +389,164 @@ fn version_json(version: &str) -> Value {
 
 fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
+        Some("pull") => image_pull_command(args.collect()),
         Some("seal") => image_seal_command(args.collect()),
         Some(command) => {
             eprintln!("unknown image command: {command}");
             ExitCode::from(EXIT_USAGE)
         }
         None => {
-            eprintln!("usage: vzctl image seal <name|path> [--format human|json]");
+            eprintln!(
+                "usage: vzctl image pull <alias> [--format human|json] | \
+                 image seal <name|path> [--format human|json]"
+            );
             ExitCode::from(EXIT_USAGE)
         }
+    }
+}
+
+fn image_pull_command(args: Vec<String>) -> ExitCode {
+    let requested_format = requested_output_format(&args);
+    let options = match parse_image_pull_options(args.into_iter()) {
+        Ok(options) => options,
+        Err(failure) => {
+            emit_image_pull_failure(requested_format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
+    match image::pull(&options.alias, &images_dir()) {
+        Ok(result) => {
+            match options.format {
+                OutputFormat::Human => print_image_pull_human(&result),
+                OutputFormat::Json => println!("{}", image_pull_json(&result)),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            emit_image_pull_failure(options.format, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn parse_image_pull_options(
+    args: impl Iterator<Item = String>,
+) -> Result<ImagePullOptions, image::PullFailure> {
+    let mut alias = None;
+    let mut format = OutputFormat::Human;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--format" => {
+                let value = args.next().ok_or_else(|| image::PullFailure {
+                    code: EXIT_USAGE,
+                    message: "--format requires human or json".to_string(),
+                })?;
+                format = match value.as_str() {
+                    "human" => OutputFormat::Human,
+                    "json" => OutputFormat::Json,
+                    _ => {
+                        return Err(image::PullFailure {
+                            code: EXIT_USAGE,
+                            message: format!("unsupported image pull format: {value}"),
+                        })
+                    }
+                };
+            }
+            "-h" | "--help" => {
+                return Err(image::PullFailure {
+                    code: EXIT_USAGE,
+                    message: "usage: vzctl image pull <alias> [--format human|json]".to_string(),
+                })
+            }
+            _ if arg.starts_with('-') => {
+                return Err(image::PullFailure {
+                    code: EXIT_USAGE,
+                    message: format!("unknown image pull option: {arg}"),
+                })
+            }
+            _ if alias.is_none() => alias = Some(arg),
+            _ => {
+                return Err(image::PullFailure {
+                    code: EXIT_USAGE,
+                    message: format!("unexpected image pull argument: {arg}"),
+                })
+            }
+        }
+    }
+    let alias = alias.ok_or_else(|| image::PullFailure {
+        code: EXIT_USAGE,
+        message: "usage: vzctl image pull <alias> [--format human|json]".to_string(),
+    })?;
+    Ok(ImagePullOptions { alias, format })
+}
+
+fn print_image_pull_human(result: &image::PullResult) {
+    println!(
+        "Image {} {}",
+        result.requested_alias,
+        if result.unchanged {
+            "is unchanged"
+        } else {
+            "pulled"
+        }
+    );
+    println!(
+        "  release: {} {} (arm64)",
+        result.distribution, result.release
+    );
+    println!("  sha256: {}", result.normalized_digest);
+    println!("  path: {}", result.image_path.display());
+    println!("  sealed: {}", if result.sealed { "yes" } else { "no" });
+}
+
+fn image_pull_json(result: &image::PullResult) -> Value {
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "image.pull",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": if result.unchanged { "image unchanged" } else { "image pulled" },
+            "change": if result.unchanged { "unchanged" } else { "pulled" },
+        },
+        "image": {
+            "alias": result.requested_alias,
+            "canonical_alias": result.canonical_alias,
+            "aliases": result.aliases,
+            "distribution": result.distribution,
+            "release": result.release,
+            "architecture": "arm64",
+            "path": result.image_path,
+            "format": "raw",
+            "sha256": result.normalized_digest,
+            "sealed": result.sealed,
+            "manifest": result.manifest_path,
+        },
+        "source": {
+            "url": result.source_url,
+            "format": result.source_format,
+            "algorithm": result.source_algorithm,
+            "digest": result.source_digest,
+        },
+    })
+}
+
+fn emit_image_pull_failure(format: OutputFormat, failure: &image::PullFailure) {
+    eprintln!("{}", failure.message);
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": CLI_API_VERSION,
+                "command": "image.pull",
+                "status": "fail",
+                "exit_code": failure.code,
+                "summary": {
+                    "message": failure.message,
+                },
+            })
+        );
     }
 }
 
@@ -490,7 +650,12 @@ fn seal_image_in_dir(
     backend: &dyn ImageSealBackend,
     images_dir: &Path,
 ) -> Result<ImageSealResult, SealFailure> {
-    let source_path = resolve_image_input(&options.input, images_dir)?;
+    let source_path = match image::prepare_alias_for_seal(images_dir, &options.input)
+        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+    {
+        Some(path) => path,
+        None => resolve_image_input(&options.input, images_dir)?,
+    };
     let source_path = fs::canonicalize(&source_path).map_err(|error| {
         SealFailure::new(
             EXIT_INVALID_INPUT,
@@ -511,7 +676,10 @@ fn seal_image_in_dir(
         .to_string();
     let marker_path = seal_marker_path(images_dir, &source_path);
     if marker_path.exists() {
-        return read_existing_seal(&marker_path, &source_path, name);
+        let result = read_existing_seal(&marker_path, &source_path, name)?;
+        image::mark_aliases_sealed(images_dir, &result.source_path, &result.marker_path)
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+        return Ok(result);
     }
 
     let image_format = backend.inspect_format(&source_path)?;
@@ -535,6 +703,8 @@ fn seal_image_in_dir(
         already_sealed: false,
     };
     write_seal_marker_and_lock(&result)?;
+    image::mark_aliases_sealed(images_dir, &result.source_path, &result.marker_path)
+        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
     Ok(result)
 }
 
@@ -556,6 +726,12 @@ fn resolve_image_input(input: &str, images_dir: &Path) -> Result<PathBuf, SealFa
         ));
     }
 
+    match image::resolve_alias(images_dir, input) {
+        Ok(Some(path)) => return Ok(path),
+        Ok(None) => {}
+        Err(error) => return Err(SealFailure::new(EXIT_IMAGE_STATE_FAILED, error)),
+    }
+
     let candidates = ["", ".raw", ".qcow", ".qcow2", ".img"]
         .into_iter()
         .map(|suffix| images_dir.join(format!("{input}{suffix}")))
@@ -566,7 +742,7 @@ fn resolve_image_input(input: &str, images_dir: &Path) -> Result<PathBuf, SealFa
         [] => Err(SealFailure::new(
             EXIT_INVALID_INPUT,
             format!(
-                "image {input} not found in {}; registry pull is not implemented",
+                "image {input} not found in {}; run `vzctl image pull {input}` first",
                 images_dir.display()
             ),
         )),
@@ -2908,6 +3084,52 @@ mod tests {
         assert_eq!(route::EXIT_ROUTE, 18);
         assert_eq!(dns::EXIT_RESOLVER, 19);
         assert_eq!(dns::EXIT_DNS_QUERY, 20);
+        assert_eq!(image::EXIT_IMAGE_NETWORK, 21);
+        assert_eq!(image::EXIT_IMAGE_CHECKSUM, 22);
+        assert_eq!(image::EXIT_IMAGE_ARCH, 23);
+    }
+
+    #[test]
+    fn image_pull_options_accept_alias_and_json_in_any_order() {
+        let args = ["--format", "json", "ubuntu-latest"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_image_pull_options(args).unwrap(),
+            ImagePullOptions {
+                alias: "ubuntu-latest".to_string(),
+                format: OutputFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn image_pull_json_exposes_digest_alias_and_unsealed_state() {
+        let result = image::PullResult {
+            requested_alias: "coreos-latest".to_string(),
+            canonical_alias: "fedora-coreos-latest".to_string(),
+            distribution: "Fedora CoreOS".to_string(),
+            release: "stable".to_string(),
+            source_url: "https://example.invalid/fcos.qcow2.xz".to_string(),
+            source_format: "qcow2.xz".to_string(),
+            source_algorithm: "sha256".to_string(),
+            source_digest: "a".repeat(64),
+            normalized_digest: "b".repeat(64),
+            image_path: PathBuf::from("/images/objects/b.raw"),
+            manifest_path: PathBuf::from("/images/aliases/coreos-latest.json"),
+            unchanged: true,
+            sealed: false,
+            aliases: vec![
+                "fedora-coreos-latest".to_string(),
+                "coreos-latest".to_string(),
+            ],
+        };
+        let value = image_pull_json(&result);
+        assert_eq!(value["command"], "image.pull");
+        assert_eq!(value["summary"]["change"], "unchanged");
+        assert_eq!(value["image"]["canonical_alias"], "fedora-coreos-latest");
+        assert_eq!(value["image"]["sealed"], false);
+        assert_eq!(value["image"]["sha256"], "b".repeat(64));
     }
 
     #[test]
@@ -2925,7 +3147,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_stub_resolves_one_local_image() {
+    fn resolves_one_local_image_by_name() {
         let directory = test_directory("image-resolve");
         fs::create_dir_all(&directory).unwrap();
         let image = directory.join("ubuntu-base.qcow2");

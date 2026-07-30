@@ -86,6 +86,9 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `18` | Route-/Policy-Operation fehlgeschlagen | Guest-Agent oder nftables |
 | `19` | macOS-Resolver-Operation fehlgeschlagen | Rechte, Kollision, unsicherer Pfad |
 | `20` | DNS-Query fehlgeschlagen | Timeout, Protokollfehler oder DNS-RCODE ungleich `NOERROR` |
+| `21` | Image-Netzwerk-/Metadatenfehler | Download, Release-Metadaten |
+| `22` | Image-Checksum fehlgeschlagen | Upstream-/lokaler Digest-Mismatch |
+| `23` | Image-Architektur unsupported | `image pull` ist ARM64-only |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -124,6 +127,21 @@ erzeugte JSON Schema und danach auf referentielle Integrität. Fehler stehen als
 liefert Exit `0`, Config-/Schema-/Referenzfehler Exit `3`, Usage Exit `2`.
 `--schema` exportiert das Draft-7-Schema als reines JSON-Dokument nach stdout.
 Details: [hypernetwork/v1](hypernetwork-v1.md).
+
+### `vzctl image pull <alias> --format json`
+
+Payloads: `image` und `source`; kanonischer Command ist `image.pull`.
+`summary.change` ist `pulled` oder beim idempotenten Re-Pull `unchanged`.
+`image` enthält Alias/Kanonik, Release, `architecture=arm64`, den
+aufgelösten Raw-Pfad, SHA256, Manifest und den Seal-State. Ein frischer Pull
+liefert `sealed=false`; ein unveränderter Re-Pull darf nach separatem Seal
+`sealed=true` liefern. `source` enthält URL, Eingabeformat und verifizierten
+Upstream-Digest.
+
+Erfolg liefert Exit `0`, Usage `2`, unbekannte Aliase `3`, fehlende lokale
+Konvertierungswerkzeuge `12`, Store-/Normalisierungsfehler `15`,
+Netzwerk-/Metadatenfehler `21`, Checksumfehler `22` und unsupported Arch `23`.
+Details: [Image Pull Contract v1](../images/pull-contract-v1.md).
 
 ### `vzctl image seal <name|path> --format json`
 
