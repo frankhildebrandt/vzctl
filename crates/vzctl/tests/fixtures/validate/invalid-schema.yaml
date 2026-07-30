@@ -1,0 +1,12 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: {}
+spec:
+  project: broken
+  domain: broken.example
+  dns: {}
+  images: {}
+  networks: {}
+  routes: {}
+  policies: []
+  vms: {}

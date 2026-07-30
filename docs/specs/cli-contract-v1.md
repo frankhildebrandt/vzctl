@@ -111,6 +111,20 @@ Journal-Operation aus. Gültige Aufrufe liefern Diagnostic auf stderr und Exit
 `12`. Die spätere Journal-Implementierung muss die ADR-0003-Zustände auf `5`
 und `6` abbilden.
 
+### `vzctl validate`
+
+```bash
+vzctl validate [-C <directory|config>] [--format human|json]
+vzctl validate --schema
+```
+
+`validate` prüft `hypernetwork/v1` zuerst gegen das aus den Serde-Typen
+erzeugte JSON Schema und danach auf referentielle Integrität. Fehler stehen als
+`errors[]` mit `kind`, `path` (JSONPath) und `message` im Envelope. Erfolg
+liefert Exit `0`, Config-/Schema-/Referenzfehler Exit `3`, Usage Exit `2`.
+`--schema` exportiert das Draft-7-Schema als reines JSON-Dokument nach stdout.
+Details: [hypernetwork/v1](hypernetwork-v1.md).
+
 ### `vzctl image seal <name|path> --format json`
 
 Payload: `image`, `cleanup` und `preserved`; kanonischer Command ist

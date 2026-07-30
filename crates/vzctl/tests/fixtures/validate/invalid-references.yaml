@@ -1,0 +1,43 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: broken
+spec:
+  project: broken
+  domain: broken.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base:
+      from: ubuntu:24.04
+      role: base
+  networks:
+    dmz:
+      cidr: 10.80.0.0/24
+      mode: shared
+      dhcp: true
+    lan:
+      cidr: 10.90.0.7/24
+      mode: shared
+  routes:
+    - name: broken
+      from: dmz
+      to: missing
+      via: missing-router
+  policies: []
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 40G
+      networks:
+        - { name: dmz, ip: 10.90.0.10 }
+      dependsOn: [database]
+    database:
+      from: missing-image
+      dataDisk: 40G
+      networks:
+        - { name: dmz, ip: 10.80.0.10 }
+      dependsOn: [web]

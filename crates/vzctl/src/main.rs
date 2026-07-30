@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod config;
 mod dns;
 mod network;
 mod route;
@@ -271,6 +272,7 @@ fn main() -> ExitCode {
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
+        Some("validate") => config::command(args),
         Some("apply") => apply_stub(args),
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
@@ -294,6 +296,8 @@ Commands:
   doctor [--format human|json] [--min-free-gib N]
                       Check host baseline and supervisor health
   version [--format human|json]
+  validate [-C <directory|config>] [--format human|json]
+  validate --schema   Export hypernetwork/v1 JSON Schema
   apply [--resume|--abort]   (stub — see ADR 0003)
   events subscribe [--filter 'vm.*,apply.*']
   net create <name> --cidr CIDR [--mode shared] [--label key=value] [--project P] [--stack S]

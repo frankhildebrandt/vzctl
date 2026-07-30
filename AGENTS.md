@@ -11,12 +11,12 @@
 - `vzctl` ist ein CLI-first DevStack-/Hypervisor-Projekt auf Apple Virtualization.framework (Environments as Code für macOS-VMs).
 - Privates GitHub-Repo unter `frankhildebrandt`; Planungsdokumente liegen unter `docs/planing/` (Plan, Reviews, Decision Log, Canvas).
 - Mindest-macOS-Version ist 26; Pre-26 ist unsupported.
-- Prozessmodell: Supervisor plus ein Helper-Prozess pro VM (Helper owns `VZVirtualMachine`); Supervisor owns vmnet-Refs, Helper nur Attachment-Handles; Guest-Control primär per vsock-Agent.
+- Prozessmodell: Supervisor plus ein Helper-Prozess pro VM (Helper owns `VZVirtualMachine`); Supervisor owns vmnet-Refs und DNS, Helper nur Attachment-Handles; Guest-Control primär per vsock-Agent.
 - Repo-Layout: Rust-CLI unter `crates/vzctl`, Swift-Daemon unter `daemon/` (`vz-supervisor`, `vz-helper`); Runtime-State unter `~/Library/Application Support/vzctl/` (UDS + SQLite).
-- Internes DNS stellt der Hypervisor bereit (Zone `{vm}.{net}.{project}.vz.test`); macOS löst über `/etc/resolver` auf; auf Custom-vmnet ist Host-Gateway/DNS `.0` (nicht `.1`), Router typisch `.2`, Guests `.10+`; Cross-Net nur über Router-VM.
-- Stacks sind deklarativ per Verzeichnis/Git-Repo und `hypernetwork.config.yaml` steuerbar (up/down/apply).
+- Internes DNS stellt der Hypervisor bereit (Zone `{vm}.{net}.{project}.vz.test`); Host-Listener `127.0.0.1:15353`, macOS löst über `/etc/resolver` auf; Guest-Nameserver ist Bridge `.0`; auf Custom-vmnet ist Host-Gateway/DNS `.0` (nicht `.1`), Router typisch `.2`, Guests `.10+`; Cross-Net nur über Router-VM.
+- Stacks sind deklarativ per Verzeichnis/Git-Repo und `hypernetwork.config.yaml` (`apiVersion: hypernetwork/v1`, Spec `docs/specs/hypernetwork-v1.md`, `vzctl validate`) steuerbar (up/down/apply); VMs ohne explizites Netz landen im konfigurierbaren Default-Netz (shared, voller Egress/NAT).
 - VMs teilen ein sealed Base-Image (APFS linked clone / clonefile + pro-VM dataDisk); Identity (machine-id, NIC/MAC, SSH-Host-Keys, cloud-init instance-id) wird pro Clone neu gesetzt; Base nie writable öffnen.
 - CLI-Contract: `docs/specs/cli-contract-v1.md` (JSON-Envelope, stdout=Daten / stderr=Diagnostics, stabile Exitcodes).
 - Guest-Agent-Wire-Contract: `docs/specs/guest-agent-v1.md` (virtio-vsock, length-prefixed JSON, Token-Auth).
-- Base-Image-Build braucht ARM64-Linux/`virt-customize`; Live-Boot-Smoke auf reinem macOS oft Residual.
+- Base-/Image-Pull zielt auf ARM64 Cloud/Server-Images (Aliases `ubuntu-latest`, `alpine-latest`, `arch-latest`, `fedora-latest`, `rocky-latest`, `alma-latest`), nicht Installer-ISOs; Build braucht ARM64-Linux/`virt-customize`; Live-Boot-Smoke auf reinem macOS oft Residual.
 - G0-Netzwerk-/Entitlement-Spike ist Go (vor P0 abgeschlossen); nur Entitlement `com.apple.security.virtualization` — `com.apple.vm.networking` bei ad-hoc codesign → SIGKILL; Ingress/OIDC/CA gehören zu v0.2, v0.1 ist Alpha.

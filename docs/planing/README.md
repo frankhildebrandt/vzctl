@@ -27,7 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / Epic #25 closed, #30 implementation complete** — Dual-DNS,
-macOS-Resolver, direkter Diagnose-Query und Guest-NoCloud mit `.0` als
-einzigem Nameserver sowie `{project}.vz.test` als Search-Domain sind umgesetzt.
-Nächster Slice ist der Stack-Reconciler **#34**.
+**P3 / #36 abgeschlossen** — `hypernetwork/v1` Serde-Typen, JSON-Schema-Export,
+`vzctl validate` und Fixture-Tests mit JSON-Pfaden. Als Nächstes: Image-Pull
+**#52** (`*-latest` Bases); Apply-Engine #37 bleibt parallel im Epic #34.

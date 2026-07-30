@@ -2,7 +2,7 @@
 
 macOS Virtualization.framework–based **devstack supervisor**: Git-native multi-VM environments, custom networks, Hypervisor-DNS, linked clones, Docker context.
 
-> Status: **P1 Alpha** (CLI/Event-Verträge stehen). See [`docs/planing/`](docs/planing/).
+> Status: **P3 Alpha** (`hypernetwork/v1` Schema + Validate stehen). See [`docs/planing/`](docs/planing/).
 
 ## Quick start
 
@@ -13,6 +13,7 @@ make install
 # CLI
 cargo run -p vzctl -- doctor
 cargo run -p vzctl -- events subscribe --filter 'vm.*,apply.*'
+cargo run -p vzctl -- validate -C ./examples/edge-dmz
 
 # Daemon stubs (macOS 26+)
 cd daemon && swift build
@@ -66,6 +67,7 @@ make install ACTIVATE=0
 | [ADR 0003](docs/adr/0003-apply-state.md) | Apply / Journal |
 | [`vzctl doctor`](docs/doctor.md) | Checks, Konfiguration und Exitcodes |
 | [CLI Contract v1](docs/specs/cli-contract-v1.md) | JSON, stdout/stderr und Exitcodes |
+| [hypernetwork/v1](docs/specs/hypernetwork-v1.md) | Config-Schema, Validierung und JSON-Pfade |
 | [Event Stream v1](docs/specs/events-v1.md) | NDJSON-Envelope, Typen und Filter |
 | [Router und Policies](docs/routes.md) | nftables Forward-Policies, Plan und Status |
 

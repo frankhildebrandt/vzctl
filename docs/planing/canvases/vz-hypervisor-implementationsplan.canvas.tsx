@@ -170,6 +170,9 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             #33 policies
           </Pill>
+          <Pill tone="success" size="sm" active>
+            #36 schema
+          </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
           </Pill>
@@ -199,12 +202,20 @@ export default function VzHypervisorImplementationsplan() {
         #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
 
-      <Grid columns={5} gap={12}>
+      <Callout tone="info" title="P3 Stack-Reconciler gestartet">
+        #36 implementiert <Code>hypernetwork/v1</Code> als Serde-Typen plus
+        exportierbares JSON Schema. <Code>vzctl validate -C</Code> prüft Schema,
+        Referenzen, IPv4/CIDR, DependsOn-DAG und DHCP/static-Kollisionen mit
+        JSON-Pfaden. Next: Image-Pull #52 (<Code>*-latest</Code> Bases), dann #37.
+      </Callout>
+
+      <Grid columns={6} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="#22✓" label="image seal" tone="success" />
         <Stat value="#23✓" label="linked clone" tone="success" />
         <Stat value="#24✓" label="identity reset" tone="success" />
         <Stat value="#51✓" label="default network" tone="success" />
+        <Stat value="#36✓" label="config schema" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -707,7 +718,8 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
           Dual-DNS, macOS resolver install/cleanup und direkter dns query. #29:
           Guest-NoCloud mit Bridge-.0 als einzigem DNS, on-link Default-Route
-          und Projekt-Search-Domain. Next: Stack-Reconciler #34.
+          und Projekt-Search-Domain. #36: hypernetwork/v1 Schema, Serde und
+          Validate mit JSON-Pfaden. Next: Image-Pull #52, dann Apply-Engine #37.
         </Callout>
       </Stack>
 

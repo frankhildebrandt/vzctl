@@ -38,12 +38,12 @@ spec:
       from: ubuntu-base
       clone: linked
       dataDisk: 4G
-      roles: [router]
       networks:
         - { name: dmz, ip: 10.80.0.2 }
         - { name: lan, ip: 10.90.0.2 }
       cloudInit: cloud-init/router.yaml
       dependsOn: []
+      roles: [router]
     web:
       from: ubuntu-base
       clone: linked
@@ -53,13 +53,4 @@ spec:
       cloudInit: cloud-init/web.yaml
       dependsOn: [router]
       roles: []
-    database:
-      from: ubuntu-base
-      clone: linked
-      dataDisk: 100G
-      networks:
-        - { name: lan, ip: 10.90.0.10 }
-      cloudInit: cloud-init/database.yaml
-      dependsOn: [router]
-      roles: [database]
       requires: [guest-agent-v1]
