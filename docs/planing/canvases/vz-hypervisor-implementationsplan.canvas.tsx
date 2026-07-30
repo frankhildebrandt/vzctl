@@ -20,54 +20,28 @@ import {
 } from "cursor/canvas";
 
 const PHASES = [
-  {
-    id: "G0",
-    name: "Spike",
-    weeks: "0–1",
-    goal: "Netz+DNS+Crash Go/No-Go · macOS-Baseline",
-  },
-  {
-    id: "P0",
-    name: "Foundation",
-    weeks: "1–3",
-    goal: "Supervisor+Helper ADR, Agent-in-Base, Journal, doctor",
-  },
-  {
-    id: "P1",
-    name: "CLI + Clones",
-    weeks: "2–4",
-    goal: "JSON-CLI, Exitcodes, events, Seal/clonefile",
-  },
-  {
-    id: "P2",
-    name: "Net + DNS",
-    weeks: "3–5",
-    goal: "vmnet, Dual-DNS, Resolver, Router+Policies",
-  },
-  {
-    id: "P3",
-    name: "Stacks",
-    weeks: "5–7",
-    goal: "up/down/apply + Lease + Resume",
-  },
-  {
-    id: "P4",
-    name: "Docker + Ports",
-    weeks: "7–9",
-    goal: "Docker SSH-Context, Ports (basic)",
-  },
-  {
-    id: "P4b",
-    name: "v0.1.x",
-    weeks: "nach Alpha",
-    goal: "virtiofs + Docker-Polish + Diagnose",
-  },
-  {
-    id: "P5",
-    name: "Ingress + OIDC",
-    weeks: "v0.2",
-    goal: "Caddy, CA→Guests, Dex, *.localhost Alias",
-  },
+  { id: "G0", name: "Spike", weeks: "0–1", goal: "Netz+DNS+Crash Go/No-Go (Host ≥26)" },
+  { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor" },
+  { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity" },
+  { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies" },
+  { id: "P3", name: "Stacks", weeks: "5–7", goal: "hypernetwork up/down/apply + Lease + Resume" },
+  { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic" },
+  { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose" },
+  { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias" },
+] as const;
+
+const EPICS = [
+  { n: 1, title: "G0 Spike", ms: "G0" },
+  { n: 7, title: "Ownership / Helper", ms: "P0" },
+  { n: 12, title: "vsock Guest-Agent", ms: "P0" },
+  { n: 17, title: "CLI Contracts", ms: "P1" },
+  { n: 21, title: "Clones / Identity", ms: "P1" },
+  { n: 25, title: "Dual-DNS + Resolver", ms: "P2" },
+  { n: 30, title: "Net + Policies", ms: "P2" },
+  { n: 34, title: "Stack Reconciler", ms: "P3" },
+  { n: 39, title: "Docker + Ports", ms: "P4" },
+  { n: 43, title: "Ingress / CA / OIDC", ms: "v0.2" },
+  { n: 48, title: "DX Logs / Docs", ms: "P1" },
 ] as const;
 
 function ArchitectureDiagram() {
@@ -169,89 +143,105 @@ export default function VzHypervisorImplementationsplan() {
       <Stack gap={8}>
         <H1>vzctl — Implementationsplan</H1>
         <Text tone="secondary">
-          Apple-VZ Devstack-Supervisor · Fable + GPT-SOL Must-Fixes · v0.1 ={" "}
-          <Text weight="semibold" as="span">
-            Alpha
-          </Text>
-          . Repo: frankhildebrandt/vzctl · docs/planing/
+          Apple Virtualization.framework Devstack-Supervisor · Environments as
+          Code · Repo{" "}
+          <Code>frankhildebrandt/vzctl</Code> · Stand nach Fable + GPT-SOL + ADR
+          0001
         </Text>
         <Row gap={8} wrap>
+          <Pill tone="success" size="sm" active>
+            macOS 26+
+          </Pill>
+          <Pill tone="success" size="sm" active>
+            G1 Baseline closed
+          </Pill>
           <Pill size="sm" active>
-            SOL Must-Fixes
+            Helper 1:1
           </Pill>
-          <Pill tone="success" size="sm" active>
-            Helper / VM
+          <Pill size="sm" active>
+            Dual-DNS *.vz.test
           </Pill>
-          <Pill tone="success" size="sm" active>
-            Dual-DNS
+          <Pill tone="warning" size="sm">
+            G0 Spike open
+          </Pill>
+          <Pill tone="warning" size="sm">
+            v0.1 Alpha
           </Pill>
           <Pill tone="info" size="sm">
-            *.vz.test
-          </Pill>
-          <Pill tone="warning" size="sm">
-            G0 vor P0
-          </Pill>
-          <Pill tone="warning" size="sm">
-            Alpha ~8–10 Wo
+            50 Issues tracked
           </Pill>
         </Row>
       </Stack>
 
-      <Callout tone="warning" title="GPT-SOL: noch nicht scaffolden">
-        Vor Code: G0 Netz-Spike, Ownership-ADR, Apply-Journal-Spez,
-        macOS-Baseline. Loopback-DNS allein reicht nicht für Guests — Dual
-        Listener Pflicht. v0.1 ist Walking Skeleton, kein Alltagsprodukt.
+      <Callout tone="success" title="ADR 0001 accepted — Mindest-Host macOS 26">
+        Pre-26 unsupported. Bridged out of scope. doctor/Validierung: Host &lt; 26
+        = hard fail. Issue #2 geschlossen. G0-Spike und alle Phasen zielen nur
+        auf macOS 26+ APIs (vmnet Custom inkl. VZVmnetNetworkDeviceAttachment).
       </Callout>
 
       <Grid columns={4} gap={12}>
-        <Stat value="G0" label="Spike Gate" tone="warning" />
-        <Stat value="1:1" label="Helper pro VM" tone="success" />
-        <Stat value="Dual" label="DNS Host+Guest" tone="info" />
+        <Stat value="26+" label="min. macOS" tone="success" />
+        <Stat value="G0" label="nächstes Gate" tone="warning" />
+        <Stat value="11" label="Epics" tone="info" />
         <Stat value="α" label="v0.1 Alpha" tone="warning" />
       </Grid>
 
       <Stack gap={10}>
+        <H2>Positionierung</H2>
+        <Text tone="secondary">
+          Nicht gegen OrbStack/Multipass: Nische = „compose für VM-Topologien“ /
+          Multi-VM, echte Netze, git-native, agent-steuerbar.
+        </Text>
+      </Stack>
+
+      <Divider />
+
+      <Stack gap={10}>
         <H2>Gates vor Scaffolding</H2>
         <Table
-          headers={["Gate", "Inhalt", "Abbruch"]}
+          headers={["Gate", "Status", "Inhalt"]}
           rows={[
             [
               <Pill size="sm" active>
                 G0
               </Pill>,
-              "2 Netze, Router, feste IP, Host↔Guest, Sleep, Supervisor-Crash",
-              "Isolation/Entitlements unmöglich",
+              <Pill tone="warning" size="sm" active>
+                open
+              </Pill>,
+              "2 Netze, Router, feste IP, Dual-DNS-Probe, Sleep, Supervisor-Crash — Epic #1",
             ],
             [
               <Pill size="sm" active>
                 G1
               </Pill>,
-              "macOS-Baseline (Empfehlung: 26-only für v0.1)",
-              "—",
+              <Pill tone="success" size="sm" active>
+                done
+              </Pill>,
+              "macOS 26+ · ADR 0001 · Issue #2 closed",
             ],
             [
               <Pill size="sm" active>
                 G2
               </Pill>,
-              "Process-/Ownership-ADR (VZ, vmnet, DNS, Helper)",
-              "—",
+              <Pill size="sm">pending</Pill>,
+              "Process-/Ownership-ADR (#8) nach G0",
             ],
             [
               <Pill size="sm" active>
                 G3
               </Pill>,
-              "State/Apply: Journal, Idempotenz, Resume, Purge",
-              "—",
+              <Pill size="sm">pending</Pill>,
+              "Apply-Journal Spec (#35)",
             ],
             [
               <Pill size="sm" active>
                 G4
               </Pill>,
-              "MVP-Gates; virtiofs + Docker-Polish → v0.1.x",
-              "Scope > 8–10 Wo",
+              <Pill size="sm">set</Pill>,
+              "virtiofs + Docker-Polish → v0.1.x (#42)",
             ],
           ]}
-          rowTone={["danger", "warning", "info", "info", "warning"]}
+          rowTone={["warning", "success", "info", "info", "neutral"]}
         />
       </Stack>
 
@@ -262,7 +252,7 @@ export default function VzHypervisorImplementationsplan() {
         <ArchitectureDiagram />
         <Grid columns={2} gap={12}>
           <Card>
-            <CardHeader>Ownership (SOL)</CardHeader>
+            <CardHeader>Ownership</CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
@@ -270,67 +260,103 @@ export default function VzHypervisorImplementationsplan() {
                 </Text>
                 <Text size="small" tone="secondary">
                   vmnet-Refs + DNS + Journal → Supervisor; Helper bekommt
-                  Attachment-Handle beim Spawn
+                  Attachment-Handle
                 </Text>
                 <Text size="small" tone="secondary">
-                  Net orphaned nach Supervisor-Crash → Reconnect; DNS down bis
-                  Restart (Alpha-akzeptiert, dokumentiert)
+                  launchd 1 Job / vm-id · Reconnect UDS · Doppel-Helper Lock
+                </Text>
+                <Text size="small" tone="secondary">
+                  Alpha: DNS down nach Supervisor-Crash bis Restart (dokumentiert)
                 </Text>
               </Stack>
             </CardBody>
           </Card>
           <Card>
-            <CardHeader>Helper-Lifecycle</CardHeader>
+            <CardHeader>vsock Guest-Agent</CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  launchd-Job pro VM-ID; UDS Reconnect + State-Report
+                  In sealed Base vorinstalliert (nicht First-Boot-Install)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Doppel-Helper: Lockfile + adopt/kill stale
+                  ping / exec / report-ip / health / time-sync / log-tail /
+                  ca-inject (v0.2)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Alpha-Upgrade: nur gestoppte VMs rolling replace
+                  Auth-Token aus NoCloud · SSH nur Fallback
                 </Text>
               </Stack>
             </CardBody>
           </Card>
         </Grid>
-        <Grid columns={2} gap={12}>
-          <Card>
-            <CardHeader>vsock Agent</CardHeader>
-            <CardBody>
-              <Text size="small" tone="secondary">
-                In sealed Base vorinstalliert — nicht First-Boot-Install.
-                cloud-init nur Identity. exec / IP / Health / Time-Sync /
-                CA-Inject. SSH = Fallback.
-              </Text>
-            </CardBody>
-          </Card>
-          <Card>
-            <CardHeader>Apply-Vertrag</CardHeader>
-            <CardBody>
-              <Text size="small" tone="secondary">
-                Journal (id, gen, step, status) + Lease.{" "}
-                <Code>apply --resume|--abort</Code>. Purge nur managed-by=vzctl
-                + Resolver-Dateien des Projekts.
-              </Text>
-            </CardBody>
-          </Card>
-        </Grid>
+        <Card>
+          <CardHeader>Apply-Vertrag</CardHeader>
+          <CardBody>
+            <Text size="small" tone="secondary">
+              Desired=YAML · Actual=SQLite · Lockfile=Instanz-Map · Journal
+              (id/gen/step/status) · <Code>apply --resume|--abort</Code> · Lease
+              gegen Parallelität · purge nur <Code>managed-by=vzctl</Code> +
+              Resolver-Dateien · <Code>adopt</Code> für Orphans
+            </Text>
+          </CardBody>
+        </Card>
       </Stack>
 
       <Divider />
 
       <Stack gap={12}>
-        <H2>DNS — Dual Listener + .vz.test</H2>
-        <Callout tone="danger" title="SOL: Loopback reicht nicht für Guests">
-          Host: <Code>127.0.0.1:15353</Code> +{" "}
-          <Code>/etc/resolver/{"{project}"}.vz.test</Code>. Guests: Listener auf
-          Gateway/Hypervisor-IP. Zone:{" "}
-          <Code>{"{vm}.{net}.{project}.vz.test"}</Code>. Forward für externe
-          Namen. <Code>vzctl dns query</Code> spricht den vzctl-DNS direkt.
+        <H2>Entscheidungen (Auszug)</H2>
+        <Table
+          headers={["#", "Thema", "Default"]}
+          columnAlign={["center", "left", "left"]}
+          rows={[
+            ["1–2", "Prozess / Agent", "Helper 1:1 · vsock first-class"],
+            ["9–12", "DNS", "*.vz.test · Dual Listener · Forward · dns query direkt"],
+            ["14", "Baseline", "macOS 26+ (ADR 0001)"],
+            ["15", "Bridged", "out of scope"],
+            ["16–18", "IP / Isolation", "static Primär · Router ≠ Gateway .1 · policies"],
+            ["20–22", "Apply / Agent / MVP", "Journal · Agent-in-Base · Alpha + v0.1.x"],
+            ["6–7", "v0.2 Embed", "Caddy + Dex · Issuer nie *.localhost"],
+          ]}
+          rowTone={["info", "success", "success", "warning", "info", "warning", "info"]}
+        />
+        <Text size="small" tone="tertiary">
+          Offen aus G0: Gateway-/Router-IP-Konvention, Guest-DNS-Bind-IP,
+          launchd/XPC-Details.
+        </Text>
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>DNS — Dual Listener + *.vz.test</H2>
+        <Callout tone="danger" title="Nicht auth.localhost in Guests">
+          RFC 6761: *.localhost = Guest-Loopback. Kanonisch{" "}
+          <Code>{"{vm}.{net}.{project}.vz.test"}</Code>. OIDC Issuer ={" "}
+          <Code>https://auth.svc.{"{project}"}.vz.test</Code>. *.localhost nur
+          Host-Alias in v0.2.
         </Callout>
+        <Grid columns={2} gap={12}>
+          <Card>
+            <CardHeader>Host</CardHeader>
+            <CardBody>
+              <Text size="small" tone="secondary">
+                Listener <Code>127.0.0.1:15353</Code> +{" "}
+                <Code>/etc/resolver/{"{project}"}.vz.test</Code>.{" "}
+                <Code>vzctl dns query</Code> spricht DNS direkt (dig umgeht oft
+                Resolver).
+              </Text>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader>Guest</CardHeader>
+            <CardBody>
+              <Text size="small" tone="secondary">
+                Listener auf Gateway/Hypervisor-IP (Ergebnis G0 #5). cloud-init
+                nameservers + search domain. Forward für externe Namen
+                (upstream=system; VPN dokumentieren).
+              </Text>
+            </CardBody>
+          </Card>
+        </Grid>
         <Code>{`spec:
   domain: edge-dmz.vz.test
   dns:
@@ -338,26 +364,59 @@ export default function VzHypervisorImplementationsplan() {
     hostResolver: true
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
-
-# kanonisch:  web.dmz.edge-dmz.vz.test
-# OIDC v0.2:  https://auth.svc.edge-dmz.vz.test
-# Host-Alias: web.localhost → gleicher Upstream (nur v0.2)`}</Code>
+# kanonisch: web.dmz.edge-dmz.vz.test`}</Code>
       </Stack>
 
       <Stack gap={12}>
-        <H2>Netzwerk (G0 Spike)</H2>
+        <H2>Netzwerk & IP (Host ≥ 26)</H2>
         <Table
-          headers={["Thema", "v0.1 Default"]}
+          headers={["Mode", "IP-Vergabe", "Hinweis"]}
           rows={[
-            ["Baseline", "macOS 26-only (Empfehlung)"],
-            ["Bridged", "out of scope"],
-            ["IP-Vergabe", "cloud-init static Primär"],
-            ["Router-IP", "nicht Gateway .1 — Konvention aus Spike"],
-            ["Isolation", "routes + policies (forward allow/deny)"],
-            ["Akzeptanztests", "Sleep, VPN, Supervisor-Crash"],
+            ["shared", "cloud-init static Primär", "vmnet 26+ first-class"],
+            ["host", "wie shared", ""],
+            ["bridged", "—", "out of scope"],
+            ["pre-26", "—", "unsupported (ADR 0001)"],
           ]}
-          rowTone={["warning", "danger", "success", "warning", "info", "info"]}
+          rowTone={["success", "info", "warning", "danger"]}
         />
+        <Text size="small" tone="secondary">
+          Router-IP nicht mit vmnet-Gateway kollidieren (z. B. Gateway .1 /
+          Router .2 — Spike #4). <Code>routes</Code> + <Code>policies</Code>{" "}
+          (forward allow/deny) für echte DMZ-Semantik.
+        </Text>
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>Plattenmodell</H2>
+        <Grid columns={3} gap={12}>
+          <Card>
+            <CardHeader>1. Base</CardHeader>
+            <CardBody>
+              <Text size="small" tone="secondary">
+                Sealed, immutable, Guest-Agent vorinstalliert.{" "}
+                <Code>vzctl image seal</Code>
+              </Text>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader>2. Linked Clone</CardHeader>
+            <CardBody>
+              <Text size="small" tone="secondary">
+                APFS <Code>clonefile</Code> COW Root-Disk. Identity-Reset: MAC,
+                machine-id, SSH keys, instance-id.
+              </Text>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader>3. dataDisk</CardHeader>
+            <CardBody>
+              <Text size="small" tone="secondary">
+                Neues leeres Image pro VM. Purge löscht Clone+dataDisk; Base
+                bleibt.
+              </Text>
+            </CardBody>
+          </Card>
+        </Grid>
       </Stack>
 
       <Divider />
@@ -396,19 +455,19 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  G0 bestanden + Ownership-ADR
+                  Host macOS 26+ · G0 bestanden
                 </Text>
                 <Text size="small" tone="secondary">
-                  Helper-pro-VM + Agent-in-Base
+                  Supervisor + Helper + Agent-in-Base
                 </Text>
                 <Text size="small" tone="secondary">
-                  Dual-DNS + Resolver *.vz.test
+                  Dual-DNS *.vz.test + Resolver
                 </Text>
                 <Text size="small" tone="secondary">
                   Stacks + Journal/Resume + Clones
                 </Text>
                 <Text size="small" tone="secondary">
-                  Docker SSH-Context + Ports basic
+                  Docker SSH-Context + Ports basic + logs
                 </Text>
               </Stack>
             </CardBody>
@@ -418,10 +477,10 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  virtiofs + Perf
+                  virtiofs + Perf (#42)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Docker-Polish
+                  Docker-Polish / BuildKit
                 </Text>
                 <Text size="small" tone="secondary">
                   Diagnose-Bundles
@@ -434,10 +493,10 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  Caddy + CA-Rollout + Dex
+                  Caddy + Local CA-Rollout + Dex
                 </Text>
                 <Text size="small" tone="secondary">
-                  *.localhost Aliase
+                  *.localhost Host-Aliase
                 </Text>
                 <Text size="small" tone="secondary">
                   Tauri, Snapshots, k3s
@@ -449,7 +508,7 @@ export default function VzHypervisorImplementationsplan() {
       </Stack>
 
       <Stack gap={12}>
-        <H2>Config-Skizze</H2>
+        <H2>Config-Skizze (v0.1)</H2>
         <Code>{`apiVersion: hypernetwork/v1
 kind: Environment
 metadata:
@@ -462,6 +521,8 @@ spec:
     hostResolver: true
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu:24.04, role: base }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
     lan: { cidr: 10.90.0.0/24, mode: shared }
@@ -471,6 +532,7 @@ spec:
     - name: dmz-default
       network: dmz
       forward: deny-all
+      allow: [{ to: lan, proto: tcp, ports: [5432] }]
   vms:
     router:
       from: ubuntu-base
@@ -486,59 +548,82 @@ spec:
       dataDisk: 40G
       dependsOn: [router]
       networks:
-        - { name: dmz, ip: 10.80.0.10 }`}</Code>
+        - { name: dmz, ip: 10.80.0.10 }
+    docker:
+      from: ubuntu-base
+      roles: [docker]
+      dataDisk: 100G
+      networks:
+        - { name: dmz, ip: 10.80.0.50 }`}</Code>
       </Stack>
 
       <Stack gap={12}>
-        <H2>Kickoff (aktualisiert)</H2>
+        <H2>CLI (Zielbild)</H2>
+        <Code>{`vzctl up|down|apply|diff|ps|validate|adopt
+vzctl apply --resume|--abort
+vzctl vm create|start|stop|delete|list|info|exec|console|logs
+vzctl image pull|seal|list
+vzctl net create|attach|list|delete
+vzctl route add|apply   &&   vzctl policy apply
+vzctl dns status|query|reload|install-resolver
+vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
+# v0.2: ingress | certs | oidc`}</Code>
+      </Stack>
+
+      <Divider />
+
+      <Stack gap={12}>
+        <H2>GitHub Tracking</H2>
+        <Text size="small" tone="secondary">
+          50 Issues · Sub-Issues · blocked-by · Labels type/priority/area/phase/finding ·
+          Docs: docs/planing/06-github-tracking.md
+        </Text>
         <Table
-          headers={["#", "Ticket", "Phase"]}
-          columnAlign={["center", "left", "center"]}
-          rows={[
-            ["0", "G0 Netz-/DNS-/Crash-Spike + Baseline ADR", "G0"],
-            ["1", "Ownership-ADR + Helper launchd Lifecycle", "P0"],
-            ["2", "Apply-Spez: Journal, Resume, Purge", "P0"],
-            ["3", "Guest-Agent in Base + vsock ping/exec", "P0"],
-            ["4", "doctor + UDS health", "P0"],
-            ["5", "CLI JSON + events + Exitcodes", "P1"],
-            ["6", "seal + linked clone + identity", "P1"],
-            ["7", "vmnet + Router + policies", "P2"],
-            ["8", "Dual-DNS + forward + dns query", "P2"],
-            ["9", "/etc/resolver/*.vz.test install/cleanup", "P2"],
-            ["10", "reconcile up/down/apply + lease + resume", "P3"],
-            ["11", "Docker SSH-context + ports basic", "P4"],
-            ["12", "virtiofs + Docker polish", "P4b"],
-            ["13", "Caddy + Dex + CA + hostAliases", "P5"],
-          ]}
+          headers={["#", "Epic", "Milestone"]}
+          columnAlign={["center", "left", "left"]}
+          rows={EPICS.map((e) => [
+            <Pill size="sm" active>
+              #{e.n}
+            </Pill>,
+            e.title,
+            e.ms,
+          ])}
           rowTone={[
             "danger",
             "success",
             "success",
-            "success",
-            "success",
-            "success",
-            "success",
             "info",
             "info",
-            "info",
+            "success",
+            "success",
             "info",
             "info",
             "warning",
-            "warning",
+            "neutral",
           ]}
         />
+        <Callout tone="info" title="Nächster Schritt">
+          Epic #1 G0 Spike auf macOS 26+ (#3–#6). Danach Ownership-ADR #8 und
+          Apply-Spec #35 — erst dann Scaffolding.
+        </Callout>
       </Stack>
 
-      <Callout tone="success" title="Nächster Schritt">
-        G0 vertikaler Spike: zwei Netze, Router, feste IP, Guest-DNS,
-        Host-Resolver, Sleep, Supervisor-Crash — dann Ownership-ADR und erst
-        Scaffolding.
-      </Callout>
+      <Stack gap={12}>
+        <H2>Repo-Layout (Ziel)</H2>
+        <Code>{`vzctl/
+  crates/          # vzctl, client, schema, reconcile
+  daemon/          # Swift Supervisor + Helper
+  guest-agent/     # vsock agent (in Base)
+  ui/              # Tauri v0.2
+  examples/edge-dmz/
+  docs/planing/    # Plan, Reviews, Tracking
+  docs/adr/        # 0001 macOS baseline ✓`}</Code>
+      </Stack>
 
       <Text size="small" tone="tertiary" style={{ color: theme.text.tertiary }}>
-        Sync mit docs/planing/01-implementation-plan.md ·
-        04-decision-log.md · 05-gpt-sol-review.md · Repo
-        github.com/frankhildebrandt/vzctl
+        Sync: docs/planing/01-implementation-plan.md · 04-decision-log.md ·
+        05-gpt-sol-review.md · 06-github-tracking.md · adr/0001-macos-baseline.md
+        · github.com/frankhildebrandt/vzctl
       </Text>
     </Stack>
   );
