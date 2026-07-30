@@ -189,19 +189,16 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 Ownership + Agent-Base">
-        Epic #7 closed (#9 UDS/SQLite, #10 Helper+VZ, #11 Reconnect). Guest-Agent
-        Spec #13 + Base #14 seal-ready (<Code>guest-agent/</Code>, vsock :21950).
-        Live Helper↔Agent E2E (#15) Unit/Client ✅; Live-Boot Residual.
-        Time-Sync (#16) Code/Unit ✅; Live-Sleep Residual.
-        Nächster P0-Slice: doctor (#20).
+      <Callout tone="success" title="P0 Foundation abgeschlossen">
+        Epic #7 Ownership, #12 Guest-Agent (#13–#16), #20 doctor closed.
+        Live-Boot/Sleep Residual bis Base-Raw. Nächster Slice: P1 CLI #18.
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
-        <Stat value="#12✓" label="Guest-Agent" tone="success" />
-        <Stat value="#20" label="doctor next" tone="info" />
+        <Stat value="P0✓" label="Foundation" tone="success" />
+        <Stat value="#18" label="CLI Spec next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -385,7 +382,7 @@ export default function VzHypervisorImplementationsplan() {
                   Kill -9: VM tot, Subnet verbrannt, frische CIDR OK
                 </Text>
                 <Text size="small" tone="secondary">
-                  ADR+Ownership+Agent Epic ✓ · P0 Rest: doctor (#20)
+                  ADR+Ownership+Agent+doctor ✓ · P0 Foundation abgeschlossen
                 </Text>
                 <Text size="small" tone="secondary">
                   <Code>phase-d-crash.sh</Code> ·{" "}
@@ -687,9 +684,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          #20 <Code>vzctl doctor</Code> ausbauen: Entitlements, APFS/clonefile,
-          DNS-Ports, Disk-Space; JSON-Format (#18) optional. Live-Boot/Sleep-
-          Smokes nachziehen sobald Base-Raw vorliegt.
+          P1 / Epic #17: #18 CLI-v1-Contract für JSON, Exitcodes und Events
+          vervollständigen. <Code>doctor --format json</Code> liefert den ersten
+          Envelope. Danach #21 Base Seal / APFS Linked Clones.
         </Callout>
       </Stack>
 

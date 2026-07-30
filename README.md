@@ -16,11 +16,12 @@ cd daemon && swift build
 .build/debug/vz-helper version
 ```
 
-`vzctl doctor` meldet einen nicht gestarteten Supervisor als `WARN` und bleibt
-erfolgreich. Ein erreichbarer Socket mit ungültiger RPC-/DB-Health ist ein
-Hard-Fail (Exit 10). Supervisor-State liegt standardmäßig unter
-`~/Library/Application Support/vzctl/`; `VZCTL_STATE_DIR` überschreibt den Pfad
-für Entwicklung und Tests.
+`vzctl doctor` prüft macOS, Codesigning/Entitlements, APFS, freien Disk-Space,
+DNS-Port/Resolver und Supervisor-Health. Warnungen bleiben Exit 0; harte
+Exitcodes und Abhilfen stehen in der
+[Doctor-Interpretationshilfe](docs/doctor.md). Supervisor-State liegt
+standardmäßig unter `~/Library/Application Support/vzctl/`;
+`VZCTL_STATE_DIR` überschreibt den Pfad für Entwicklung und Tests.
 
 ## Layout
 
@@ -41,6 +42,7 @@ für Entwicklung und Tests.
 | [Decision log](docs/planing/04-decision-log.md) | Architektur-Entscheidungen |
 | [ADR 0002](docs/adr/0002-process-ownership.md) | Supervisor vs Helper |
 | [ADR 0003](docs/adr/0003-apply-state.md) | Apply / Journal |
+| [`vzctl doctor`](docs/doctor.md) | Checks, Konfiguration und Exitcodes |
 
 ## License
 

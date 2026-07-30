@@ -13,7 +13,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | Milestone | Fokus | Status |
 |---|---|---|
 | G0 — Spike Gate | Netz+DNS+Crash Go/No-Go | **closed** (Go) |
-| P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **active** |
+| P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **complete** (#20 closed) |
 | P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | open |
 | P2 — Net + DNS | vmnet, Dual-DNS, Policies | open |
 | P3 — Stacks | hypernetwork reconcile | open |
@@ -49,8 +49,9 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#13](https://github.com/frankhildebrandt/vzctl/issues/13) | Guest-Agent Spec v1 | [guest-agent-v1.md](../specs/guest-agent-v1.md) |
 | [#15](https://github.com/frankhildebrandt/vzctl/issues/15) | Helper↔Agent E2E | [p0-helper-agent-e2e.md](../spikes/p0-helper-agent-e2e.md) |
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Agent Time-Sync | [p0-agent-time-sync.md](../spikes/p0-agent-time-sync.md) |
+| [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | [doctor.md](../doctor.md) |
 
-## P0 Next (active)
+## P0 Foundation (complete)
 
 | # | Story | Scaffold |
 |---|---|---|
@@ -61,11 +62,19 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#15](https://github.com/frankhildebrandt/vzctl/issues/15) | Helper↔Agent E2E | **closed** (Live-Boot Residual) |
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Time-Sync nach Sleep | **closed** (Code/Unit ✅; Live Sleep residual) |
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | Epic Guest-Agent | **closed** (Live-Boot-Ops-Residual) |
-| [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | ← **next** |
+| [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | **closed** (Entitlement/APFS/Disk/DNS/JSON) |
 
 Stories sind als **Sub-Issues** unter den Epics verknüpft.
 
 Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-07-30) aktualisiert.
+
+## P1 Next
+
+| # | Story | Status |
+|---|---|---|
+| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | active |
+| [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | ← **next** (`doctor` Envelope vorhanden) |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | danach |
 
 ## Label-Schema
 
