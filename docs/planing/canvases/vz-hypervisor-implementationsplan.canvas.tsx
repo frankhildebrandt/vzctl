@@ -189,16 +189,16 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 + CLI Contracts">
-        P0 Foundation closed. P1: #18 CLI-v1 + #19 Events ✅. Nächster Slice:
-        #21 Seal / Linked Clones / Identity.
+      <Callout tone="success" title="P0 + CLI + Seal">
+        P0 Foundation closed. P1: #18/#19 Contracts ✅, #22 <Code>image seal</Code> ✅.
+        Next: #23 APFS <Code>clonefile</Code> + dataDisk (#21 Epic).
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
-        <Stat value="#18+#19" label="CLI+Events" tone="success" />
-        <Stat value="#21" label="Clones next" tone="info" />
+        <Stat value="#22✓" label="image seal" tone="success" />
+        <Stat value="#23" label="clones next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -684,10 +684,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          P1 #21: Base Seal / APFS Linked Clones / Identity-Reset. Einstieg über
-          #22 <Code>image seal</Code> (Agent in Base erhalten), dann #23{" "}
-          <Code>clonefile</Code> + #24 Identity. Events (#19) und CLI-v1 (#18)
-          sind closed.
+          P1 #21 läuft: #22 <Code>image seal</Code> closed. Next: #23{" "}
+          <Code>clonefile</Code> + leeres <Code>dataDisk</Code> (Base nie
+          writable), danach #24 Identity-Reset.
         </Callout>
       </Stack>
 

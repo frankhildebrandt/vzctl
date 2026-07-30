@@ -77,7 +77,9 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | Contract-DoD complete; CLI surface rest |
 | [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | **complete** (CLI Contract v1 + Golden Tests) |
 | [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | **closed** (UDS + NDJSON + Filter) |
-| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | ← **next** |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | in progress: #22 ✅; **next #23** |
+| [#22](https://github.com/frankhildebrandt/vzctl/issues/22) | `vzctl image seal` | **closed** (offline ✅; Builder Residual) |
+| [#23](https://github.com/frankhildebrandt/vzctl/issues/23) | APFS linked clone + `dataDisk` | ← **next** |
 
 ## Label-Schema
 

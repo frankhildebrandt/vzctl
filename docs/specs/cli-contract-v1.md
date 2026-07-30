@@ -78,6 +78,9 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `10` | Supervisor-Socket oder Health fehlerhaft | `doctor` |
 | `11` | Host-Baseline macOS 26 nicht erfüllt/nicht ermittelbar | `doctor` |
 | `12` | Command/Backend noch nicht verfügbar oder implementiert | Alpha-Stub |
+| `13` | Image-Customization fehlgeschlagen | `image seal` |
+| `14` | Image-Invariante/Preservation fehlgeschlagen | `image seal` |
+| `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -102,6 +105,14 @@ Der Stub validiert `--resume` und `--abort`, führt aber noch keine
 Journal-Operation aus. Gültige Aufrufe liefern Diagnostic auf stderr und Exit
 `12`. Die spätere Journal-Implementierung muss die ADR-0003-Zustände auf `5`
 und `6` abbilden.
+
+### `vzctl image seal <name|path> --format json`
+
+Payload: `image`, `cleanup` und `preserved`; kanonischer Command ist
+`image.seal`. Erfolg und idempotentes „already sealed“ liefern Exit `0`.
+Usage liefert `2`, ungültiger bzw. nicht auflösbarer Input `3`, fehlende
+Linux-Builder-Tools `12` und die commandspezifischen Fehler `13`–`15`.
+Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

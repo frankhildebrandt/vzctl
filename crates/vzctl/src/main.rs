@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -20,6 +21,28 @@ const EXIT_LEASE_HELD: u8 = 6;
 const EXIT_SUPERVISOR_UNHEALTHY: u8 = 10;
 const EXIT_HOST_UNSUPPORTED: u8 = 11;
 const EXIT_UNAVAILABLE: u8 = 12;
+const EXIT_IMAGE_CUSTOMIZE_FAILED: u8 = 13;
+const EXIT_IMAGE_INVARIANT_FAILED: u8 = 14;
+const EXIT_IMAGE_STATE_FAILED: u8 = 15;
+const IMAGE_PRESERVATION_CHECKS: &[&str] = &[
+    "test -x /usr/local/sbin/vzctl-agent && test -s /usr/local/sbin/vzctl-agent",
+    "test -s /etc/systemd/system/vzctl-agent.service",
+    "test -s /usr/lib/vzctl-agent/image-metadata.json",
+    "test -L /etc/systemd/system/multi-user.target.wants/vzctl-agent.service",
+];
+const IMAGE_CLEANUP_COMMANDS: &[&str] = &[
+    "cloud-init clean --logs --machine-id",
+    "truncate -s 0 /etc/machine-id",
+    "rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed",
+    "sync",
+];
+const IMAGE_CLONE_SAFE_CHECKS: &[&str] = &[
+    "test ! -s /etc/machine-id",
+    "test ! -e /var/lib/dbus/machine-id",
+    "! find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*' -print -quit | grep -q .",
+    "test ! -e /var/lib/systemd/random-seed",
+    "! find /var/lib/cloud/instances -mindepth 1 -print -quit 2>/dev/null | grep -q .",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputFormat {
@@ -37,6 +60,45 @@ struct DoctorOptions {
 struct EventsOptions {
     filter: Option<String>,
 }
+
+#[derive(Debug, Eq, PartialEq)]
+struct ImageSealOptions {
+    input: String,
+    format: OutputFormat,
+}
+
+#[derive(Debug)]
+struct ImageSealResult {
+    name: String,
+    source_path: PathBuf,
+    image_format: String,
+    marker_path: PathBuf,
+    already_sealed: bool,
+}
+
+#[derive(Debug)]
+struct SealFailure {
+    code: u8,
+    message: String,
+}
+
+impl SealFailure {
+    fn new(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+trait ImageSealBackend {
+    fn inspect_format(&self, path: &Path) -> Result<String, SealFailure>;
+    fn verify_preserved(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
+    fn customize(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
+    fn verify_clone_safe(&self, path: &Path, image_format: &str) -> Result<(), SealFailure>;
+}
+
+struct LibguestfsBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CheckStatus {
@@ -126,6 +188,7 @@ fn main() -> ExitCode {
         },
         Some("apply") => apply_stub(args),
         Some("events") => events_command(args),
+        Some("image") => image_command(args),
         Some(other) => {
             eprintln!("unknown command: {other}");
             ExitCode::from(EXIT_USAGE)
@@ -144,6 +207,7 @@ Commands:
   version [--format human|json]
   apply [--resume|--abort]   (stub — see ADR 0003)
   events subscribe [--filter 'vm.*,apply.*']
+  image seal <name|path> [--format human|json]
   help
 
 Stable exit codes:
@@ -154,7 +218,10 @@ Stable exit codes:
   6   apply lease held
   10  supervisor socket or health is bad
   11  macOS 26 baseline is not met
-  12  command unavailable or not implemented"
+  12  command backend unavailable or not implemented
+  13  image customization failed
+  14  image seal invariant failed
+  15  image seal state/marker failed"
     );
 }
 
@@ -197,6 +264,584 @@ fn version_json(version: &str) -> Value {
             "cli": version,
         },
     })
+}
+
+fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
+    match args.next().as_deref() {
+        Some("seal") => image_seal_command(args.collect()),
+        Some(command) => {
+            eprintln!("unknown image command: {command}");
+            ExitCode::from(EXIT_USAGE)
+        }
+        None => {
+            eprintln!("usage: vzctl image seal <name|path> [--format human|json]");
+            ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
+fn image_seal_command(args: Vec<String>) -> ExitCode {
+    let requested_format = requested_output_format(&args);
+    let options = match parse_image_seal_options(args.into_iter()) {
+        Ok(options) => options,
+        Err(failure) => {
+            emit_seal_failure(requested_format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
+
+    match seal_image(&options, &LibguestfsBackend) {
+        Ok(result) => {
+            match options.format {
+                OutputFormat::Human => print_image_seal_human(&result),
+                OutputFormat::Json => println!("{}", image_seal_json(&result)),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            emit_seal_failure(options.format, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn requested_output_format(args: &[String]) -> OutputFormat {
+    args.windows(2)
+        .find(|pair| pair[0] == "--format" && pair[1] == "json")
+        .map(|_| OutputFormat::Json)
+        .unwrap_or(OutputFormat::Human)
+}
+
+fn parse_image_seal_options(
+    args: impl Iterator<Item = String>,
+) -> Result<ImageSealOptions, SealFailure> {
+    let mut input = None;
+    let mut format = OutputFormat::Human;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--format" => {
+                let value = args.next().ok_or_else(|| {
+                    SealFailure::new(EXIT_USAGE, "--format requires human or json")
+                })?;
+                format = match value.as_str() {
+                    "human" => OutputFormat::Human,
+                    "json" => OutputFormat::Json,
+                    _ => {
+                        return Err(SealFailure::new(
+                            EXIT_USAGE,
+                            format!("unsupported image seal format: {value}"),
+                        ))
+                    }
+                };
+            }
+            "-h" | "--help" => {
+                return Err(SealFailure::new(
+                    EXIT_USAGE,
+                    "usage: vzctl image seal <name|path> [--format human|json]",
+                ))
+            }
+            _ if arg.starts_with('-') => {
+                return Err(SealFailure::new(
+                    EXIT_USAGE,
+                    format!("unknown image seal option: {arg}"),
+                ))
+            }
+            _ if input.is_none() => input = Some(arg),
+            _ => {
+                return Err(SealFailure::new(
+                    EXIT_USAGE,
+                    format!("unexpected image seal argument: {arg}"),
+                ))
+            }
+        }
+    }
+
+    let input = input.ok_or_else(|| {
+        SealFailure::new(
+            EXIT_USAGE,
+            "usage: vzctl image seal <name|path> [--format human|json]",
+        )
+    })?;
+    Ok(ImageSealOptions { input, format })
+}
+
+fn seal_image(
+    options: &ImageSealOptions,
+    backend: &dyn ImageSealBackend,
+) -> Result<ImageSealResult, SealFailure> {
+    let images_dir = images_dir();
+    seal_image_in_dir(options, backend, &images_dir)
+}
+
+fn seal_image_in_dir(
+    options: &ImageSealOptions,
+    backend: &dyn ImageSealBackend,
+    images_dir: &Path,
+) -> Result<ImageSealResult, SealFailure> {
+    let source_path = resolve_image_input(&options.input, images_dir)?;
+    let source_path = fs::canonicalize(&source_path).map_err(|error| {
+        SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("cannot resolve image {}: {error}", source_path.display()),
+        )
+    })?;
+    if !source_path.is_file() {
+        return Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("image is not a regular file: {}", source_path.display()),
+        ));
+    }
+
+    let name = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let marker_path = seal_marker_path(images_dir, &source_path);
+    if marker_path.exists() {
+        return read_existing_seal(&marker_path, &source_path, name);
+    }
+
+    let image_format = backend.inspect_format(&source_path)?;
+    if !matches!(image_format.as_str(), "raw" | "qcow" | "qcow2") {
+        return Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("unsupported image format {image_format}; expected raw or qcow2"),
+        ));
+    }
+
+    backend.verify_preserved(&source_path, &image_format)?;
+    backend.customize(&source_path, &image_format)?;
+    backend.verify_preserved(&source_path, &image_format)?;
+    backend.verify_clone_safe(&source_path, &image_format)?;
+
+    let result = ImageSealResult {
+        name,
+        source_path,
+        image_format,
+        marker_path,
+        already_sealed: false,
+    };
+    write_seal_marker_and_lock(&result)?;
+    Ok(result)
+}
+
+fn images_dir() -> PathBuf {
+    std::env::var_os("VZCTL_IMAGES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir().join("images"))
+}
+
+fn resolve_image_input(input: &str, images_dir: &Path) -> Result<PathBuf, SealFailure> {
+    let direct = PathBuf::from(input);
+    if direct.exists() {
+        return Ok(direct);
+    }
+    if direct.is_absolute() || direct.components().count() > 1 {
+        return Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("image path does not exist: {}", direct.display()),
+        ));
+    }
+
+    let candidates = ["", ".raw", ".qcow", ".qcow2", ".img"]
+        .into_iter()
+        .map(|suffix| images_dir.join(format!("{input}{suffix}")))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!(
+                "image {input} not found in {}; registry pull is not implemented",
+                images_dir.display()
+            ),
+        )),
+        _ => Err(SealFailure::new(
+            EXIT_INVALID_INPUT,
+            format!(
+                "image name {input} is ambiguous in {}: {}",
+                images_dir.display(),
+                candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+fn seal_marker_path(images_dir: &Path, source_path: &Path) -> PathBuf {
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image");
+    let safe_stem = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let path_text = source_path.to_string_lossy();
+    images_dir.join(format!(
+        "{}-{:016x}.sealed.json",
+        safe_stem,
+        stable_path_hash(path_text.as_bytes())
+    ))
+}
+
+fn stable_path_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn read_existing_seal(
+    marker_path: &Path,
+    source_path: &Path,
+    name: String,
+) -> Result<ImageSealResult, SealFailure> {
+    let marker_text = fs::read_to_string(marker_path).map_err(|error| {
+        SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!("cannot read seal marker {}: {error}", marker_path.display()),
+        )
+    })?;
+    let marker: Value = serde_json::from_str(&marker_text).map_err(|error| {
+        SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!("invalid seal marker {}: {error}", marker_path.display()),
+        )
+    })?;
+    if marker["apiVersion"] != "vzctl.dev/image-seal/v1"
+        || marker["sealed"] != true
+        || marker["source_path"] != source_path.to_string_lossy().as_ref()
+    {
+        return Err(SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!("seal marker does not match {}", source_path.display()),
+        ));
+    }
+    let image_format = marker["format"]
+        .as_str()
+        .filter(|format| matches!(*format, "raw" | "qcow" | "qcow2"))
+        .ok_or_else(|| {
+            SealFailure::new(
+                EXIT_IMAGE_STATE_FAILED,
+                format!("seal marker has invalid format: {}", marker_path.display()),
+            )
+        })?
+        .to_string();
+    let permissions = fs::metadata(source_path)
+        .map_err(|error| {
+            SealFailure::new(
+                EXIT_IMAGE_STATE_FAILED,
+                format!(
+                    "cannot inspect sealed image {}: {error}",
+                    source_path.display()
+                ),
+            )
+        })?
+        .permissions();
+    if permissions.mode() & 0o222 != 0 {
+        return Err(SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "seal marker exists but image is writable: {}",
+                source_path.display()
+            ),
+        ));
+    }
+    Ok(ImageSealResult {
+        name,
+        source_path: source_path.to_path_buf(),
+        image_format,
+        marker_path: marker_path.to_path_buf(),
+        already_sealed: true,
+    })
+}
+
+fn write_seal_marker_and_lock(result: &ImageSealResult) -> Result<(), SealFailure> {
+    fs::create_dir_all(
+        result
+            .marker_path
+            .parent()
+            .expect("seal marker always has a parent"),
+    )
+    .map_err(|error| {
+        SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "cannot create images directory for {}: {error}",
+                result.marker_path.display()
+            ),
+        )
+    })?;
+    let sealed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let marker = seal_marker_json(result, sealed_at);
+    let temporary_marker = result
+        .marker_path
+        .with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(
+        &temporary_marker,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&marker).expect("marker JSON serializes")
+        ),
+    )
+    .map_err(|error| {
+        SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "cannot write seal marker {}: {error}",
+                temporary_marker.display()
+            ),
+        )
+    })?;
+
+    let original_permissions = fs::metadata(&result.source_path)
+        .map_err(|error| {
+            SealFailure::new(
+                EXIT_IMAGE_STATE_FAILED,
+                format!("cannot inspect {}: {error}", result.source_path.display()),
+            )
+        })?
+        .permissions();
+    let mut sealed_permissions = original_permissions.clone();
+    sealed_permissions.set_mode(original_permissions.mode() & !0o222);
+    if let Err(error) = fs::set_permissions(&result.source_path, sealed_permissions) {
+        let _ = fs::remove_file(&temporary_marker);
+        return Err(SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "cannot make {} read-only: {error}",
+                result.source_path.display()
+            ),
+        ));
+    }
+    if let Err(error) = fs::rename(&temporary_marker, &result.marker_path) {
+        let _ = fs::set_permissions(&result.source_path, original_permissions);
+        let _ = fs::remove_file(&temporary_marker);
+        return Err(SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "cannot publish seal marker {}: {error}",
+                result.marker_path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn seal_marker_json(result: &ImageSealResult, sealed_at: u64) -> Value {
+    json!({
+        "apiVersion": "vzctl.dev/image-seal/v1",
+        "name": result.name,
+        "source_path": result.source_path,
+        "format": result.image_format,
+        "sealed": true,
+        "read_only": true,
+        "sealed_at_unix_seconds": sealed_at,
+        "cleanup": {
+            "machine_id": true,
+            "dbus_machine_id": true,
+            "ssh_host_keys": true,
+            "cloud_init": true,
+            "random_seed": true,
+        },
+        "preserved": {
+            "agent": "/usr/local/sbin/vzctl-agent",
+            "systemd_unit": "/etc/systemd/system/vzctl-agent.service",
+            "image_metadata": "/usr/lib/vzctl-agent/image-metadata.json",
+        },
+    })
+}
+
+fn print_image_seal_human(result: &ImageSealResult) {
+    println!(
+        "{} image {}",
+        if result.already_sealed {
+            "already sealed"
+        } else {
+            "sealed"
+        },
+        result.name
+    );
+    println!("  source: {}", result.source_path.display());
+    println!("  format: {}", result.image_format);
+    println!("  marker: {}", result.marker_path.display());
+    println!("  read-only: yes");
+    println!("  preserved: agent, systemd unit, image metadata");
+    println!("  clone-safe: machine-id, SSH keys, cloud-init, random seed cleaned");
+}
+
+fn image_seal_json(result: &ImageSealResult) -> Value {
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "image.seal",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": if result.already_sealed { "image already sealed" } else { "image sealed" },
+            "sealed": true,
+            "already_sealed": result.already_sealed,
+        },
+        "image": {
+            "name": result.name,
+            "path": result.source_path,
+            "format": result.image_format,
+            "sealed": true,
+            "read_only": true,
+            "marker": result.marker_path,
+        },
+        "cleanup": {
+            "machine_id": true,
+            "dbus_machine_id": true,
+            "ssh_host_keys": true,
+            "cloud_init": true,
+            "random_seed": true,
+        },
+        "preserved": {
+            "agent": true,
+            "systemd_unit": true,
+            "image_metadata": true,
+        },
+    })
+}
+
+fn emit_seal_failure(format: OutputFormat, failure: &SealFailure) {
+    eprintln!("{}", failure.message);
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": CLI_API_VERSION,
+                "command": "image.seal",
+                "status": "fail",
+                "exit_code": failure.code,
+                "summary": {
+                    "message": failure.message,
+                },
+            })
+        );
+    }
+}
+
+impl ImageSealBackend for LibguestfsBackend {
+    fn inspect_format(&self, path: &Path) -> Result<String, SealFailure> {
+        let output = Command::new("qemu-img")
+            .args(["info", "--output=json"])
+            .arg(path)
+            .output()
+            .map_err(|error| {
+                SealFailure::new(
+                    EXIT_UNAVAILABLE,
+                    format!("qemu-img is required to inspect images: {error}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(SealFailure::new(
+                EXIT_INVALID_INPUT,
+                format!(
+                    "qemu-img cannot inspect {}: {}",
+                    path.display(),
+                    command_text(&output)
+                ),
+            ));
+        }
+        let info: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+            SealFailure::new(
+                EXIT_INVALID_INPUT,
+                format!(
+                    "qemu-img returned invalid JSON for {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        info["format"].as_str().map(str::to_string).ok_or_else(|| {
+            SealFailure::new(
+                EXIT_INVALID_INPUT,
+                format!("qemu-img did not report a format for {}", path.display()),
+            )
+        })
+    }
+
+    fn verify_preserved(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
+        run_virt_customize(
+            path,
+            image_format,
+            IMAGE_PRESERVATION_CHECKS,
+            EXIT_IMAGE_INVARIANT_FAILED,
+            "required guest-agent files are missing",
+        )
+    }
+
+    fn customize(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
+        run_virt_customize(
+            path,
+            image_format,
+            IMAGE_CLEANUP_COMMANDS,
+            EXIT_IMAGE_CUSTOMIZE_FAILED,
+            "image cleanup failed",
+        )
+    }
+
+    fn verify_clone_safe(&self, path: &Path, image_format: &str) -> Result<(), SealFailure> {
+        run_virt_customize(
+            path,
+            image_format,
+            IMAGE_CLONE_SAFE_CHECKS,
+            EXIT_IMAGE_INVARIANT_FAILED,
+            "clone-safe cleanup verification failed",
+        )
+    }
+}
+
+fn run_virt_customize(
+    path: &Path,
+    image_format: &str,
+    guest_commands: &[&str],
+    failure_code: u8,
+    failure_context: &str,
+) -> Result<(), SealFailure> {
+    let mut command = Command::new("virt-customize");
+    command
+        .arg("--format")
+        .arg(image_format)
+        .arg("-a")
+        .arg(path);
+    for guest_command in guest_commands {
+        command.arg("--run-command").arg(guest_command);
+    }
+    let output = command.output().map_err(|error| {
+        SealFailure::new(
+            EXIT_UNAVAILABLE,
+            format!("virt-customize is required on the Linux image builder: {error}"),
+        )
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(SealFailure::new(
+            failure_code,
+            format!(
+                "{failure_context} for {}: {}",
+                path.display(),
+                command_text(&output)
+            ),
+        ))
+    }
 }
 
 fn apply_stub(args: impl Iterator<Item = String>) -> ExitCode {
@@ -1184,6 +1829,7 @@ fn macos_major() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     #[test]
     fn doctor_options_default_to_human_and_twenty_gib() {
@@ -1248,6 +1894,118 @@ mod tests {
         assert_eq!(EXIT_SUPERVISOR_UNHEALTHY, 10);
         assert_eq!(EXIT_HOST_UNSUPPORTED, 11);
         assert_eq!(EXIT_UNAVAILABLE, 12);
+        assert_eq!(EXIT_IMAGE_CUSTOMIZE_FAILED, 13);
+        assert_eq!(EXIT_IMAGE_INVARIANT_FAILED, 14);
+        assert_eq!(EXIT_IMAGE_STATE_FAILED, 15);
+    }
+
+    #[test]
+    fn image_seal_options_accept_path_and_json_in_any_order() {
+        let args = ["--format", "json", "base.raw"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_image_seal_options(args).unwrap(),
+            ImageSealOptions {
+                input: "base.raw".to_string(),
+                format: OutputFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn registry_stub_resolves_one_local_image() {
+        let directory = test_directory("image-resolve");
+        fs::create_dir_all(&directory).unwrap();
+        let image = directory.join("ubuntu-base.qcow2");
+        fs::write(&image, b"fake").unwrap();
+
+        assert_eq!(
+            resolve_image_input("ubuntu-base", &directory).unwrap(),
+            image
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn image_cleanup_matches_guest_agent_base_pipeline() {
+        assert!(IMAGE_CLEANUP_COMMANDS.contains(&"cloud-init clean --logs --machine-id"));
+        assert!(IMAGE_CLEANUP_COMMANDS.contains(&"truncate -s 0 /etc/machine-id"));
+        assert!(IMAGE_CLEANUP_COMMANDS
+            .iter()
+            .any(|command| command.contains("/etc/ssh/ssh_host_*")));
+        assert!(IMAGE_CLEANUP_COMMANDS
+            .iter()
+            .any(|command| command.contains("/var/lib/systemd/random-seed")));
+        assert!(IMAGE_PRESERVATION_CHECKS
+            .iter()
+            .any(|command| command.contains("/usr/local/sbin/vzctl-agent")));
+        assert!(IMAGE_PRESERVATION_CHECKS
+            .iter()
+            .any(|command| command.contains("vzctl-agent.service")));
+        assert!(IMAGE_PRESERVATION_CHECKS
+            .iter()
+            .any(|command| command.contains("image-metadata.json")));
+    }
+
+    #[test]
+    fn seal_writes_marker_locks_image_and_is_idempotent() {
+        let directory = test_directory("image-seal");
+        let images_directory = directory.join("images");
+        fs::create_dir_all(&images_directory).unwrap();
+        let image = directory.join("base.raw");
+        fs::write(&image, b"fake image").unwrap();
+        let options = ImageSealOptions {
+            input: image.to_string_lossy().to_string(),
+            format: OutputFormat::Json,
+        };
+        let backend = RecordingSealBackend::new("raw");
+
+        let result = seal_image_in_dir(&options, &backend, &images_directory).unwrap();
+        assert_eq!(
+            backend.calls(),
+            vec![
+                "inspect",
+                "preserved",
+                "customize",
+                "preserved",
+                "clone-safe"
+            ]
+        );
+        assert!(result.marker_path.is_file());
+        assert_eq!(
+            fs::metadata(&result.source_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o222,
+            0
+        );
+
+        let unused_backend = RecordingSealBackend::new("raw");
+        let repeated = seal_image_in_dir(&options, &unused_backend, &images_directory).unwrap();
+        assert!(repeated.already_sealed);
+        assert!(unused_backend.calls().is_empty());
+
+        let mut writable = fs::metadata(&result.source_path).unwrap().permissions();
+        writable.set_mode(0o600);
+        fs::set_permissions(&result.source_path, writable).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn image_seal_json_matches_golden_contract() {
+        let result = ImageSealResult {
+            name: "ubuntu-base".to_string(),
+            source_path: PathBuf::from("/images/ubuntu-base.raw"),
+            image_format: "raw".to_string(),
+            marker_path: PathBuf::from("/images/ubuntu-base-abc.sealed.json"),
+            already_sealed: false,
+        };
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/image-seal.json")).unwrap();
+        assert_eq!(image_seal_json(&result), expected);
     }
 
     #[test]
@@ -1303,5 +2061,56 @@ mod tests {
         assert!(resolver_points_to(&path, 15353));
         assert!(!resolver_points_to(&path, 15354));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn test_directory(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vzctl-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    struct RecordingSealBackend {
+        image_format: String,
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl RecordingSealBackend {
+        fn new(image_format: &str) -> Self {
+            Self {
+                image_format: image_format.to_string(),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl ImageSealBackend for RecordingSealBackend {
+        fn inspect_format(&self, _path: &Path) -> Result<String, SealFailure> {
+            self.calls.borrow_mut().push("inspect");
+            Ok(self.image_format.clone())
+        }
+
+        fn verify_preserved(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+            self.calls.borrow_mut().push("preserved");
+            Ok(())
+        }
+
+        fn customize(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+            self.calls.borrow_mut().push("customize");
+            Ok(())
+        }
+
+        fn verify_clone_safe(&self, _path: &Path, _image_format: &str) -> Result<(), SealFailure> {
+            self.calls.borrow_mut().push("clone-safe");
+            Ok(())
+        }
     }
 }

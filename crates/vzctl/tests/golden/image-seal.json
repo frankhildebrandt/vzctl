@@ -1,0 +1,31 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "image.seal",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "image sealed",
+    "sealed": true,
+    "already_sealed": false
+  },
+  "image": {
+    "name": "ubuntu-base",
+    "path": "/images/ubuntu-base.raw",
+    "format": "raw",
+    "sealed": true,
+    "read_only": true,
+    "marker": "/images/ubuntu-base-abc.sealed.json"
+  },
+  "cleanup": {
+    "machine_id": true,
+    "dbus_machine_id": true,
+    "ssh_host_keys": true,
+    "cloud_init": true,
+    "random_seed": true
+  },
+  "preserved": {
+    "agent": true,
+    "systemd_unit": true,
+    "image_metadata": true
+  }
+}

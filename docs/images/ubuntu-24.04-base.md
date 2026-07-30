@@ -41,7 +41,7 @@ Git.
   artifacts/ubuntu-24.04-vzctl-base.raw
 ```
 
-Before `vzctl image seal` (#22), verify:
+Before `vzctl image seal`, verify:
 
 - `/usr/local/sbin/vzctl-agent` is a static ARM64 Linux binary;
 - `vzctl-agent.service` is enabled and runs as `vzctl-agent`;
@@ -52,8 +52,10 @@ Before `vzctl image seal` (#22), verify:
   instance state are absent;
 - `/run/vzctl/agent.token` is absent from the base.
 
-The future `image seal` command must preserve the binary, unit and metadata
-while making the base immutable.
+The implemented `image seal` command preserves the binary, enabled unit and
+metadata while cleaning clone identity and making the base read-only. See the
+[Seal Contract v1](seal-contract-v1.md) and
+[P1 spike](../spikes/p1-image-seal.md).
 
 ## Clone seed and boot proof
 
