@@ -235,6 +235,20 @@ enum VzHelperMain {
             let created = try VirtualMachineRuntime(options: options)
             runtime = created
             try await created.start()
+            let control = timeSyncToken.map { token in
+                HelperControlServer(
+                    vmID: options.vmID,
+                    stateDirectory: stateDirectory
+                ) { plan in
+                    try await RouterGuestConfigurator.apply(
+                        plan,
+                        runtime: created,
+                        token: token
+                    )
+                }
+            }
+            try control?.start()
+            defer { control?.stop() }
             print(
                 "vm-id=\(options.vmID) state=running serial=\(created.serialLogURL.path)"
             )

@@ -30,7 +30,7 @@ werden. Bridged Mode ist in v0.1 unsupported.
   zwingend: `stop_interface` allein gibt die CIDR laut G0 nicht frei.
 
 IP-Konvention: Host-Gateway und DNS liegen auf der Netzadresse `.0`, Router auf
-`.2`, Gäste beginnen bei `.10`. Eine Attachment-IP muss im CIDR und im
+`.2`, Gäste beginnen bei `.10`. Eine Attachment-IP muss `.2` oder im
 Guest-Bereich liegen; IPs sind pro Netz eindeutig.
 
 ## Unclean Exit
@@ -42,7 +42,6 @@ WARN. Für Alpha gilt: betroffene CIDR bis zum Host-Reboot nicht wiederverwenden
 oder ein neues Netz mit frischer CIDR anlegen.
 
 Der gemessene Hintergrund steht in
-[`docs/spikes/g0-network.md`](spikes/g0-network.md). Router-Template
-([#32](https://github.com/frankhildebrandt/vzctl/issues/32)) und Policies
-([#33](https://github.com/frankhildebrandt/vzctl/issues/33)) sind nicht Teil
-dieses Slices.
+[`docs/spikes/g0-network.md`](spikes/g0-network.md). Router-Template und
+`route apply` sind in [`routes.md`](routes.md) beschrieben; Policies folgen in
+[#33](https://github.com/frankhildebrandt/vzctl/issues/33).

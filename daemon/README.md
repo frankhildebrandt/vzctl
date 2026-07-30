@@ -16,6 +16,19 @@ daemon/scripts/codesign-helper.sh daemon/.build/debug/vz-helper
 The development signature contains `com.apple.security.virtualization` and
 intentionally does **not** contain `com.apple.vm.networking`.
 
+Für eine Release-Installation inklusive aktivem Supervisor:
+
+```sh
+make install
+launchctl print "gui/$(id -u)/com.vzctl.supervisor"
+```
+
+CLI, Supervisor und Helper landen standardmäßig in `~/.local/bin`. Das Ziel
+kann mit `PREFIX` oder `BINDIR` überschrieben werden. `ACTIVATE=0` installiert
+und validiert den LaunchAgent, ohne ihn zu laden. Wiederholtes `make install`
+ersetzt die Binaries atomar und startet `com.vzctl.supervisor` neu. Laufende
+VM-Helper bleiben unangetastet, damit keine VM für ein Tool-Update stoppt.
+
 ## VM bundle and run
 
 The boot disk must be a writable raw Ubuntu arm64 disk image (not QCOW2):
@@ -85,7 +98,9 @@ temporary bundle directories, verifies serial output, kills A with `SIGKILL`,
 then cleanly stops B with `SIGTERM`.
 
 Supervisor-owned vmnet CRUD and desired attachments are implemented in #31;
-see [`docs/network.md`](../docs/network.md). The existing standalone helper
-command still uses NAT when started directly. Applying a desired attachment is
-part of the future supervisor-driven helper start path; the Helper must receive
-only a serialized vmnet attachment handle and never own the registry ref.
+see [`docs/network.md`](../docs/network.md). Router plans from #32 are sent
+Supervisor → per-VM helper → Guest-Agent over vsock; see
+[`docs/routes.md`](../docs/routes.md). The existing standalone helper command
+still uses NAT when started directly. Applying a desired attachment remains
+part of the supervisor-driven helper start path; the Helper receives only a
+serialized vmnet attachment handle and never owns the registry ref.

@@ -147,6 +147,18 @@ fehlgeschlagener vmnet-Rebuild – liefern `17`. Labels sind wiederholbare
 `--label key=value`; `--project` und `--stack` ergänzen den Desired State.
 Details: [`docs/network.md`](../network.md).
 
+### `vzctl route apply`
+
+```bash
+vzctl route apply [--router <vm-id>] [--format human|json]
+```
+
+`route apply` validiert Router-Rolle, mindestens zwei Attachments und `.2` je
+Netz. Der Supervisor delegiert den Push an den VM-Helper; der Helper nutzt
+ausschließlich den authentisierten Guest-Agent über vsock. Das Ergebnis enthält
+`routers[]` sowie `summary.changed`. Exit `18` steht für Route-/Guest-Apply-
+Fehler, Exit `3` für ungültige Rollen oder Topologien.
+
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events
 verwenden NDJSON und sind nicht Teil des Ein-Dokument-Vertrags dieses Slices.

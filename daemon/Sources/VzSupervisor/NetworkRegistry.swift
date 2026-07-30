@@ -199,7 +199,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 )
             }
             let cidr = try IPv4CIDR(network.cidr)
-            guard cidr.containsGuest(ip) else {
+            guard cidr.containsAttachment(ip) else {
                 throw NetworkRegistryError.invalid(
                     NetworkValidationError.invalidIP(ip, cidr: network.cidr).description
                 )

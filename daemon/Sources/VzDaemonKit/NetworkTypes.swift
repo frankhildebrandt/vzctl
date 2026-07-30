@@ -39,6 +39,11 @@ public struct IPv4CIDR: Equatable, Sendable {
         return address >= network + 10 && address < broadcast
     }
 
+    public func containsAttachment(_ value: String) -> Bool {
+        guard let address = Self.parse(value) else { return false }
+        return address == network + 2 || containsGuest(value)
+    }
+
     public var subnetAddress: in_addr {
         in_addr(s_addr: network.bigEndian)
     }
@@ -78,7 +83,7 @@ public enum NetworkValidationError: Error, CustomStringConvertible, Equatable {
         case let .nonCanonicalCIDR(value):
             return "CIDR must use its network address: \(value)"
         case let .invalidIP(value, cidr):
-            return "IP \(value) must be inside \(cidr), at guest offset .10 or later"
+            return "IP \(value) must be router offset .2 or a guest offset .10 or later in \(cidr)"
         }
     }
 }
@@ -175,7 +180,7 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
     }
 }
 
-private extension IPv4CIDR {
+public extension IPv4CIDR {
     static func gateway(for cidr: String) -> String {
         (try? IPv4CIDR(cidr)).map { string($0.network) } ?? ""
     }

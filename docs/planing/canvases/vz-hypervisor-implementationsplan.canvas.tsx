@@ -168,7 +168,7 @@ export default function VzHypervisorImplementationsplan() {
             G0 Go
           </Pill>
           <Pill tone="success" size="sm" active>
-            #31 vmnet CRUD
+            #32 route apply
           </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
@@ -194,8 +194,8 @@ export default function VzHypervisorImplementationsplan() {
 
       <Callout tone="success" title="P0 + P1 + erster P2-Slice">
         P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
-        #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31:
-        Supervisor-owned vmnet CRUD, SQLite-Rebuild und Desired Attachments ✅.
+        #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31/#32:
+        vmnet CRUD, Desired Attachments und Router-Apply via Guest-Agent ✅.
       </Callout>
 
       <Grid columns={5} gap={12}>
@@ -203,7 +203,7 @@ export default function VzHypervisorImplementationsplan() {
         <Stat value="#22✓" label="image seal" tone="success" />
         <Stat value="#23✓" label="linked clone" tone="success" />
         <Stat value="#24✓" label="identity reset" tone="success" />
-        <Stat value="#31✓" label="vmnet CRUD" tone="success" />
+        <Stat value="#32✓" label="router apply" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -690,8 +690,8 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
         />
         <Callout tone="success" title="P1 abgeschlossen · P2 gestartet">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
-          per-Clone Identity/NoCloud. #31 liefert Network CRUD, Attachments,
-          Labels/Metadaten und Restart-Rebuild. Next Network Slice: #32 Router.
+          per-Clone Identity/NoCloud. #31/#32: Network CRUD und Router-Apply.
+          Next: #51 Default-Netzwerk (voller Zugriff), danach #33 Policies.
         </Callout>
       </Stack>
 

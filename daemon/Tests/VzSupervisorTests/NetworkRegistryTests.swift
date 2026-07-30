@@ -69,6 +69,16 @@ import Testing
         stack: nil,
         vmIsStopped: true
     )
+    let router = try fixture.registry.attach(
+        vmID: "router",
+        networkName: "dmz",
+        ip: "10.80.0.2",
+        labels: [:],
+        project: nil,
+        stack: nil,
+        vmIsStopped: true
+    )
+    #expect(router.ip == "10.80.0.2")
     #expect(throws: NetworkRegistryError.self) {
         try fixture.registry.attach(
             vmID: "api",

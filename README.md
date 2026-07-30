@@ -7,6 +7,9 @@ macOS Virtualization.framework–based **devstack supervisor**: Git-native multi
 ## Quick start
 
 ```bash
+# Release-Binaries installieren und Supervisor als LaunchAgent aktivieren
+make install
+
 # CLI
 cargo run -p vzctl -- doctor
 cargo run -p vzctl -- events subscribe --filter 'vm.*,apply.*'
@@ -23,6 +26,24 @@ Exitcodes und Abhilfen stehen in der
 [Doctor-Interpretationshilfe](docs/doctor.md). Supervisor-State liegt
 standardmäßig unter `~/Library/Application Support/vzctl/`;
 `VZCTL_STATE_DIR` überschreibt den Pfad für Entwicklung und Tests.
+
+`make install` installiert `vzctl`, `vz-supervisor` und `vz-helper`
+benutzerlokal nach `~/.local/bin`. Der Supervisor wird als
+`~/Library/LaunchAgents/com.vzctl.supervisor.plist` registriert und sofort
+gestartet. Bei einer bestehenden Installation werden die geprüften Binaries
+atomar ersetzt und der Supervisor neu gestartet. Laufende VM-Helper werden
+nicht beendet; neue Helper-Prozesse verwenden sofort die aktualisierte Binary.
+Falls `~/.local/bin` noch nicht im `PATH` liegt:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Für einen Installations-Test ohne launchd-Aktivierung:
+
+```bash
+make install ACTIVATE=0
+```
 
 ## Layout
 

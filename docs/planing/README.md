@@ -27,6 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / #31 abgeschlossen** — Supervisor-owned vmnet CRUD, Attachments, Labels
-und Restart-Rebuild sind implementiert. Der nächste Network-Slice ist
-**#32** Router-VM Template + `vzctl route apply` (Epic #30).
+**P2 / #32 abgeschlossen** — Router-Rolle, `.2`-Validierung und idempotentes
+`vzctl route apply` über Helper/Guest-Agent sind implementiert. Der nächste
+Network-Slice ist **#51** konfigurierbares Default-Netzwerk (voller Zugriff);
+danach #33 Firewall-Policies (Epic #30).

@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod network;
+mod route;
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
 const DEFAULT_DNS_PORT: u16 = 15353;
@@ -85,6 +86,7 @@ struct VmCreateOptions {
     id: String,
     from: String,
     data_disk_gib: u64,
+    roles: Vec<String>,
     format: OutputFormat,
 }
 
@@ -113,6 +115,7 @@ struct VmCreateResult {
     cidata_path: PathBuf,
     agent_token_path: PathBuf,
     data_disk_gib: u64,
+    roles: Vec<String>,
     clone_mode: CloneMode,
     filesystem: String,
     identity: VmIdentity,
@@ -267,6 +270,7 @@ fn main() -> ExitCode {
         Some("apply") => apply_stub(args),
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
+        Some("route") => route::command(args, &supervisor_socket_path()),
         Some("image") => image_command(args),
         Some("vm") => vm_command(args),
         Some(other) => {
@@ -292,8 +296,9 @@ Commands:
   net list [--format human|json]
   net detach <vm> --network <name> [--format human|json]
   net delete <name> [--format human|json]
+  route apply [--router <vm-id>] [--format human|json]
   image seal <name|path> [--format human|json]
-  vm create <id> --from <sealed> --data-disk <GiB> [--format human|json]
+  vm create <id> --from <sealed> --data-disk <GiB> [--role router] [--format human|json]
   help
 
 Stable exit codes:
@@ -309,7 +314,8 @@ Stable exit codes:
   14  image seal invariant failed
   15  image seal state/marker failed
   16  VM root/data disk preparation failed
-  17  network operation failed"
+  17  network operation failed
+  18  route operation failed"
     );
 }
 
@@ -836,7 +842,7 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         None => {
             eprintln!(
                 "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                 [--format human|json]"
+                 [--role router] [--format human|json]"
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -881,6 +887,7 @@ fn parse_vm_create_options(
     let mut id = None;
     let mut from = None;
     let mut data_disk_gib = None;
+    let mut roles = Vec::new();
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
 
@@ -909,6 +916,20 @@ fn parse_vm_create_options(
                 }
                 data_disk_gib = Some(size);
             }
+            "--role" => {
+                let role = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--role requires a role name")
+                })?;
+                if role != "router" {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        format!("unsupported VM role: {role}"),
+                    ));
+                }
+                if !roles.contains(&role) {
+                    roles.push(role);
+                }
+            }
             "--format" => {
                 let value = args.next().ok_or_else(|| {
                     VmCreateFailure::new(EXIT_USAGE, "--format requires human or json")
@@ -928,7 +949,7 @@ fn parse_vm_create_options(
                 return Err(VmCreateFailure::new(
                     EXIT_USAGE,
                     "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                     [--format human|json]",
+                     [--role router] [--format human|json]",
                 ))
             }
             _ if arg.starts_with('-') => {
@@ -951,7 +972,7 @@ fn parse_vm_create_options(
         VmCreateFailure::new(
             EXIT_USAGE,
             "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-             [--format human|json]",
+             [--role router] [--format human|json]",
         )
     })?;
     if !valid_vm_id(&id) {
@@ -969,6 +990,7 @@ fn parse_vm_create_options(
         id,
         from,
         data_disk_gib,
+        roles,
         format,
     })
 }
@@ -1147,6 +1169,7 @@ fn prepare_vm_disks(
         &cidata_path,
         &agent_token_path,
         &identity,
+        &options.roles,
     )?;
 
     let result = VmCreateResult {
@@ -1158,6 +1181,7 @@ fn prepare_vm_disks(
         cidata_path,
         agent_token_path,
         data_disk_gib: options.data_disk_gib,
+        roles: options.roles.clone(),
         clone_mode,
         filesystem,
         identity,
@@ -1176,6 +1200,7 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
         "apiVersion": "vzctl.dev/vm-bundle/v1",
         "managed-by": "vzctl",
         "vm_id": result.id,
+        "roles": result.roles,
         "base": {
             "path": result.source.source_path,
             "marker": result.source.marker_path,
@@ -1246,6 +1271,9 @@ fn print_vm_create_human(result: &VmCreateResult) {
     );
     println!("  hostname: {}", result.identity.fqdn);
     println!("  mac: {}", result.identity.mac_addresses.join(", "));
+    if !result.roles.is_empty() {
+        println!("  roles: {}", result.roles.join(", "));
+    }
     println!("  cloud-init: {}", result.cidata_path.display());
 }
 
@@ -1271,6 +1299,7 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "id": result.id,
             "bundle": result.bundle_path,
             "managed-by": "vzctl",
+            "roles": result.roles,
         },
         "image": {
             "name": result.source.name,
@@ -1368,6 +1397,7 @@ fn prepare_cloud_init_seed(
     cidata_path: &Path,
     agent_token_path: &Path,
     identity: &VmIdentity,
+    roles: &[String],
 ) -> Result<(), VmCreateFailure> {
     let mut token_bytes = [0_u8; 32];
     File::open("/dev/urandom")
@@ -1409,9 +1439,14 @@ fn prepare_cloud_init_seed(
         "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp6: false\n",
         identity.mac_addresses[0]
     );
+    let router_template = if roles.iter().any(|role| role == "router") {
+        "\n  - path: /etc/sysctl.d/90-vzctl-router.conf\n    owner: root:root\n    permissions: \"0644\"\n    content: |\n      net.ipv4.ip_forward=1\nruncmd:\n  - sysctl --system\n  - [sh, -c, 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true']\n"
+    } else {
+        ""
+    };
     let user_data = format!(
-        "#cloud-config\npreserve_hostname: false\nhostname: {}\nfqdn: {}\nprefer_fqdn_over_hostname: true\nmanage_etc_hosts: true\nssh_deletekeys: true\nssh_genkeytypes:\n  - ed25519\n  - rsa\nwrite_files:\n  - path: /run/vzctl/agent.token\n    owner: vzctl-agent:vzctl-agent\n    permissions: \"0600\"\n    content: |\n      {}\n",
-        identity.hostname, identity.fqdn, token
+        "#cloud-config\npreserve_hostname: false\nhostname: {}\nfqdn: {}\nprefer_fqdn_over_hostname: true\nmanage_etc_hosts: true\nssh_deletekeys: true\nssh_genkeytypes:\n  - ed25519\n  - rsa\nwrite_files:\n  - path: /run/vzctl/agent.token\n    owner: vzctl-agent:vzctl-agent\n    permissions: \"0600\"\n    content: |\n      {}\n{}",
+        identity.hostname, identity.fqdn, token, router_template
     );
 
     let seed_result = (|| {
@@ -2897,6 +2932,8 @@ mod tests {
             "web-1",
             "--format",
             "json",
+            "--role",
+            "router",
             "--from",
             "ubuntu-base",
         ]
@@ -2908,6 +2945,7 @@ mod tests {
                 id: "web-1".to_string(),
                 from: "ubuntu-base".to_string(),
                 data_disk_gib: 64,
+                roles: vec!["router".to_string()],
                 format: OutputFormat::Json,
             }
         );
@@ -2966,6 +3004,7 @@ mod tests {
                     id: id.to_string(),
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
+                    roles: Vec::new(),
                     format: OutputFormat::Json,
                 },
                 &backend,
@@ -3036,6 +3075,7 @@ mod tests {
                 id: "web".to_string(),
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
+                roles: Vec::new(),
                 format: OutputFormat::Human,
             },
             &backend,
@@ -3051,6 +3091,37 @@ mod tests {
     }
 
     #[test]
+    fn router_role_persists_manifest_and_cloud_init_forwarding() {
+        let directory = test_directory("vm-router-role");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+        let result = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "router".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                roles: vec!["router".to_string()],
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(result.bundle_path.join("vm.json")).unwrap()).unwrap();
+        assert_eq!(manifest["roles"], json!(["router"]));
+        let user_data = &backend.seeds()[0].2;
+        assert!(user_data.contains("/etc/sysctl.d/90-vzctl-router.conf"));
+        assert!(user_data.contains("net.ipv4.ip_forward=1"));
+        assert!(user_data.contains("iptables -P FORWARD DROP"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn clonefile_failure_is_exit_16_and_removes_partial_bundle() {
         let directory = test_directory("vm-clone-failure");
         let images_directory = directory.join("images");
@@ -3062,6 +3133,7 @@ mod tests {
                 id: "web".to_string(),
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
+                roles: Vec::new(),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -3112,6 +3184,7 @@ mod tests {
                     id: id.to_string(),
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
+                    roles: Vec::new(),
                     format: OutputFormat::Human,
                 },
                 &NativeVmDiskBackend,
@@ -3176,6 +3249,7 @@ mod tests {
             cidata_path: PathBuf::from("/state/vms/web/cidata.iso"),
             agent_token_path: PathBuf::from("/state/vms/web/agent.token"),
             data_disk_gib: 64,
+            roles: Vec::new(),
             clone_mode: CloneMode::Linked,
             filesystem: "apfs".to_string(),
             identity: VmIdentity {

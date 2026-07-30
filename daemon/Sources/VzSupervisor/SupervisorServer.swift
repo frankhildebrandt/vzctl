@@ -295,6 +295,70 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return networkErrorResponse(error, request: request)
             }
+        case "route.apply":
+            do {
+                let requestedRouter: String?
+                if request.params == nil {
+                    requestedRouter = nil
+                } else {
+                    let params = try networkParams(request.params)
+                    requestedRouter = try optionalString("router", from: params)
+                }
+                let snapshot = try networkRegistry.snapshot()
+                let records = stateLock.withLock {
+                    helpers.values.filter { $0.state == "running" }
+                }
+                let routers = try records.filter { record in
+                    if let requestedRouter { return record.vmID == requestedRouter }
+                    return try vmHasRouterRole(bundle: record.bundle)
+                }
+                guard !routers.isEmpty else {
+                    throw RouteApplyError.invalid(
+                        requestedRouter.map { "router VM \($0) is not running" }
+                            ?? "no running VM with roles: [router]"
+                    )
+                }
+                var results: [JSONValue] = []
+                var anyChanged = false
+                for router in routers.sorted(by: { $0.vmID < $1.vmID }) {
+                    guard try vmHasRouterRole(bundle: router.bundle) else {
+                        throw RouteApplyError.invalid(
+                            "VM \(router.vmID) does not declare roles: [router]"
+                        )
+                    }
+                    let plan = try RouterPlan(
+                        vmID: router.vmID,
+                        networkRecords: snapshot.networks,
+                        attachments: snapshot.attachments
+                    )
+                    let changed = try HelperRouteClient.apply(
+                        plan,
+                        stateDirectory: stateDirectory
+                    )
+                    anyChanged = anyChanged || changed
+                    results.append(
+                        .object([
+                            "vm_id": .string(plan.vmID),
+                            "changed": .bool(changed),
+                            "networks": .array(plan.networks.map(\.json)),
+                            "forward_policy": .string("drop"),
+                        ])
+                    )
+                    emit(
+                        type: "route.applied",
+                        data: ["vm_id": .string(plan.vmID), "changed": .bool(changed)]
+                    )
+                }
+                return JSONRPCResponse(
+                    result: .object([
+                        "changed": .bool(anyChanged),
+                        "routers": .array(results),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return routeErrorResponse(error, request: request)
+            }
         case "helper.hello", "helper.state":
             guard let record = HelperRecord(params: request.params) else {
                 return JSONRPCResponse(
@@ -506,6 +570,32 @@ final class SupervisorServer: @unchecked Sendable {
             error: JSONRPCError(code: networkError.rpcCode, message: networkError.description),
             id: request.id ?? .null
         )
+    }
+
+    private func routeErrorResponse(
+        _ error: Error,
+        request: JSONRPCRequest
+    ) -> JSONRPCResponse {
+        let routeError = error as? RouteApplyError
+            ?? .guest(String(describing: error))
+        return JSONRPCResponse(
+            error: JSONRPCError(code: routeError.rpcCode, message: routeError.description),
+            id: request.id ?? .null
+        )
+    }
+
+    private func vmHasRouterRole(bundle: String) throws -> Bool {
+        let manifest = URL(fileURLWithPath: bundle, isDirectory: true)
+            .appendingPathComponent("vm.json")
+        let data = try Data(contentsOf: manifest)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let roles = root["roles"] as? [String]
+        else {
+            throw RouteApplyError.invalid(
+                "VM manifest \(manifest.path) has no roles array"
+            )
+        }
+        return roles.contains("router")
     }
 
     private func writeSubscriptionError(_ client: Int32, request: JSONRPCRequest) {

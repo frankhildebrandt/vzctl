@@ -12,7 +12,8 @@
   "vm": {
     "id": "web",
     "bundle": "/state/vms/web",
-    "managed-by": "vzctl"
+    "managed-by": "vzctl",
+    "roles": []
   },
   "image": {
     "name": "ubuntu-base",
