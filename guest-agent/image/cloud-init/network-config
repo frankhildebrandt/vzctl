@@ -4,11 +4,14 @@ ethernets:
     match:
       macaddress: "__MAC_ADDRESS__"
     set-name: enp0s1
+    dhcp4: false
+    dhcp6: false
     addresses:
       - __ADDRESS_CIDR__
     routes:
       - to: default
         via: __GATEWAY__
+        on-link: true
     nameservers:
       addresses:
         - __DNS_ADDRESS__

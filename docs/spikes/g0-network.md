@@ -17,6 +17,7 @@
 | Guest→Host TCP `.0` | ❌ | |
 | Cross-Net via Router `.2` | ✅ | |
 | Supervisor-Kill Semantik | ✅ | Phase D |
+| NoCloud static: gw/DNS `.0`, Search `{project}.vz.test` | ✅ | #29 Code/Tests |
 | Sleep/Wake Clock-Drift | 📝 | manuelle Prozedur; Alpha-Risiko |
 | **Go / No-Go** | ✅ **Go** | Sleep follow-up / ADR 0002 |
 
@@ -28,6 +29,11 @@
 | API 2nd | `.1` — unused |
 | Router | **`.2`** |
 | Guests | `.10+` |
+
+Der produktive NoCloud-Renderer übernimmt diese Messung unverändert:
+Default-Route `via .0 on-link`, einziger Nameserver `.0`, Cross-Net-Routen
+weiterhin über Router `.2`. Die Search-Domain stammt aus den Projekt-Metadaten
+des Network-/Attachment-Records und wird nicht in das sealed Base geschrieben.
 
 ## Phase D — Crash (2026-07-30)
 

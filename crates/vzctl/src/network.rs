@@ -74,6 +74,7 @@ pub(crate) struct VmNetworkSelection {
     pub(crate) ip: String,
     pub(crate) gateway: String,
     pub(crate) dns: String,
+    pub(crate) project: Option<String>,
     pub(crate) prefix: u8,
     pub(crate) automatic: bool,
     pub(crate) created: bool,
@@ -447,6 +448,10 @@ pub(crate) fn ensure_vm_network(
         "vm.network.ensure",
         json!({ "vm_id": vm_id, "network": requested_network }),
     )?;
+    vm_network_selection(&result)
+}
+
+fn vm_network_selection(result: &Value) -> Result<VmNetworkSelection, Failure> {
     let network = result
         .get("network")
         .and_then(Value::as_object)
@@ -468,6 +473,11 @@ pub(crate) fn ensure_vm_network(
         gateway: string(network, "gateway")?,
         dns: string(network, "dns")?,
         ip: string(attachment, "ip")?,
+        project: attachment
+            .get("project")
+            .and_then(Value::as_str)
+            .or_else(|| network.get("project").and_then(Value::as_str))
+            .map(str::to_string),
         prefix: result
             .get("prefix")
             .and_then(Value::as_u64)
@@ -655,6 +665,31 @@ fn invalid(message: impl Into<String>) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_network_selection_prefers_attachment_project_for_guest_search_domain() {
+        let selection = vm_network_selection(&json!({
+            "network": {
+                "name": "dmz",
+                "cidr": "10.80.0.0/24",
+                "gateway": "10.80.0.0",
+                "dns": "10.80.0.0",
+                "project": "network-project"
+            },
+            "attachment": {
+                "ip": "10.80.0.10",
+                "project": "edge-dmz"
+            },
+            "prefix": 24,
+            "automatic": true,
+            "created": true
+        }))
+        .unwrap();
+
+        assert_eq!(selection.project.as_deref(), Some("edge-dmz"));
+        assert_eq!(selection.gateway, "10.80.0.0");
+        assert_eq!(selection.dns, "10.80.0.0");
+    }
 
     #[test]
     fn parses_create_with_labels_and_metadata() {

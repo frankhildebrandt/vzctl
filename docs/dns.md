@@ -7,10 +7,10 @@ den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 | Listener | Default | Zweck |
 |---|---|---|
 | Host | `127.0.0.1:15353` | macOS `/etc/resolver` |
-| Guest | Bridge-`.0:53` | Standard-DNS der Guests ab #29 |
+| Guest | Bridge-`.0:53` | Standard-DNS der Guests |
 
 Für einen unprivilegierten Development-Run kann der Guest-Port mit
-`VZCTL_DNS_GUEST_PORT=15353` angehoben werden. Der #29-Produktionspfad setzt
+`VZCTL_DNS_GUEST_PORT=15353` angehoben werden. Der produktive Guest-Pfad setzt
 Port 53 voraus.
 
 ## Autoritative Zone
@@ -183,6 +183,40 @@ andere Fehler-RCODES liefern Exit `20`, behalten RCODE und Answers aber im
 Fail-Envelope. Timeout, ungültige Antworten und das UDP-`TC`-Bit liefern
 ebenfalls Exit `20`; Usage ist `2`, ungültiger Input `3`.
 
+## Guest-Konfiguration
+
+`vzctl vm create` übernimmt das Projekt aus dem ausgewählten Network- bzw.
+Attachment-Record und rendert den privaten NoCloud-Seed pro Clone:
+
+```yaml
+version: 2
+ethernets:
+  nic0:
+    match:
+      macaddress: "02:…"
+    set-name: enp0s1
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - 10.80.0.10/24
+    routes:
+      - to: default
+        via: 10.80.0.0
+        on-link: true
+    nameservers:
+      addresses:
+        - 10.80.0.0
+      search:
+        - edge-dmz.vz.test
+```
+
+Damit ist Bridge-`.0` der einzige primäre Guest-Resolver; Host-Resolver werden
+nicht in den Seed kopiert. Ein Netz ohne `project` erhält weiterhin `.0` als
+Nameserver, aber keine erfundene Search-Zone. Für interne Records und
+Search-Auflösung muss das Netz deshalb mit `vzctl net create --project
+<project>` angelegt werden. Das gilt auch, wenn dieses Netz anschließend als
+Default-Netz ausgewählt wird.
+
 ## Health und Events
 
 `daemon.health` enthält `dns_ok` und ein `dns`-Objekt mit Listenern,
@@ -199,4 +233,3 @@ weiterlaufen.
 
 - UDP only; TCP-Fallback und DNSSEC-Validierung sind nicht implementiert.
 - Der Forwarder unterstützt IPv4-Upstreams.
-- Guest-cloud-init mit `.0` als Nameserver bleibt Slice #29.

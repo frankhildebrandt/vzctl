@@ -27,7 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P2 / #28 abgeschlossen** — `vzctl dns query` spricht den Supervisor-DNS
-direkt auf `127.0.0.1:15353` an (UDP, A/AAAA, CLI-v1), unabhängig von
-`/etc/resolver`. Der nächste DNS-Slice ist **#29** Guest-Nameserver
-(Epic #25).
+**P2 / Epic #25 closed, #30 implementation complete** — Dual-DNS,
+macOS-Resolver, direkter Diagnose-Query und Guest-NoCloud mit `.0` als
+einzigem Nameserver sowie `{project}.vz.test` als Search-Domain sind umgesetzt.
+Nächster Slice ist der Stack-Reconciler **#34**.

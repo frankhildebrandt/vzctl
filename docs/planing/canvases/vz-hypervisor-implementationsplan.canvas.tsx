@@ -414,12 +414,13 @@ export default function VzHypervisorImplementationsplan() {
 
       <Stack gap={12}>
         <H2>DNS — Dual Listener + *.vz.test</H2>
-        <Callout tone="success" title="#26 + #27 + #28 implementiert">
+        <Callout tone="success" title="#26–#29 implementiert">
           Supervisor-owned UDP-Listener, Actual-State A-Records, TTL 5–30s,
           Hot-Reload, System-/expliziter Forwarder sowie DNS-Health und Events.
           macOS-Resolver werden atomar, idempotent und collision-safe pro
           Projekt/Config verwaltet. Direkte UDP-Queries liefern A/AAAA,
-          RCODE/Answers und CLI-v1-Exitcodes ohne /etc/resolver. #29 bleibt.
+          RCODE/Answers und CLI-v1-Exitcodes ohne /etc/resolver. Guest-NoCloud
+          setzt Bridge-.0 als einzigen DNS und die Projekt-Search-Domain.
         </Callout>
         <Callout tone="danger" title="Nicht auth.localhost in Guests">
           RFC 6761: *.localhost = Guest-Loopback. Kanonisch{" "}
@@ -446,7 +447,9 @@ export default function VzHypervisorImplementationsplan() {
               <Text size="small" tone="secondary">
                 Listener auf Host-Bridge-<Code>.0:53/UDP</Code> (gemessen;
                 Dev-Port 15353).{" "}
-                <Code>.1</Code> nicht. cloud-init <Code>nameservers: [.0]</Code>.
+                <Code>.1</Code> nicht. NoCloud setzt{" "}
+                <Code>via .0 on-link</Code>, <Code>nameservers: [.0]</Code> und{" "}
+                <Code>{"search: [{project}.vz.test]"}</Code>.
                 Host parallel <Code>127.0.0.1</Code> +{" "}
                 <Code>/etc/resolver</Code>.
               </Text>
@@ -698,12 +701,13 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk + DNS-Server">
+        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk + Dual-DNS">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
           per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
           Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
-          Dual-DNS, macOS resolver install/cleanup und direkter dns query.
-          Next: #29 Guest nameservers; Stack-Reconciler #34.
+          Dual-DNS, macOS resolver install/cleanup und direkter dns query. #29:
+          Guest-NoCloud mit Bridge-.0 als einzigem DNS, on-link Default-Route
+          und Projekt-Search-Domain. Next: Stack-Reconciler #34.
         </Callout>
       </Stack>
 

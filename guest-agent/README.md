@@ -50,9 +50,11 @@ least 256 random bits. The file owner is `vzctl-agent:vzctl-agent`, mode `0600`.
 The token is never part of the base image and is never logged.
 
 `vzctl vm create` also writes a fresh NoCloud instance UUID, hostname/FQDN,
-per-NIC MAC match and SSH host-key regeneration policy. The sealed base keeps
-an empty machine-id and no SSH host keys, so first boot regenerates both per
-clone.
+per-NIC MAC match, static primary address, default route `via .0 on-link`,
+Bridge-`.0` as the only nameserver, the project Search-Domain and SSH host-key
+regeneration policy. The sealed base keeps an empty machine-id and no SSH host
+keys, so first boot regenerates both per clone. No fixed network or identity
+values are written into the base image.
 
 The macOS helper client and live-boot harness are documented in
 [`docs/spikes/p0-helper-agent-e2e.md`](../docs/spikes/p0-helper-agent-e2e.md).

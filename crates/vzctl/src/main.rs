@@ -1500,20 +1500,7 @@ fn prepare_cloud_init_seed(
         "instance-id: {}\nlocal-hostname: {}\n",
         identity.instance_id, identity.hostname
     );
-    let network_config = match network {
-        Some(network) => format!(
-            "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: false\n    dhcp6: false\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}\n    nameservers:\n      addresses:\n        - {}\n",
-            identity.mac_addresses[0],
-            network.ip,
-            network.prefix,
-            network.gateway,
-            network.dns
-        ),
-        None => format!(
-            "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp6: false\n",
-            identity.mac_addresses[0]
-        ),
-    };
+    let network_config = render_cloud_init_network_config(identity, network);
     let router_template = if roles.iter().any(|role| role == "router") {
         "\n  - path: /etc/sysctl.d/90-vzctl-router.conf\n    owner: root:root\n    permissions: \"0644\"\n    content: |\n      net.ipv4.ip_forward=1\nruncmd:\n  - sysctl --system\n  - [sh, -c, 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true']\n"
     } else {
@@ -1563,6 +1550,32 @@ fn prepare_cloud_init_seed(
             ),
         )
     })
+}
+
+fn render_cloud_init_network_config(
+    identity: &VmIdentity,
+    network: Option<&network::VmNetworkSelection>,
+) -> String {
+    match network {
+        Some(network) => {
+            let search = network.project.as_ref().map_or_else(String::new, |project| {
+                format!("      search:\n        - {project}.vz.test\n")
+            });
+            format!(
+                "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    set-name: enp0s1\n    dhcp4: false\n    dhcp6: false\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}\n        on-link: true\n    nameservers:\n      addresses:\n        - {}\n{}",
+                identity.mac_addresses[0],
+                network.ip,
+                network.prefix,
+                network.gateway,
+                network.dns,
+                search
+            )
+        }
+        None => format!(
+            "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    set-name: enp0s1\n    dhcp4: true\n    dhcp6: false\n",
+            identity.mac_addresses[0]
+        ),
+    }
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), VmCreateFailure> {
@@ -3060,6 +3073,78 @@ mod tests {
     }
 
     #[test]
+    fn automatic_default_network_uses_only_hypervisor_dns_and_project_search() {
+        let identity = VmIdentity {
+            instance_id: "test".to_string(),
+            hostname: "web".to_string(),
+            fqdn: "web".to_string(),
+            mac_addresses: vec!["02:12:34:56:78:9a".to_string()],
+        };
+        let network = network::VmNetworkSelection {
+            network: "lan".to_string(),
+            cidr: "10.70.0.0/24".to_string(),
+            ip: "10.70.0.10".to_string(),
+            gateway: "10.70.0.0".to_string(),
+            dns: "10.70.0.0".to_string(),
+            project: Some("edge-dmz".to_string()),
+            prefix: 24,
+            automatic: true,
+            created: true,
+        };
+
+        assert_eq!(
+            render_cloud_init_network_config(&identity, Some(&network)),
+            concat!(
+                "version: 2\n",
+                "ethernets:\n",
+                "  nic0:\n",
+                "    match:\n",
+                "      macaddress: \"02:12:34:56:78:9a\"\n",
+                "    set-name: enp0s1\n",
+                "    dhcp4: false\n",
+                "    dhcp6: false\n",
+                "    addresses:\n",
+                "      - 10.70.0.10/24\n",
+                "    routes:\n",
+                "      - to: default\n",
+                "        via: 10.70.0.0\n",
+                "        on-link: true\n",
+                "    nameservers:\n",
+                "      addresses:\n",
+                "        - 10.70.0.0\n",
+                "      search:\n",
+                "        - edge-dmz.vz.test\n",
+            )
+        );
+    }
+
+    #[test]
+    fn network_without_project_does_not_invent_a_dns_search_zone() {
+        let identity = VmIdentity {
+            instance_id: "test".to_string(),
+            hostname: "web".to_string(),
+            fqdn: "web".to_string(),
+            mac_addresses: vec!["02:12:34:56:78:9a".to_string()],
+        };
+        let network = network::VmNetworkSelection {
+            network: "lan".to_string(),
+            cidr: "10.70.0.0/24".to_string(),
+            ip: "10.70.0.10".to_string(),
+            gateway: "10.70.0.0".to_string(),
+            dns: "10.70.0.0".to_string(),
+            project: None,
+            prefix: 24,
+            automatic: true,
+            created: true,
+        };
+
+        let config = render_cloud_init_network_config(&identity, Some(&network));
+        assert!(config.contains("addresses:\n        - 10.70.0.0"));
+        assert!(!config.contains("search:"));
+        assert!(!config.contains("nameserver 127.0.0.1"));
+    }
+
+    #[test]
     fn two_linked_clones_keep_base_read_only_and_get_sparse_data_disks() {
         let directory = test_directory("vm-linked-clones");
         let images_directory = directory.join("images");
@@ -3196,6 +3281,7 @@ mod tests {
                     ip: "10.70.0.10".to_string(),
                     gateway: "10.70.0.0".to_string(),
                     dns: "10.70.0.0".to_string(),
+                    project: Some("edge-dmz".to_string()),
                     prefix: 24,
                     automatic: false,
                     created: true,
@@ -3218,6 +3304,11 @@ mod tests {
         let network_config = &backend.seeds()[0].1;
         assert!(network_config.contains("10.70.0.10/24"));
         assert!(network_config.contains("via: 10.70.0.0"));
+        assert!(network_config.contains("on-link: true"));
+        assert!(network_config.contains("addresses:\n        - 10.70.0.0"));
+        assert!(network_config.contains("search:\n        - edge-dmz.vz.test"));
+        assert!(network_config.contains("set-name: enp0s1"));
+        assert!(!network_config.contains("10.70.0.2"));
         assert!(!network_config.contains("dhcp4: true"));
         fs::remove_dir_all(directory).unwrap();
     }
@@ -3369,6 +3460,7 @@ mod tests {
                 ip: "10.70.0.10".to_string(),
                 gateway: "10.70.0.0".to_string(),
                 dns: "10.70.0.0".to_string(),
+                project: Some("edge-dmz".to_string()),
                 prefix: 24,
                 automatic: true,
                 created: true,

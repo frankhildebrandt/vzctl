@@ -58,7 +58,12 @@ Multi-NIC-Attachments, etwa für Router, bleiben erhalten.
 
 `shared` lässt NAT44 standardmäßig aktiv und bietet damit Zugriff auf Host und
 Internet. DHCP und vmnet-DNS-Proxy bleiben deaktiviert; die VM erhält ihre
-statische Adresse, Default-Route und `.0` als DNS über den NoCloud-Seed.
+statische Adresse, Default-Route `via .0 on-link` und ausschließlich `.0` als
+DNS über den pro Clone erzeugten NoCloud-Seed. Bei einem projektgebundenen
+Netz wird zusätzlich `{project}.vz.test` als Search-Domain gesetzt. Das gilt
+identisch für explizite und automatische Default-Attachments sowie für die
+Primär-NIC einer Router-VM. Router `.2` bleibt der Next Hop für explizite
+Cross-Net-Routen und wird weder Default-Gateway noch DNS.
 Cross-Net-Traffic wird dadurch nicht freigeschaltet: Dafür bleiben Router plus
 [#33](https://github.com/frankhildebrandt/vzctl/issues/33) zuständig.
 
