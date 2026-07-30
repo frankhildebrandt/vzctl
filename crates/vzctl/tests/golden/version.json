@@ -1,0 +1,12 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "version",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "vzctl 0.0.1"
+  },
+  "version": {
+    "cli": "0.0.1"
+  }
+}

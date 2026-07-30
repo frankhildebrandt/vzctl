@@ -50,6 +50,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#15](https://github.com/frankhildebrandt/vzctl/issues/15) | Helper↔Agent E2E | [p0-helper-agent-e2e.md](../spikes/p0-helper-agent-e2e.md) |
 | [#16](https://github.com/frankhildebrandt/vzctl/issues/16) | Agent Time-Sync | [p0-agent-time-sync.md](../spikes/p0-agent-time-sync.md) |
 | [#20](https://github.com/frankhildebrandt/vzctl/issues/20) | `vzctl doctor` | [doctor.md](../doctor.md) |
+| [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | CLI Contract v1 | [cli-contract-v1.md](../specs/cli-contract-v1.md) |
 
 ## P0 Foundation (complete)
 
@@ -73,8 +74,9 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | # | Story | Status |
 |---|---|---|
 | [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | active |
-| [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | ← **next** (`doctor` Envelope vorhanden) |
-| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | danach |
+| [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | **complete** (CLI Contract v1 + Golden Tests) |
+| [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | ← **next** |
+| [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | Alternative nächster P1-Slice |
 
 ## Label-Schema
 

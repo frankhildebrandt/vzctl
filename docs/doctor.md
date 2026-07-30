@@ -45,5 +45,6 @@ Wichtige Hinweise:
 | `11` | macOS 26 wird nicht erfüllt bzw. nicht erkannt |
 
 Bei `--format json` stehen ausschließlich strukturierte Daten auf stdout. Das
-Envelope enthält `status`, `exit_code`, `summary` und stabile Check-IDs. Die
-vollständige CLI-v1-Spezifikation folgt in [#18](https://github.com/frankhildebrandt/vzctl/issues/18).
+Envelope enthält `apiVersion`, `command`, `status`, `exit_code`, `summary` und
+stabile Check-IDs. Der vollständige Vertrag steht in
+[`docs/specs/cli-contract-v1.md`](specs/cli-contract-v1.md).

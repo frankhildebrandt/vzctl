@@ -1,0 +1,31 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "doctor",
+  "status": "warn",
+  "exit_code": 0,
+  "summary": {
+    "ok": 1,
+    "warnings": 1,
+    "failures": 0
+  },
+  "checks": [
+    {
+      "id": "host.macos",
+      "status": "ok",
+      "message": "macOS 26 meets the baseline",
+      "details": {
+        "major": 26,
+        "minimum_major": 26
+      }
+    },
+    {
+      "id": "codesign.vz-helper",
+      "status": "warn",
+      "message": "vz-helper not found",
+      "details": {
+        "binary": "vz-helper",
+        "found": false
+      }
+    }
+  ]
+}

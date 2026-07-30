@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P1 / #17** — #18 CLI-v1-Contract für JSON, Exitcodes und Events
-vervollständigen. `doctor` liefert bereits den ersten JSON-Envelope; danach
-#21 Base Seal / APFS Linked Clones. P0 #20 ist abgeschlossen.
+**P1 / #17** — #19 versioniertes Event-Schema und `events subscribe` auf dem
+abgeschlossenen CLI-v1-Contract aus #18 aufbauen. Alternativer nächster
+P1-Slice: #21 Base Seal / APFS Linked Clones.

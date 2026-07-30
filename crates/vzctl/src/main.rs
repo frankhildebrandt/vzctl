@@ -9,6 +9,14 @@ use std::time::Duration;
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
 const DEFAULT_DNS_PORT: u16 = 15353;
+const CLI_API_VERSION: &str = "vzctl.dev/v1";
+const EXIT_USAGE: u8 = 2;
+const EXIT_INVALID_INPUT: u8 = 3;
+const EXIT_INCOMPLETE_JOURNAL: u8 = 5;
+const EXIT_LEASE_HELD: u8 = 6;
+const EXIT_SUPERVISOR_UNHEALTHY: u8 = 10;
+const EXIT_HOST_UNSUPPORTED: u8 = 11;
+const EXIT_UNAVAILABLE: u8 = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputFormat {
@@ -87,25 +95,31 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::SUCCESS
         }
-        Some("version") => {
-            println!("vzctl {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
+        Some("version") => match parse_format_options(args, "version") {
+            Ok(OutputFormat::Human) => {
+                println!("vzctl {}", env!("CARGO_PKG_VERSION"));
+                ExitCode::SUCCESS
+            }
+            Ok(OutputFormat::Json) => {
+                println!("{}", version_json(env!("CARGO_PKG_VERSION")));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(EXIT_USAGE)
+            }
+        },
         Some("doctor") => match parse_doctor_options(args) {
             Ok(options) => doctor(options),
             Err(error) => {
                 eprintln!("{error}");
-                ExitCode::from(3)
+                ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
-        Some("apply") => {
-            let flags: Vec<String> = args.collect();
-            eprintln!("apply stub: flags={flags:?} — journal/reconcile not wired yet (ADR 0003)");
-            ExitCode::from(2)
-        }
+        Some("apply") => apply_stub(args),
         Some(other) => {
             eprintln!("unknown command: {other}");
-            ExitCode::from(2)
+            ExitCode::from(EXIT_USAGE)
         }
     }
 }
@@ -118,16 +132,89 @@ vzctl — Environments-as-Code for macOS Virtualization (Alpha stub)
 Commands:
   doctor [--format human|json] [--min-free-gib N]
                       Check host baseline and supervisor health
-  version
+  version [--format human|json]
   apply [--resume|--abort]   (stub — see ADR 0003)
   help
 
-Doctor exit codes:
-  0   checks passed or warnings only
-  3   invalid CLI arguments
+Stable exit codes:
+  0   success (warnings allowed)
+  2   usage or unknown command
+  3   invalid input or validation
+  5   incomplete apply journal
+  6   apply lease held
   10  supervisor socket or health is bad
-  11  macOS 26 baseline is not met"
+  11  macOS 26 baseline is not met
+  12  command unavailable or not implemented"
     );
+}
+
+fn parse_format_options(
+    args: impl Iterator<Item = String>,
+    command: &str,
+) -> Result<OutputFormat, String> {
+    let mut format = OutputFormat::Human;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--format" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--format requires human or json".to_string())?;
+                format = match value.as_str() {
+                    "human" => OutputFormat::Human,
+                    "json" => OutputFormat::Json,
+                    _ => return Err(format!("unsupported {command} format: {value}")),
+                };
+            }
+            _ => return Err(format!("unknown {command} option: {arg}")),
+        }
+    }
+
+    Ok(format)
+}
+
+fn version_json(version: &str) -> Value {
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "version",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": format!("vzctl {version}"),
+        },
+        "version": {
+            "cli": version,
+        },
+    })
+}
+
+fn apply_stub(args: impl Iterator<Item = String>) -> ExitCode {
+    let mut resume = false;
+    let mut abort = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--resume" => resume = true,
+            "--abort" => abort = true,
+            _ => {
+                eprintln!("unknown apply option: {arg}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        }
+    }
+
+    if resume && abort {
+        eprintln!("apply accepts only one of --resume or --abort");
+        return ExitCode::from(EXIT_INVALID_INPUT);
+    }
+
+    eprintln!(
+        "apply is not implemented yet; journal/reconcile remains tracked by ADR 0003 \
+         (future blockers: exit {EXIT_INCOMPLETE_JOURNAL}=incomplete journal, \
+         exit {EXIT_LEASE_HELD}=lease held)"
+    );
+    ExitCode::from(EXIT_UNAVAILABLE)
 }
 
 fn parse_doctor_options(args: impl Iterator<Item = String>) -> Result<DoctorOptions, String> {
@@ -204,12 +291,12 @@ fn doctor(options: DoctorOptions) -> ExitCode {
     checks.push(check_supervisor());
 
     let exit_code = if macos_version.unwrap_or(0) < 26 {
-        11
+        EXIT_HOST_UNSUPPORTED
     } else if checks
         .iter()
         .any(|check| check.id == "supervisor.health" && check.status == CheckStatus::Fail)
     {
-        10
+        EXIT_SUPERVISOR_UNHEALTHY
     } else {
         0
     };
@@ -230,6 +317,10 @@ fn print_human_report(checks: &[Check], exit_code: u8) {
 }
 
 fn print_json_report(checks: &[Check], exit_code: u8) {
+    println!("{}", doctor_json(checks, exit_code));
+}
+
+fn doctor_json(checks: &[Check], exit_code: u8) -> Value {
     let warning_count = checks
         .iter()
         .filter(|check| check.status == CheckStatus::Warn)
@@ -239,6 +330,7 @@ fn print_json_report(checks: &[Check], exit_code: u8) {
         .filter(|check| check.status == CheckStatus::Fail)
         .count();
     let report = json!({
+        "apiVersion": CLI_API_VERSION,
         "command": "doctor",
         "status": if failure_count > 0 { "fail" } else if warning_count > 0 { "warn" } else { "ok" },
         "exit_code": exit_code,
@@ -249,7 +341,7 @@ fn print_json_report(checks: &[Check], exit_code: u8) {
         },
         "checks": checks.iter().map(Check::to_json).collect::<Vec<_>>(),
     });
-    println!("{report}");
+    report
 }
 
 fn check_macos(version: Option<u32>) -> Check {
@@ -538,10 +630,7 @@ fn check_disk_space(path: &Path, minimum_gib: u64) -> Check {
 }
 
 fn parse_df_available_kib(output: &str) -> Option<u64> {
-    let line = output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .last()?;
+    let line = output.lines().rfind(|line| !line.trim().is_empty())?;
     line.split_whitespace().nth(3)?.parse().ok()
 }
 
@@ -892,6 +981,45 @@ mod tests {
                 min_free_gib: 42,
             }
         );
+    }
+
+    #[test]
+    fn version_json_matches_golden_contract() {
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/version.json")).unwrap();
+        assert_eq!(version_json("0.0.1"), expected);
+    }
+
+    #[test]
+    fn doctor_json_matches_golden_contract() {
+        let checks = vec![
+            Check::new(
+                "host.macos",
+                CheckStatus::Ok,
+                "macOS 26 meets the baseline",
+                json!({ "major": 26, "minimum_major": 26 }),
+            ),
+            Check::new(
+                "codesign.vz-helper",
+                CheckStatus::Warn,
+                "vz-helper not found",
+                json!({ "binary": "vz-helper", "found": false }),
+            ),
+        ];
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/doctor.json")).unwrap();
+        assert_eq!(doctor_json(&checks, 0), expected);
+    }
+
+    #[test]
+    fn stable_exit_code_mapping_matches_cli_contract() {
+        assert_eq!(EXIT_USAGE, 2);
+        assert_eq!(EXIT_INVALID_INPUT, 3);
+        assert_eq!(EXIT_INCOMPLETE_JOURNAL, 5);
+        assert_eq!(EXIT_LEASE_HELD, 6);
+        assert_eq!(EXIT_SUPERVISOR_UNHEALTHY, 10);
+        assert_eq!(EXIT_HOST_UNSUPPORTED, 11);
+        assert_eq!(EXIT_UNAVAILABLE, 12);
     }
 
     #[test]
