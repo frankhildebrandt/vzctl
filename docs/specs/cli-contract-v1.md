@@ -82,6 +82,7 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `14` | Image-Invariante/Preservation fehlgeschlagen | `image seal` |
 | `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
 | `16` | VM-Root-/Data-Disk-Vorbereitung fehlgeschlagen | `vm create` |
+| `17` | Network-Operation fehlgeschlagen | Konflikt, nicht gefunden, vmnet-Rebuild |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -132,6 +133,19 @@ APFS-Space-Smoke stehen in
 [`p1-linked-clone.md`](../spikes/p1-linked-clone.md).
 Der Identity-Vertrag und Live-Boot-Nachweis stehen in
 [`p1-identity-reset.md`](../spikes/p1-identity-reset.md).
+
+### `vzctl net create|attach|list|detach|delete`
+
+Kanonische Commands sind `net.create`, `net.attach`, `net.list`, `net.detach`
+und `net.delete`. Alle unterstützen `--format human|json`; JSON verwendet das
+v1-Envelope. `net list` liefert `networks[]` und `attachments[]`.
+
+Ungültige CIDRs/IPs, bridged Mode und ungültige Metadaten liefern Exit `3`.
+Socket-/Protokollfehler liefern `10`. Fachliche Konflikte – etwa Delete mit
+Attachments, NIC-Änderung an einer laufenden VM, Duplicate-IP oder ein
+fehlgeschlagener vmnet-Rebuild – liefern `17`. Labels sind wiederholbare
+`--label key=value`; `--project` und `--stack` ergänzen den Desired State.
+Details: [`docs/network.md`](../network.md).
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

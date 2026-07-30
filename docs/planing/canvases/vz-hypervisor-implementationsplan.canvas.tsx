@@ -167,6 +167,9 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             G0 Go
           </Pill>
+          <Pill tone="success" size="sm" active>
+            #31 vmnet CRUD
+          </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
           </Pill>
@@ -189,16 +192,18 @@ export default function VzHypervisorImplementationsplan() {
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
-      <Callout tone="success" title="P0 + CLI + Seal + Clones">
+      <Callout tone="success" title="P0 + P1 + erster P2-Slice">
         P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
-        #23 linked clone + dataDisk und #24 Identity-Reset ✅.
+        #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31:
+        Supervisor-owned vmnet CRUD, SQLite-Rebuild und Desired Attachments ✅.
       </Callout>
 
-      <Grid columns={4} gap={12}>
+      <Grid columns={5} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="#22✓" label="image seal" tone="success" />
         <Stat value="#23✓" label="linked clone" tone="success" />
         <Stat value="#24✓" label="identity reset" tone="success" />
+        <Stat value="#31✓" label="vmnet CRUD" tone="success" />
       </Grid>
 
       <Stack gap={10}>
@@ -683,10 +688,10 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P1 Clone-Lifecycle abgeschlossen">
+        <Callout tone="success" title="P1 abgeschlossen · P2 gestartet">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
-          per-Clone Identity/NoCloud. Sealed Base und Marker bleiben unverändert.
-          Next: P2 #31 vmnet Network CRUD + Attachments.
+          per-Clone Identity/NoCloud. #31 liefert Network CRUD, Attachments,
+          Labels/Metadaten und Restart-Rebuild. Next Network Slice: #32 Router.
         </Callout>
       </Stack>
 

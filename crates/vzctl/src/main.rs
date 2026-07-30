@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod network;
+
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
 const DEFAULT_DNS_PORT: u16 = 15353;
 const CLI_API_VERSION: &str = "vzctl.dev/v1";
@@ -264,6 +266,7 @@ fn main() -> ExitCode {
         },
         Some("apply") => apply_stub(args),
         Some("events") => events_command(args),
+        Some("net") => network::command(args, &supervisor_socket_path()),
         Some("image") => image_command(args),
         Some("vm") => vm_command(args),
         Some(other) => {
@@ -284,6 +287,11 @@ Commands:
   version [--format human|json]
   apply [--resume|--abort]   (stub — see ADR 0003)
   events subscribe [--filter 'vm.*,apply.*']
+  net create <name> --cidr CIDR [--mode shared] [--label key=value] [--project P] [--stack S]
+  net attach <vm> --network <name> --ip <address> [--label key=value] [--project P] [--stack S]
+  net list [--format human|json]
+  net detach <vm> --network <name> [--format human|json]
+  net delete <name> [--format human|json]
   image seal <name|path> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--format human|json]
   help
@@ -300,7 +308,8 @@ Stable exit codes:
   13  image customization failed
   14  image seal invariant failed
   15  image seal state/marker failed
-  16  VM root/data disk preparation failed"
+  16  VM root/data disk preparation failed
+  17  network operation failed"
     );
 }
 
@@ -2545,9 +2554,9 @@ fn check_vmnet_hint(macos_version: Option<u32>) -> Check {
         Check::new(
             "network.vmnet",
             CheckStatus::Ok,
-            "custom vmnet API baseline is available; live network creation is not tested",
+            "custom vmnet API baseline is available; CRUD/rebuild is supervisor-managed",
             json!({
-                "live_create_tested": false,
+                "doctor_creates_network": false,
                 "host_gateway_dns_suffix": ".0",
                 "router_suffix": ".2",
                 "guest_range": ".10+",
@@ -2622,6 +2631,27 @@ fn check_supervisor() -> Check {
     if result["ok"] != true || result["db_ok"] != true {
         return supervisor_failure(&path, format!("health is not ok: {value}"));
     }
+    let network_orphans = result["network_orphans"].as_u64().unwrap_or(0);
+    let details = json!({
+        "socket": path,
+        "running": true,
+        "version": result["version"],
+        "pid": result["pid"],
+        "db_ok": true,
+        "networks": result["networks"],
+        "network_orphans": network_orphans,
+    });
+    if network_orphans > 0 {
+        return Check::new(
+            "supervisor.health",
+            CheckStatus::Warn,
+            format!(
+                "supervisor is healthy, but {network_orphans} vmnet CIDR(s) could not be rebuilt; \
+                 an unclean exit may have orphaned reservations until reboot"
+            ),
+            details,
+        );
+    }
 
     Check::new(
         "supervisor.health",
@@ -2631,13 +2661,7 @@ fn check_supervisor() -> Check {
             result["version"].as_str().unwrap_or("unknown"),
             result["pid"]
         ),
-        json!({
-            "socket": path,
-            "running": true,
-            "version": result["version"],
-            "pid": result["pid"],
-            "db_ok": true,
-        }),
+        details,
     )
 }
 
@@ -2753,6 +2777,7 @@ mod tests {
         assert_eq!(EXIT_IMAGE_INVARIANT_FAILED, 14);
         assert_eq!(EXIT_IMAGE_STATE_FAILED, 15);
         assert_eq!(EXIT_VM_DISK_PREP_FAILED, 16);
+        assert_eq!(network::EXIT_NETWORK, 17);
     }
 
     #[test]

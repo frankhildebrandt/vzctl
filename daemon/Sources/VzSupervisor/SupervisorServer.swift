@@ -26,15 +26,18 @@ final class SupervisorServer: @unchecked Sendable {
     let socketPath: String
     let databasePath: String
 
+    private let stateDirectory: URL
     private let startedAt = ContinuousClock.now
     private let stateLock = NSLock()
     private var listener: Int32 = -1
     private var ownsSocket = false
     private let database: StateDatabase
+    private let networkRegistry: NetworkRegistry
     private var helpers: [String: HelperRecord] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
 
     init(stateDirectory: URL) throws {
+        self.stateDirectory = stateDirectory
         try FileManager.default.createDirectory(
             at: stateDirectory,
             withIntermediateDirectories: true,
@@ -46,6 +49,7 @@ final class SupervisorServer: @unchecked Sendable {
         socketPath = stateDirectory.appendingPathComponent("vz.sock").path
         databasePath = stateDirectory.appendingPathComponent("state.sqlite").path
         database = try StateDatabase(path: databasePath)
+        networkRegistry = try NetworkRegistry(database: database)
     }
 
     func run() throws {
@@ -125,6 +129,7 @@ final class SupervisorServer: @unchecked Sendable {
         for client in state.2 {
             Darwin.shutdown(client, SHUT_RDWR)
         }
+        networkRegistry.shutdown()
     }
 
     private func handle(_ client: Int32) {
@@ -176,6 +181,10 @@ final class SupervisorServer: @unchecked Sendable {
             let uptime = startedAt.duration(to: .now)
             let uptimeMilliseconds = uptime.components.seconds * 1_000
                 + Int64(uptime.components.attoseconds / 1_000_000_000_000_000)
+            let networkSnapshot = try? networkRegistry.snapshot()
+            let orphanedNetworks = networkSnapshot?.networks.filter {
+                $0.runtimeState != "active"
+            }.count ?? 0
             return JSONRPCResponse(
                 result: .object([
                     "ok": .bool(true),
@@ -183,6 +192,8 @@ final class SupervisorServer: @unchecked Sendable {
                     "pid": .number(Double(getpid())),
                     "uptime_ms": .number(Double(uptimeMilliseconds)),
                     "db_ok": .bool(true),
+                    "networks": .number(Double(networkSnapshot?.networks.count ?? 0)),
+                    "network_orphans": .number(Double(orphanedNetworks)),
                 ]),
                 id: request.id ?? .null
             )
@@ -196,6 +207,94 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .array(records.map(\.json)),
                 id: request.id ?? .null
             )
+        case "net.create":
+            do {
+                let params = try networkParams(request.params)
+                let record = try networkRegistry.create(
+                    name: try requiredString("name", from: params),
+                    cidr: try requiredString("cidr", from: params),
+                    mode: try optionalString("mode", from: params) ?? "shared",
+                    labels: try labels(from: params),
+                    project: try optionalString("project", from: params),
+                    stack: try optionalString("stack", from: params)
+                )
+                emit(type: "net.created", data: ["network": .string(record.name)])
+                return JSONRPCResponse(result: record.json, id: request.id ?? .null)
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "net.attach":
+            do {
+                let params = try networkParams(request.params)
+                let vmID = try requiredString("vm_id", from: params)
+                let record = try networkRegistry.attach(
+                    vmID: vmID,
+                    networkName: try requiredString("network", from: params),
+                    ip: try requiredString("ip", from: params),
+                    labels: try labels(from: params),
+                    project: try optionalString("project", from: params),
+                    stack: try optionalString("stack", from: params),
+                    vmIsStopped: vmIsStopped(vmID)
+                )
+                emit(
+                    type: "net.attached",
+                    data: [
+                        "vm_id": .string(record.vmID),
+                        "network": .string(record.networkName),
+                        "ip": .string(record.ip),
+                    ]
+                )
+                return JSONRPCResponse(result: record.json, id: request.id ?? .null)
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "net.detach":
+            do {
+                let params = try networkParams(request.params)
+                let vmID = try requiredString("vm_id", from: params)
+                let network = try requiredString("network", from: params)
+                try networkRegistry.detach(
+                    vmID: vmID,
+                    networkName: network,
+                    vmIsStopped: vmIsStopped(vmID)
+                )
+                emit(
+                    type: "net.detached",
+                    data: ["vm_id": .string(vmID), "network": .string(network)]
+                )
+                return JSONRPCResponse(
+                    result: .object([
+                        "vm_id": .string(vmID),
+                        "network": .string(network),
+                        "detached": .bool(true),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "net.delete":
+            do {
+                let params = try networkParams(request.params)
+                let name = try requiredString("name", from: params)
+                try networkRegistry.delete(name: name)
+                emit(type: "net.deleted", data: ["network": .string(name)])
+                return JSONRPCResponse(
+                    result: .object(["name": .string(name), "deleted": .bool(true)]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "net.list":
+            do {
+                return JSONRPCResponse(
+                    result: try networkRegistry.snapshot().json,
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "helper.hello", "helper.state":
             guard let record = HelperRecord(params: request.params) else {
                 return JSONRPCResponse(
@@ -323,6 +422,90 @@ final class SupervisorServer: @unchecked Sendable {
 
         var byte: UInt8 = 0
         while Darwin.read(client, &byte, 1) > 0 {}
+    }
+
+    private func vmIsStopped(_ vmID: String) -> Bool {
+        let reportsRunning = stateLock.withLock {
+            guard let helper = helpers[vmID] else { return false }
+            return helper.state == "starting" || helper.state == "running"
+        }
+        guard !reportsRunning else { return false }
+
+        let path = stateDirectory
+            .appendingPathComponent("helpers", isDirectory: true)
+            .appendingPathComponent("\(StateFileName.component(vmID)).lock")
+            .path
+        let descriptor = Darwin.open(path, O_RDONLY)
+        if descriptor < 0 {
+            return errno == ENOENT
+        }
+        defer { Darwin.close(descriptor) }
+        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+            flock(descriptor, LOCK_UN)
+            return true
+        }
+        return false
+    }
+
+    private func networkParams(_ value: JSONValue?) throws -> [String: JSONValue] {
+        guard case let .object(params)? = value else {
+            throw NetworkRegistryError.invalid("network params must be an object")
+        }
+        return params
+    }
+
+    private func requiredString(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> String {
+        guard case let .string(value)? = params[key], !value.isEmpty else {
+            throw NetworkRegistryError.invalid("missing or invalid \(key)")
+        }
+        return value
+    }
+
+    private func optionalString(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> String? {
+        guard let raw = params[key], raw != .null else { return nil }
+        guard case let .string(value) = raw, !value.isEmpty else {
+            throw NetworkRegistryError.invalid("invalid \(key)")
+        }
+        return value
+    }
+
+    private func labels(from params: [String: JSONValue]) throws -> [String: String] {
+        guard let raw = params["labels"], raw != .null else { return [:] }
+        guard case let .object(values) = raw else {
+            throw NetworkRegistryError.invalid("labels must be an object")
+        }
+        var labels: [String: String] = [:]
+        for (key, rawValue) in values {
+            guard case let .string(value) = rawValue else {
+                throw NetworkRegistryError.invalid("label \(key) must be a string")
+            }
+            labels[key] = value
+        }
+        return labels
+    }
+
+    private func networkErrorResponse(
+        _ error: Error,
+        request: JSONRPCRequest
+    ) -> JSONRPCResponse {
+        let networkError: NetworkRegistryError
+        if let error = error as? NetworkRegistryError {
+            networkError = error
+        } else if let error = error as? NetworkValidationError {
+            networkError = .invalid(error.description)
+        } else {
+            networkError = .runtime(String(describing: error))
+        }
+        return JSONRPCResponse(
+            error: JSONRPCError(code: networkError.rpcCode, message: networkError.description),
+            id: request.id ?? .null
+        )
     }
 
     private func writeSubscriptionError(_ client: Int32, request: JSONRPCRequest) {

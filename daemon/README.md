@@ -82,5 +82,10 @@ daemon/scripts/smoke-helper-two-vms.sh /path/to/source.raw /path/to/cidata.iso
 The quick isolation smoke uses two mock helpers only to test process/lock
 isolation. The two-VM smoke clones the supplied G0 raw Ubuntu disk into two
 temporary bundle directories, verifies serial output, kills A with `SIGKILL`,
-then cleanly stops B with `SIGTERM`. NAT is local to each VM in this slice;
-supervisor-owned vmnet attachments remain follow-up work.
+then cleanly stops B with `SIGTERM`.
+
+Supervisor-owned vmnet CRUD and desired attachments are implemented in #31;
+see [`docs/network.md`](../docs/network.md). The existing standalone helper
+command still uses NAT when started directly. Applying a desired attachment is
+part of the future supervisor-driven helper start path; the Helper must receive
+only a serialized vmnet attachment handle and never own the registry ref.

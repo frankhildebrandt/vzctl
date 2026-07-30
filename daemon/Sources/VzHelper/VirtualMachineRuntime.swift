@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import VzDaemonKit
 @preconcurrency import Virtualization
 
 enum VirtualMachineEvent: Sendable {
@@ -29,9 +30,9 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
             throw HelperError.system("chmod log directory", errno)
         }
         serialLogURL = logsDirectory.appendingPathComponent(
-            "\(safeFileComponent(options.vmID)).serial.log"
+            "\(StateFileName.component(options.vmID)).serial.log"
         )
-        queue = DispatchQueue(label: "vzctl.helper.\(safeFileComponent(options.vmID))")
+        queue = DispatchQueue(label: "vzctl.helper.\(StateFileName.component(options.vmID))")
 
         let pair = AsyncStream<VirtualMachineEvent>.makeStream()
         eventStream = pair.stream

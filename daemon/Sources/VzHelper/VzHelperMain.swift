@@ -440,10 +440,14 @@ enum LaunchdPlist {
         let argumentXML = arguments.map {
             "        <string>\(xmlEscape($0))</string>"
         }.joined(separator: "\n")
-        let label = "com.vzctl.helper.\(safeFileComponent(run.vmID))"
+        let label = "com.vzctl.helper.\(StateFileName.component(run.vmID))"
         let logBase = (try? StatePaths.logsDirectory()) ?? URL(fileURLWithPath: "/tmp")
-        let stdout = logBase.appendingPathComponent("\(safeFileComponent(run.vmID)).helper.log")
-        let stderr = logBase.appendingPathComponent("\(safeFileComponent(run.vmID)).helper.error.log")
+        let stdout = logBase.appendingPathComponent(
+            "\(StateFileName.component(run.vmID)).helper.log"
+        )
+        let stderr = logBase.appendingPathComponent(
+            "\(StateFileName.component(run.vmID)).helper.error.log"
+        )
 
         return """
         <?xml version="1.0" encoding="UTF-8"?>

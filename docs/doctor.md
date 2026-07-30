@@ -34,6 +34,10 @@ Wichtige Hinweise:
   eine passende `/etc/resolver/*.vz.test`, ist sie wahrscheinlich verwaist.
 - vmnet wird nicht live angelegt. `doctor` bestätigt nur die macOS-26-Baseline
   und erinnert an die G0-Konvention: Host/DNS `.0`, Router `.2`, Gäste `.10+`.
+- Ist der Supervisor erreichbar, meldet `doctor` WARN, sobald persistierte
+  vmnet-Netze nach einem Restart nicht rekonstruiert werden konnten. Nach einem
+  unclean Exit kann die CIDR bis zum Host-Reboot als `orphaned` blockiert sein;
+  Details stehen in [`network.md`](network.md).
 - Ein nicht gestarteter Supervisor ist eine Warnung. Ein erreichbarer, aber
   defekter Socket bzw. eine schlechte DB-Health ist ein Fehler.
 

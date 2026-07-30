@@ -27,6 +27,6 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P1 / #21 abgeschlossen** — #22 Base Seal, #23 APFS Linked Clones plus
-`dataDisk` und #24 Identity-Reset sind implementiert. Der nächste geplante
-Slice ist P2 / #31: vmnet Network CRUD + Attachments + Labels.
+**P2 / #31 abgeschlossen** — Supervisor-owned vmnet CRUD, Attachments, Labels
+und Restart-Rebuild sind implementiert. Der nächste Network-Slice ist
+**#32** Router-VM Template + `vzctl route apply` (Epic #30).

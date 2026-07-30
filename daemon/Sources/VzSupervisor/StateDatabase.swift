@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SQLite3
+import VzDaemonKit
 
 final class StateDatabase {
     private var handle: OpaquePointer?
@@ -49,6 +50,29 @@ final class StateDatabase {
                     holder TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS networks (
+                    name TEXT PRIMARY KEY,
+                    cidr TEXT NOT NULL UNIQUE,
+                    mode TEXT NOT NULL CHECK (mode = 'shared'),
+                    labels_json TEXT NOT NULL DEFAULT '{}',
+                    project TEXT,
+                    stack TEXT,
+                    runtime_state TEXT NOT NULL DEFAULT 'pending',
+                    last_error TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS network_attachments (
+                    vm_id TEXT NOT NULL,
+                    network_name TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    labels_json TEXT NOT NULL DEFAULT '{}',
+                    project TEXT,
+                    stack TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (vm_id, network_name),
+                    UNIQUE (network_name, ip),
+                    FOREIGN KEY (network_name) REFERENCES networks(name) ON DELETE RESTRICT
+                );
                 """
             )
             try quickCheck()
@@ -86,4 +110,195 @@ final class StateDatabase {
             throw SupervisorError.database("quick_check failed")
         }
     }
+
+    func insertNetwork(_ record: NetworkRecord) throws {
+        try withStatement(
+            """
+            INSERT INTO networks
+                (name, cidr, mode, labels_json, project, stack, runtime_state, last_error, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+        ) { statement in
+            try bind(record.name, at: 1, to: statement)
+            try bind(record.cidr, at: 2, to: statement)
+            try bind(record.mode, at: 3, to: statement)
+            try bind(try labelsJSON(record.labels), at: 4, to: statement)
+            try bind(record.project, at: 5, to: statement)
+            try bind(record.stack, at: 6, to: statement)
+            try bind(record.runtimeState, at: 7, to: statement)
+            try bind(record.lastError, at: 8, to: statement)
+            try bind(record.updatedAt, at: 9, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func updateNetworkRuntime(name: String, state: String, error: String?) throws {
+        try withStatement(
+            "UPDATE networks SET runtime_state = ?, last_error = ?, updated_at = ? WHERE name = ?;"
+        ) { statement in
+            try bind(state, at: 1, to: statement)
+            try bind(error, at: 2, to: statement)
+            try bind(ISO8601DateFormatter().string(from: Date()), at: 3, to: statement)
+            try bind(name, at: 4, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func deleteNetwork(name: String) throws {
+        try withStatement("DELETE FROM networks WHERE name = ?;") { statement in
+            try bind(name, at: 1, to: statement)
+            try stepDone(statement)
+            guard sqlite3_changes(handle) == 1 else {
+                throw SupervisorError.database("network not found: \(name)")
+            }
+        }
+    }
+
+    func networks() throws -> [NetworkRecord] {
+        try withStatement(
+            """
+            SELECT name, cidr, mode, labels_json, project, stack,
+                   runtime_state, last_error, updated_at
+            FROM networks ORDER BY name;
+            """
+        ) { statement in
+            var records: [NetworkRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                records.append(
+                    NetworkRecord(
+                        name: text(statement, 0),
+                        cidr: text(statement, 1),
+                        mode: text(statement, 2),
+                        labels: try labels(from: text(statement, 3)),
+                        project: optionalText(statement, 4),
+                        stack: optionalText(statement, 5),
+                        runtimeState: text(statement, 6),
+                        lastError: optionalText(statement, 7),
+                        updatedAt: text(statement, 8)
+                    )
+                )
+            }
+            guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else {
+                throw databaseError()
+            }
+            return records
+        }
+    }
+
+    func insertAttachment(_ record: NetworkAttachmentRecord) throws {
+        try withStatement(
+            """
+            INSERT INTO network_attachments
+                (vm_id, network_name, ip, labels_json, project, stack, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """
+        ) { statement in
+            try bind(record.vmID, at: 1, to: statement)
+            try bind(record.networkName, at: 2, to: statement)
+            try bind(record.ip, at: 3, to: statement)
+            try bind(try labelsJSON(record.labels), at: 4, to: statement)
+            try bind(record.project, at: 5, to: statement)
+            try bind(record.stack, at: 6, to: statement)
+            try bind(record.updatedAt, at: 7, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func deleteAttachment(vmID: String, networkName: String) throws {
+        try withStatement(
+            "DELETE FROM network_attachments WHERE vm_id = ? AND network_name = ?;"
+        ) { statement in
+            try bind(vmID, at: 1, to: statement)
+            try bind(networkName, at: 2, to: statement)
+            try stepDone(statement)
+            guard sqlite3_changes(handle) == 1 else {
+                throw SupervisorError.database(
+                    "attachment not found: \(vmID) on \(networkName)"
+                )
+            }
+        }
+    }
+
+    func attachments() throws -> [NetworkAttachmentRecord] {
+        try withStatement(
+            """
+            SELECT vm_id, network_name, ip, labels_json, project, stack, updated_at
+            FROM network_attachments ORDER BY network_name, vm_id;
+            """
+        ) { statement in
+            var records: [NetworkAttachmentRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                records.append(
+                    NetworkAttachmentRecord(
+                        vmID: text(statement, 0),
+                        networkName: text(statement, 1),
+                        ip: text(statement, 2),
+                        labels: try labels(from: text(statement, 3)),
+                        project: optionalText(statement, 4),
+                        stack: optionalText(statement, 5),
+                        updatedAt: text(statement, 6)
+                    )
+                )
+            }
+            guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else {
+                throw databaseError()
+            }
+            return records
+        }
+    }
+
+    private func withStatement<T>(_ sql: String, body: (OpaquePointer) throws -> T) throws -> T {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else {
+            throw databaseError()
+        }
+        defer { sqlite3_finalize(statement) }
+        return try body(statement)
+    }
+
+    private func bind(_ value: String?, at index: Int32, to statement: OpaquePointer) throws {
+        let result: Int32
+        if let value {
+            result = sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+        } else {
+            result = sqlite3_bind_null(statement, index)
+        }
+        guard result == SQLITE_OK else { throw databaseError() }
+    }
+
+    private func stepDone(_ statement: OpaquePointer) throws {
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
+    }
+
+    private func text(_ statement: OpaquePointer, _ index: Int32) -> String {
+        String(cString: sqlite3_column_text(statement, index))
+    }
+
+    private func optionalText(_ statement: OpaquePointer, _ index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return text(statement, index)
+    }
+
+    private func labelsJSON(_ labels: [String: String]) throws -> String {
+        let data = try JSONEncoder().encode(labels)
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw SupervisorError.database("labels are not UTF-8")
+        }
+        return value
+    }
+
+    private func labels(from value: String) throws -> [String: String] {
+        guard let data = value.data(using: .utf8) else {
+            throw SupervisorError.database("stored labels are not UTF-8")
+        }
+        return try JSONDecoder().decode([String: String].self, from: data)
+    }
+
+    private func databaseError() -> SupervisorError {
+        SupervisorError.database(String(cString: sqlite3_errmsg(handle)))
+    }
 }
+
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
