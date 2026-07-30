@@ -5,6 +5,7 @@ enum HelperCommand {
     case version
     case help
     case run(RunOptions)
+    case agentSmoke(RunOptions)
     case launchdPlist(LaunchdOptions)
 }
 
@@ -14,6 +15,7 @@ struct RunOptions: Sendable {
     let supervisorSocket: String
     let diskURL: URL
     let cidataURL: URL?
+    let agentTokenURL: URL
     let mock: Bool
     let stateDirectory: URL
 }
@@ -33,6 +35,8 @@ enum HelperArguments {
             return .help
         case "run":
             return .run(try parseRun(Array(arguments.dropFirst()), environment: environment))
+        case "agent-smoke":
+            return .agentSmoke(try parseRun(Array(arguments.dropFirst()), environment: environment))
         case "launchd-plist":
             let values = try parseValues(Array(arguments.dropFirst()))
             let executable = values["--executable"].map {
@@ -78,6 +82,9 @@ enum HelperArguments {
         let cidataURL = values["--cidata"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? (FileManager.default.fileExists(atPath: defaultCidata.path) ? defaultCidata : nil)
+        let agentTokenURL = values["--agent-token"].map {
+            URL(fileURLWithPath: $0).standardizedFileURL
+        } ?? bundleURL.appendingPathComponent("agent.token")
 
         return RunOptions(
             vmID: vmID,
@@ -85,6 +92,7 @@ enum HelperArguments {
             supervisorSocket: supervisorSocket,
             diskURL: diskURL,
             cidataURL: cidataURL,
+            agentTokenURL: agentTokenURL,
             mock: values["--mock"] != nil,
             stateDirectory: stateDirectory
         )
@@ -92,7 +100,8 @@ enum HelperArguments {
 
     private static func parseValues(_ arguments: [String]) throws -> [String: String] {
         let valueFlags = Set([
-            "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--cidata", "--executable",
+            "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--cidata", "--agent-token",
+            "--executable",
         ])
         let booleanFlags = Set(["--mock"])
         var values: [String: String] = [:]

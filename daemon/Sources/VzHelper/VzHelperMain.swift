@@ -19,6 +19,8 @@ enum VzHelperMain {
                 print(LaunchdPlist.render(options: options))
             case let .run(options):
                 try await run(options)
+            case let .agentSmoke(options):
+                try await agentSmoke(options)
             }
         } catch let error as HelperError {
             fputs("error: \(error)\n", stderr)
@@ -27,6 +29,159 @@ enum VzHelperMain {
         } catch {
             fputs("error: \(error)\n", stderr)
             exit(1)
+        }
+    }
+
+    private static func agentSmoke(_ options: RunOptions) async throws {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        guard version.majorVersion >= VzDaemonKit.minMacOSMajor else {
+            throw HelperError.invalid("macOS \(VzDaemonKit.minMacOSMajor)+ required")
+        }
+        guard !options.mock else {
+            throw HelperError.usage("agent-smoke does not support --mock")
+        }
+        let token = try AgentToken.load(from: options.agentTokenURL)
+        let lock = try HelperLock(vmID: options.vmID, stateDirectory: options.stateDirectory)
+        defer { withExtendedLifetime(lock) {} }
+
+        signal(SIGPIPE, SIG_IGN)
+        let runtime = try VirtualMachineRuntime(options: options)
+        do {
+            try await runtime.start()
+            print("vm=running transport=virtio-vsock port=\(guestAgentPort)")
+            fflush(stdout)
+
+            let client = try await connectReady(runtime: runtime, token: token, timeout: 90)
+            defer { client.close() }
+            let hello = try client.version()
+            try requireCapabilities(hello.capabilities)
+            try client.ping(nonce: "helper-agent-e2e")
+            let health = try client.health()
+            print("hello=ok version=\(hello.version) ping=ok health=\(health)")
+
+            let executed = try client.exec(
+                argv: ["/bin/sh", "-c", "printf helper-stdout; printf helper-stderr >&2"]
+            )
+            guard
+                executed.exit == 0,
+                executed.stdout == "helper-stdout",
+                executed.stderr == "helper-stderr",
+                !executed.truncated
+            else {
+                throw HelperError.invalid("guest agent exec returned unexpected output")
+            }
+            print("exec=ok exit=0 stdout=ok stderr=ok")
+
+            let interfaces = try client.reportIP()
+            let addressCount = interfaces.reduce(0) { $0 + $1.addresses.count }
+            guard addressCount > 0 else {
+                throw HelperError.invalid("guest agent report_ip returned no addresses")
+            }
+            print("report_ip=ok interfaces=\(interfaces.count) addresses=\(addressCount)")
+
+            do {
+                _ = try client.exec(
+                    argv: ["/bin/sleep", "2"],
+                    timeoutMilliseconds: 25,
+                    helperTimeout: 1
+                )
+                throw HelperError.invalid("guest agent exec timeout was not enforced")
+            } catch let GuestAgentError.remote(code, _, _) where code == "timeout" {
+                print("timeout=ok")
+            }
+
+            let stopClient = try await connectAuthenticated(runtime: runtime, token: token)
+            do {
+                _ = try stopClient.exec(
+                    argv: ["/usr/bin/pkill", "-STOP", "-x", "vzctl-agent"],
+                    timeoutMilliseconds: 5_000,
+                    helperTimeout: 0.5
+                )
+                throw HelperError.invalid("agent-stop command unexpectedly returned")
+            } catch let error as GuestAgentError {
+                switch error {
+                case .timeout, .unavailable:
+                    break
+                default:
+                    throw error
+                }
+            }
+            stopClient.close()
+            try await Task.sleep(for: .milliseconds(100))
+            do {
+                let downClient = try await connectAuthenticated(
+                    runtime: runtime,
+                    token: token,
+                    connectTimeout: 1,
+                    helloTimeout: 0.5
+                )
+                downClient.close()
+                throw HelperError.invalid("agent-down check unexpectedly connected")
+            } catch let error as GuestAgentError {
+                print("agent_down=ok error=\(error)")
+            }
+            print("happy_path=virtio-vsock ssh=false")
+            await runtime.stop()
+        } catch {
+            await runtime.stop()
+            throw error
+        }
+    }
+
+    private static func connectReady(
+        runtime: VirtualMachineRuntime,
+        token: String,
+        timeout: TimeInterval
+    ) async throws -> GuestAgentClient {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error = GuestAgentError.unavailable("agent did not become ready")
+        while Date() < deadline {
+            do {
+                let client = try await connectAuthenticated(runtime: runtime, token: token)
+                let hello = try client.version()
+                try requireCapabilities(hello.capabilities)
+                return client
+            } catch let error as GuestAgentError {
+                if case let .remote(code, _, _) = error, code == "auth" {
+                    throw error
+                }
+                lastError = error
+            } catch {
+                lastError = error
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+        throw lastError
+    }
+
+    private static func connectAuthenticated(
+        runtime: VirtualMachineRuntime,
+        token: String,
+        connectTimeout: TimeInterval = 5,
+        helloTimeout: TimeInterval = 2
+    ) async throws -> GuestAgentClient {
+        let client = try await runtime.connectToGuestAgent(timeout: connectTimeout)
+        do {
+            let hello = try client.hello(
+                token: token,
+                helperVersion: VzDaemonKit.version,
+                timeout: helloTimeout
+            )
+            try requireCapabilities(hello.capabilities)
+            return client
+        } catch {
+            client.close()
+            throw error
+        }
+    }
+
+    private static func requireCapabilities(_ capabilities: [String]) throws {
+        let required = Set(["ping", "version", "health", "exec", "report_ip"])
+        let missing = required.subtracting(capabilities)
+        guard missing.isEmpty else {
+            throw GuestAgentError.protocolViolation(
+                "missing capabilities: \(missing.sorted().joined(separator: ","))"
+            )
         }
     }
 
@@ -136,12 +291,16 @@ enum VzHelperMain {
         Usage:
           vz-helper version
           vz-helper run --vm-id <id> --bundle <dir>
-            [--disk <raw>] [--cidata <iso>] [--supervisor-sock <path>]
+            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--supervisor-sock <path>]
+          vz-helper agent-smoke --vm-id <id> --bundle <dir>
+            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
           vz-helper launchd-plist --vm-id <id> --bundle <dir>
-            [--disk <raw>] [--cidata <iso>] [--supervisor-sock <path>]
+            [--disk <raw>] [--cidata <iso>] [--agent-token <file>]
+            [--supervisor-sock <path>]
             [--executable <path>]
 
-        Bundle defaults: disk.raw, optional cidata.iso, generated nvram.bin.
+        Bundle defaults: disk.raw, optional cidata.iso, agent.token, generated nvram.bin.
         Development only: --mock holds lifecycle/lock without creating a VM.
         """
 }
@@ -173,6 +332,7 @@ enum LaunchdPlist {
             "--bundle", run.bundleURL.path,
             "--disk", run.diskURL.path,
             "--supervisor-sock", run.supervisorSocket,
+            "--agent-token", run.agentTokenURL.path,
         ]
         if let cidata = run.cidataURL {
             arguments += ["--cidata", cidata.path]

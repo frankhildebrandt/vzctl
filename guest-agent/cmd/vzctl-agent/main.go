@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -13,8 +15,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +31,14 @@ const (
 	maxFrameSize    = 1_048_576
 	maxIDBytes      = 128
 	authFailureWait = 250 * time.Millisecond
+	maxExecTimeout  = 600 * time.Second
+	defaultExecTime = 30 * time.Second
+	maxExecStream   = 256 * 1024
+	maxExecStdin    = 256 * 1024
+	maxExecArgs     = 256
+	maxExecArgBytes = 256 * 1024
+	maxExecEnv      = 128
+	maxExecEnvBytes = 64 * 1024
 )
 
 var (
@@ -32,7 +46,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "health"}
+var capabilities = []string{"ping", "version", "exec", "report_ip", "health"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -57,6 +71,40 @@ type wireError struct {
 
 type server struct {
 	token []byte
+}
+
+type responseWriter struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+type execParams struct {
+	Cmd       []string          `json:"cmd"`
+	Cwd       string            `json:"cwd,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	StdinB64  *string           `json:"stdin_b64,omitempty"`
+	TimeoutMS *int64            `json:"timeout_ms,omitempty"`
+}
+
+type cappedBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *cappedBuffer) Write(payload []byte) (int, error) {
+	remaining := w.limit - w.buffer.Len()
+	if remaining > 0 {
+		keep := len(payload)
+		if keep > remaining {
+			keep = remaining
+		}
+		_, _ = w.buffer.Write(payload[:keep])
+	}
+	if len(payload) > remaining {
+		w.truncated = true
+	}
+	return len(payload), nil
 }
 
 func main() {
@@ -138,42 +186,96 @@ func loadToken(path string) ([]byte, error) {
 }
 
 func (s *server) serveConn(conn net.Conn) error {
-	authenticated := false
+	payload, err := readFrame(conn)
+	if err != nil {
+		return err
+	}
+	hello, reqErr := decodeRequest(payload)
+	if reqErr != nil {
+		if hello.ID != "" {
+			_ = writeResponse(conn, errorResponse(hello.ID, "proto", reqErr.Error(), nil))
+		}
+		return reqErr
+	}
+	if hello.Method != "hello" {
+		_ = writeResponse(conn, errorResponse(hello.ID, "auth", "hello is required before commands", nil))
+		return errors.New("command before hello")
+	}
+	ok, closeConn := s.handleHello(conn, hello)
+	if closeConn || !ok {
+		return errors.New("hello rejected")
+	}
+
+	connectionContext, cancelConnection := context.WithCancel(context.Background())
+	defer cancelConnection()
+	writer := &responseWriter{conn: conn}
+	inflight := make(map[string]context.CancelFunc)
+	var inflightMu sync.Mutex
+	var workers sync.WaitGroup
+	defer func() {
+		cancelConnection()
+		inflightMu.Lock()
+		for _, cancel := range inflight {
+			cancel()
+		}
+		inflightMu.Unlock()
+		workers.Wait()
+	}()
+
 	for {
-		payload, err := readFrame(conn)
+		payload, err = readFrame(conn)
 		if err != nil {
 			return err
 		}
 		req, reqErr := decodeRequest(payload)
 		if reqErr != nil {
 			if req.ID != "" {
-				_ = writeResponse(conn, errorResponse(req.ID, "proto", reqErr.Error(), nil))
+				_ = writer.write(errorResponse(req.ID, "proto", reqErr.Error(), nil))
 			}
 			return reqErr
 		}
-
-		if !authenticated {
-			if req.Method != "hello" {
-				_ = writeResponse(conn, errorResponse(req.ID, "auth", "hello is required before commands", nil))
-				return errors.New("command before hello")
-			}
-			ok, closeConn := s.handleHello(conn, req)
-			if closeConn {
-				return errors.New("hello rejected")
-			}
-			authenticated = ok
-			continue
-		}
 		if req.Method == "hello" {
-			if err := writeResponse(conn, errorResponse(req.ID, "proto", "hello is only valid as the first frame", nil)); err != nil {
+			if err := writer.write(errorResponse(req.ID, "proto", "hello is only valid as the first frame", nil)); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := writeResponse(conn, handleRequest(req)); err != nil {
-			return err
+		if req.Method == "cancel" {
+			response := handleCancel(req, &inflightMu, inflight)
+			if err := writer.write(response); err != nil {
+				return err
+			}
+			continue
 		}
+
+		inflightMu.Lock()
+		if _, exists := inflight[req.ID]; exists {
+			inflightMu.Unlock()
+			if err := writer.write(errorResponse(req.ID, "proto", "request id is already in flight", nil)); err != nil {
+				return err
+			}
+			continue
+		}
+		requestContext, cancelRequest := context.WithCancel(connectionContext)
+		inflight[req.ID] = cancelRequest
+		inflightMu.Unlock()
+
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			response := handleRequest(requestContext, req)
+			inflightMu.Lock()
+			_ = writer.write(response)
+			delete(inflight, req.ID)
+			inflightMu.Unlock()
+		}()
 	}
+}
+
+func (w *responseWriter) write(response response) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return writeResponse(w.conn, response)
 }
 
 func (s *server) handleHello(conn net.Conn, req request) (bool, bool) {
@@ -202,7 +304,23 @@ func (s *server) handleHello(conn net.Conn, req request) (bool, bool) {
 	return true, false
 }
 
-func handleRequest(req request) response {
+func handleCancel(req request, mu *sync.Mutex, inflight map[string]context.CancelFunc) response {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &params); err != nil || params.ID == "" {
+		return errorResponse(req.ID, "proto", "invalid cancel parameters", nil)
+	}
+	mu.Lock()
+	cancel, found := inflight[params.ID]
+	mu.Unlock()
+	if found {
+		cancel()
+	}
+	return successResponse(req.ID, map[string]any{"cancelled": found})
+}
+
+func handleRequest(ctx context.Context, req request) response {
 	if req.V != protocolVersion {
 		return errorResponse(req.ID, "proto", "unsupported protocol version", map[string]any{
 			"supported_versions": []int{protocolVersion},
@@ -238,15 +356,18 @@ func handleRequest(req request) response {
 				"token_file": map[string]any{"ok": true},
 			},
 		})
-	case "cancel":
-		var params struct {
-			ID string `json:"id"`
+	case "exec":
+		return handleExec(ctx, req)
+	case "report_ip":
+		if err := decodeParams(req.Params, &struct{}{}); err != nil {
+			return errorResponse(req.ID, "proto", "invalid report_ip parameters", nil)
 		}
-		if err := decodeParams(req.Params, &params); err != nil || params.ID == "" {
-			return errorResponse(req.ID, "proto", "invalid cancel parameters", nil)
+		interfaces, err := collectInterfaces()
+		if err != nil {
+			return errorResponse(req.ID, "internal", "cannot enumerate network interfaces", nil)
 		}
-		return successResponse(req.ID, map[string]any{"cancelled": false})
-	case "exec", "report_ip", "time_hint":
+		return successResponse(req.ID, map[string]any{"interfaces": interfaces})
+	case "time_hint":
 		return errorResponse(req.ID, "unsupported", "method is not implemented in the boot-proof slice", map[string]any{
 			"method": req.Method,
 		})
@@ -255,6 +376,235 @@ func handleRequest(req request) response {
 			"method": req.Method,
 		})
 	}
+}
+
+func handleExec(parent context.Context, req request) response {
+	var params execParams
+	if err := decodeParams(req.Params, &params); err != nil {
+		return errorResponse(req.ID, "proto", "invalid exec parameters", nil)
+	}
+	timeout, stdin, validationError := validateExecParams(params)
+	if validationError != nil {
+		return errorResponse(req.ID, "proto", validationError.Error(), nil)
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return errorResponse(req.ID, "timeout", "request cancelled or deadline exceeded", map[string]any{
+			"reason": "cancelled",
+		})
+	}
+	command := exec.Command(params.Cmd[0], params.Cmd[1:]...)
+	command.Dir = params.Cwd
+	command.Env = sanitizedEnvironment(params.Env)
+	command.Stdin = bytes.NewReader(stdin)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout := &cappedBuffer{limit: maxExecStream}
+	stderr := &cappedBuffer{limit: maxExecStream}
+	command.Stdout = stdout
+	command.Stderr = stderr
+
+	if err := command.Start(); err != nil {
+		return execFailure(req.ID, nil, nil, stdout, stderr, err.Error())
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- command.Wait() }()
+
+	select {
+	case err := <-wait:
+		if err == nil {
+			return successResponse(req.ID, map[string]any{
+				"exit":      0,
+				"stdout":    stdout.buffer.String(),
+				"stderr":    stderr.buffer.String(),
+				"truncated": stdout.truncated || stderr.truncated,
+			})
+		}
+		exit, signal := processStatus(command.ProcessState)
+		return execFailure(req.ID, exit, signal, stdout, stderr, err.Error())
+	case <-ctx.Done():
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		<-wait
+		return errorResponse(req.ID, "timeout", "request cancelled or deadline exceeded", map[string]any{
+			"reason": "cancelled",
+		})
+	}
+}
+
+func validateExecParams(params execParams) (time.Duration, []byte, error) {
+	if len(params.Cmd) == 0 || len(params.Cmd) > maxExecArgs {
+		return 0, nil, fmt.Errorf("cmd must contain 1 to %d argv strings", maxExecArgs)
+	}
+	argBytes := 0
+	for _, arg := range params.Cmd {
+		if strings.ContainsRune(arg, 0) {
+			return 0, nil, errors.New("cmd entries must not contain NUL")
+		}
+		argBytes += len(arg)
+	}
+	if argBytes > maxExecArgBytes {
+		return 0, nil, errors.New("cmd exceeds 256 KiB")
+	}
+	if len(params.Env) > maxExecEnv {
+		return 0, nil, fmt.Errorf("env exceeds %d entries", maxExecEnv)
+	}
+	envBytes := 0
+	for key, value := range params.Env {
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
+			return 0, nil, errors.New("env contains an invalid key or value")
+		}
+		if key == "PATH" || strings.HasPrefix(key, "VZCTL_AGENT_") {
+			return 0, nil, errors.New("env attempts to replace a protected variable")
+		}
+		envBytes += len(key) + len(value)
+	}
+	if envBytes > maxExecEnvBytes {
+		return 0, nil, errors.New("env exceeds 64 KiB")
+	}
+
+	timeout := defaultExecTime
+	if params.TimeoutMS != nil {
+		if *params.TimeoutMS <= 0 || *params.TimeoutMS > maxExecTimeout.Milliseconds() {
+			return 0, nil, errors.New("timeout_ms must be between 1 and 600000")
+		}
+		timeout = time.Duration(*params.TimeoutMS) * time.Millisecond
+	}
+
+	var stdin []byte
+	if params.StdinB64 != nil {
+		if len(*params.StdinB64) > (maxExecStdin+2)/3*4 {
+			return 0, nil, errors.New("stdin_b64 exceeds 256 KiB decoded")
+		}
+		var err error
+		stdin, err = base64.StdEncoding.DecodeString(*params.StdinB64)
+		if err != nil {
+			return 0, nil, errors.New("stdin_b64 is not valid base64")
+		}
+		if len(stdin) > maxExecStdin {
+			return 0, nil, errors.New("stdin_b64 exceeds 256 KiB decoded")
+		}
+	}
+	return timeout, stdin, nil
+}
+
+func sanitizedEnvironment(extra map[string]string) []string {
+	values := map[string]string{
+		"LANG": "C.UTF-8",
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	for key, value := range extra {
+		values[key] = value
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result
+}
+
+func processStatus(state *os.ProcessState) (*int, *int) {
+	if state == nil {
+		return nil, nil
+	}
+	status, ok := state.Sys().(syscall.WaitStatus)
+	if !ok {
+		return nil, nil
+	}
+	if status.Exited() {
+		exit := status.ExitStatus()
+		return &exit, nil
+	}
+	if status.Signaled() {
+		signal := int(status.Signal())
+		return nil, &signal
+	}
+	return nil, nil
+}
+
+func execFailure(
+	id string,
+	exit *int,
+	signal *int,
+	stdout *cappedBuffer,
+	stderr *cappedBuffer,
+	message string,
+) response {
+	details := map[string]any{
+		"stdout":    stdout.buffer.String(),
+		"stderr":    stderr.buffer.String(),
+		"truncated": stdout.truncated || stderr.truncated,
+	}
+	if exit == nil {
+		details["exit"] = nil
+	} else {
+		details["exit"] = *exit
+	}
+	if signal != nil {
+		details["signal"] = *signal
+	}
+	return errorResponse(id, "exec_failed", message, details)
+}
+
+func collectInterfaces() ([]map[string]any, error) {
+	all, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(all))
+	for _, iface := range all {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		addresses := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			ip, network, ok := parseAddress(addr)
+			if ok && isGuestAddress(ip) {
+				addresses = append(addresses, network)
+			}
+		}
+		if len(addresses) == 0 {
+			continue
+		}
+		sort.Strings(addresses)
+		result = append(result, map[string]any{
+			"name":      iface.Name,
+			"mac":       iface.HardwareAddr.String(),
+			"addresses": addresses,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i]["name"].(string) < result[j]["name"].(string)
+	})
+	return result, nil
+}
+
+func parseAddress(addr net.Addr) (net.IP, string, bool) {
+	ip, network, err := net.ParseCIDR(addr.String())
+	if err != nil || ip == nil || network == nil {
+		return nil, "", false
+	}
+	ones, _ := network.Mask.Size()
+	return ip, fmt.Sprintf("%s/%d", ip.String(), ones), true
+}
+
+func isGuestAddress(ip net.IP) bool {
+	if ip.IsLoopback() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil && v4[3] == 0 {
+		return false
+	}
+	return true
 }
 
 func versionResult() map[string]any {

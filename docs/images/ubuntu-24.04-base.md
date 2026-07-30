@@ -81,4 +81,15 @@ cat /usr/lib/vzctl-agent/image-metadata.json
 ```
 
 Expected: `active`, user `vzctl-agent`, a non-zero PID, and a listener on
-port `21950`. Host-helper `hello`/command E2E deliberately remains #15.
+port `21950`.
+
+The full host↔guest proof boots an APFS clone, creates a per-VM NoCloud seed
+and exercises the protocol without SSH:
+
+```bash
+./scripts/smoke-helper-agent-e2e.sh \
+  artifacts/ubuntu-24.04-vzctl-base.raw
+```
+
+See [`p0-helper-agent-e2e.md`](../spikes/p0-helper-agent-e2e.md) for the
+required builder hand-off and current verification status.

@@ -192,14 +192,15 @@ export default function VzHypervisorImplementationsplan() {
       <Callout tone="success" title="P0 Ownership + Agent-Base">
         Epic #7 closed (#9 UDS/SQLite, #10 Helper+VZ, #11 Reconnect). Guest-Agent
         Spec #13 + Base #14 seal-ready (<Code>guest-agent/</Code>, vsock :21950).
-        Live Helper↔Agent E2E und Boot-Proof → #15.
+        Live Helper↔Agent E2E (#15) Unit/Client ✅; Live-Boot Residual.
+        Time-Sync → #16.
       </Callout>
 
       <Grid columns={4} gap={12}>
         <Stat value="26+" label="min. macOS" tone="success" />
         <Stat value="Go" label="G0 Gate" tone="success" />
         <Stat value="#7✓" label="Ownership" tone="success" />
-        <Stat value="#15" label="Agent E2E next" tone="info" />
+        <Stat value="#16" label="Time-Sync next" tone="info" />
       </Grid>
 
       <Stack gap={10}>
@@ -294,23 +295,19 @@ export default function VzHypervisorImplementationsplan() {
             </CardBody>
           </Card>
           <Card>
-            <CardHeader trailing={<Pill tone="success" size="sm" active>#13+#14</Pill>}>
+            <CardHeader trailing={<Pill tone="success" size="sm" active>#13–#15</Pill>}>
               vsock Guest-Agent
             </CardHeader>
             <CardBody>
               <Stack gap={6}>
                 <Text size="small" tone="secondary">
-                  Spec v1: <Code>docs/specs/guest-agent-v1.md</Code> · Port{" "}
-                  <Code>21950</Code>
+                  Spec v1 + Base + Helper-Client (exec/report_ip/timeouts)
                 </Text>
                 <Text size="small" tone="secondary">
-                  Base: static <Code>vzctl-agent</Code> + systemd vor Seal (#14)
+                  Port <Code>21950</Code> · Token <Code>0600</Code> · kein SSH Happy Path
                 </Text>
                 <Text size="small" tone="secondary">
-                  Boot-proof Min: hello / ping / version / health · exec/IP → #15
-                </Text>
-                <Text size="small" tone="secondary">
-                  Token nur NoCloud <Code>0600</Code> · SSH nur Fallback
+                  Live-Boot Residual (Base-Raw) · <Code>time_hint</Code> → #16
                 </Text>
               </Stack>
             </CardBody>
@@ -386,7 +383,7 @@ export default function VzHypervisorImplementationsplan() {
                   Kill -9: VM tot, Subnet verbrannt, frische CIDR OK
                 </Text>
                 <Text size="small" tone="secondary">
-                  ADR 0002+0003 ✓ · Helper+Reconnect ✓ · Agent-Base ✓ · E2E #15
+                  ADR 0002+0003 ✓ · Helper ✓ · Agent Spec/Base/E2E ✓ · #16 next
                 </Text>
                 <Text size="small" tone="secondary">
                   <Code>phase-d-crash.sh</Code> ·{" "}
@@ -688,10 +685,9 @@ vzctl docker …   &&   vzctl events subscribe   &&   vzctl doctor
           ]}
         />
         <Callout tone="info" title="Nächster Schritt">
-          #15 Helper↔Agent E2E: vsock-Client im Helper,{" "}
-          <Code>hello</Code>/<Code>ping</Code>/<Code>exec</Code>/
-          <Code>report_ip</Code>, Live-Boot-Proof der Agent-Base. Optional parallel:
-          doctor (#20).
+          #16 Guest-Agent Time-Sync nach Host-Sleep (
+          <Code>time_hint</Code> Clock-Set). Optional parallel: doctor (#20) oder
+          Live-Boot-Smoke sobald Base-Raw vom Builder da ist.
         </Callout>
       </Stack>
 

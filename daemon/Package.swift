@@ -32,5 +32,9 @@ let package = Package(
             name: "VzDaemonKitTests",
             dependencies: ["VzDaemonKit"]
         ),
+        .testTarget(
+            name: "VzHelperTests",
+            dependencies: ["VzHelper"]
+        ),
     ]
 )
