@@ -107,10 +107,7 @@ fn list(
     }
     match rpc(socket_path, "port.list", Value::Object(params)) {
         Ok(result) => {
-            let ports = result
-                .get("ports")
-                .cloned()
-                .unwrap_or_else(|| json!([]));
+            let ports = result.get("ports").cloned().unwrap_or_else(|| json!([]));
             match format {
                 Format::Human => {
                     if let Some(items) = ports.as_array() {
@@ -182,14 +179,13 @@ fn list(
 
 fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
     let mut stream = UnixStream::connect(socket_path).map_err(|error| {
-        Failure::new(EXIT_SUPERVISOR, format!("cannot connect to supervisor: {error}"))
+        Failure::new(
+            EXIT_SUPERVISOR,
+            format!("cannot connect to supervisor: {error}"),
+        )
     })?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -202,7 +198,9 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
     let mut line = String::new();
     BufReader::new(&stream)
         .read_line(&mut line)
-        .map_err(|error| Failure::new(EXIT_SUPERVISOR, format!("supervisor read failed: {error}")))?;
+        .map_err(|error| {
+            Failure::new(EXIT_SUPERVISOR, format!("supervisor read failed: {error}"))
+        })?;
     let response: Value = serde_json::from_str(&line).map_err(|error| {
         Failure::new(
             EXIT_SUPERVISOR,

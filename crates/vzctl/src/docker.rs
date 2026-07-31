@@ -87,9 +87,8 @@ fn write_ssh_config(state_dir: &Path, project: &str, private_key: &Path) -> Resu
         private_key.display(),
         directory.display()
     );
-    let mut file = File::create(&config_path).map_err(|error| {
-        format!("cannot write {}: {error}", config_path.display())
-    })?;
+    let mut file = File::create(&config_path)
+        .map_err(|error| format!("cannot write {}: {error}", config_path.display()))?;
     file.write_all(body.as_bytes())
         .map_err(|error| format!("cannot write {}: {error}", config_path.display()))?;
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).ok();
@@ -217,11 +216,9 @@ pub(crate) fn load_user_cloud_init(path: &Path) -> Result<YamlValue, String> {
 }
 
 pub(crate) fn render_user_data(config: &YamlValue) -> Result<String, String> {
-    let body = serde_yaml::to_string(config).map_err(|error| format!("cloud-init render: {error}"))?;
-    let body = body
-        .strip_prefix("---\n")
-        .unwrap_or(&body)
-        .to_string();
+    let body =
+        serde_yaml::to_string(config).map_err(|error| format!("cloud-init render: {error}"))?;
+    let body = body.strip_prefix("---\n").unwrap_or(&body).to_string();
     Ok(format!("#cloud-config\n{body}"))
 }
 
@@ -426,14 +423,10 @@ fn rpc(socket_path: &Path, method: &str, params: JsonValue) -> Result<JsonValue,
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    let mut stream = UnixStream::connect(socket_path)
-        .map_err(|error| format!("supervisor connect: {error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .ok();
+    let mut stream =
+        UnixStream::connect(socket_path).map_err(|error| format!("supervisor connect: {error}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,

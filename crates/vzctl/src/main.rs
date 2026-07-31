@@ -711,9 +711,8 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
         return Ok(existing);
     }
 
-    let (target, manifest, _manifest_path) =
-        image::prepare_alias_for_bake(&images, &options.alias)
-            .map_err(|error| SealFailure::new(EXIT_INVALID_INPUT, error))?;
+    let (target, manifest, _manifest_path) = image::prepare_alias_for_bake(&images, &options.alias)
+        .map_err(|error| SealFailure::new(EXIT_INVALID_INPUT, error))?;
     let canonical = manifest["canonical_alias"]
         .as_str()
         .unwrap_or(&options.alias)
@@ -721,9 +720,8 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
 
     let staging = build_agent_staging(&agent_version)?;
     let progress = io::stderr().is_terminal() && options.format == OutputFormat::Human;
-    let backend_kind = builder::select_backend_kind().map_err(|failure| {
-        SealFailure::new(failure.code, failure.message)
-    })?;
+    let backend_kind = builder::select_backend_kind()
+        .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
 
     match backend_kind {
         builder::ImageBackendKind::Local => {
@@ -780,7 +778,10 @@ fn build_agent_staging(agent_version: &str) -> Result<PathBuf, SealFailure> {
             .as_nanos()
     ));
     fs::create_dir_all(&staging).map_err(|error| {
-        SealFailure::new(EXIT_UNAVAILABLE, format!("cannot create bake staging: {error}"))
+        SealFailure::new(
+            EXIT_UNAVAILABLE,
+            format!("cannot create bake staging: {error}"),
+        )
     })?;
 
     let agent_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent");
@@ -834,9 +835,7 @@ fn build_agent_staging(agent_version: &str) -> Result<PathBuf, SealFailure> {
     .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
     fs::write(
         staging.join("image-metadata.json"),
-        format!(
-            "{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"
-        ),
+        format!("{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"),
     )
     .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
     Ok(staging)
@@ -2329,17 +2328,15 @@ fn prepare_cloud_init_seed(
 
     if roles.iter().any(|role| role == "docker") {
         let project = project.unwrap_or("default");
-        let (_, pubkey) = docker::ensure_ssh_keypair(&state_dir(), project).map_err(|error| {
-            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
-        })?;
+        let (_, pubkey) = docker::ensure_ssh_keypair(&state_dir(), project)
+            .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
         let include_engine = cloud_init.is_none();
         let docker_cfg = docker::docker_role_cloud_config(&pubkey, include_engine);
         let system_value = serde_yaml::Value::Mapping(system.clone());
         let mut merged = docker::merge_cloud_config(system_value, Some(docker_cfg));
         if let Some(path) = cloud_init {
-            let user = docker::load_user_cloud_init(path).map_err(|error| {
-                VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
-            })?;
+            let user = docker::load_user_cloud_init(path)
+                .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
             merged = docker::merge_cloud_config(merged, Some(user));
         }
         if let serde_yaml::Value::Mapping(ref mut map) = merged {
@@ -2372,9 +2369,8 @@ fn prepare_cloud_init_seed(
                 );
             }
         }
-        let user_data = docker::render_user_data(&merged).map_err(|error| {
-            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
-        })?;
+        let user_data = docker::render_user_data(&merged)
+            .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
         return write_cloud_init_iso(
             backend,
             &seed_directory,
@@ -2397,14 +2393,12 @@ fn prepare_cloud_init_seed(
     }
     let mut merged = serde_yaml::Value::Mapping(system);
     if let Some(path) = cloud_init {
-        let user = docker::load_user_cloud_init(path).map_err(|error| {
-            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
-        })?;
+        let user = docker::load_user_cloud_init(path)
+            .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
         merged = docker::merge_cloud_config(merged, Some(user));
     }
-    let user_data = docker::render_user_data(&merged).map_err(|error| {
-        VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
-    })?;
+    let user_data = docker::render_user_data(&merged)
+        .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
     write_cloud_init_iso(
         backend,
         &seed_directory,
@@ -2645,9 +2639,8 @@ impl ImageSealBackend for BuilderVmBackend {
         if self.progress {
             eprintln!("Resolving builder appliance…");
         }
-        let appliance = builder::resolve_builder_image(&self.images_dir).map_err(|failure| {
-            SealFailure::new(failure.code, failure.message)
-        })?;
+        let appliance = builder::resolve_builder_image(&self.images_dir)
+            .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
         let runbook = builder::seal_runbook();
         if self.progress {
             eprintln!("Sealing via builder VM (one boot)…");
@@ -4224,7 +4217,11 @@ mod tests {
         assert!(user_data.contains("disable_root: false"));
         assert!(user_data.contains("chpasswd:"));
         assert!(user_data.contains("name: root"));
-        assert!(user_data.contains("pass:word") || user_data.contains("'pass:word'") || user_data.contains("\"pass:word\""));
+        assert!(
+            user_data.contains("pass:word")
+                || user_data.contains("'pass:word'")
+                || user_data.contains("\"pass:word\"")
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

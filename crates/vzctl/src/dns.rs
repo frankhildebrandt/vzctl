@@ -537,7 +537,10 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         .set_read_timeout(timeout)
         .and_then(|_| stream.set_write_timeout(timeout))
         .map_err(|error| {
-            Failure::new(EXIT_SUPERVISOR, format!("supervisor timeout setup: {error}"))
+            Failure::new(
+                EXIT_SUPERVISOR,
+                format!("supervisor timeout setup: {error}"),
+            )
         })?;
     let request = json!({
         "jsonrpc": "2.0",
@@ -545,15 +548,12 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         "params": params,
         "id": 1,
     });
-    writeln!(stream, "{request}").map_err(|error| {
-        Failure::new(EXIT_SUPERVISOR, format!("supervisor request: {error}"))
-    })?;
+    writeln!(stream, "{request}")
+        .map_err(|error| Failure::new(EXIT_SUPERVISOR, format!("supervisor request: {error}")))?;
     let mut line = String::new();
     BufReader::new(stream)
         .read_line(&mut line)
-        .map_err(|error| {
-            Failure::new(EXIT_SUPERVISOR, format!("supervisor response: {error}"))
-        })?;
+        .map_err(|error| Failure::new(EXIT_SUPERVISOR, format!("supervisor response: {error}")))?;
     let response: Value = serde_json::from_str(&line).map_err(|error| {
         Failure::new(
             EXIT_SUPERVISOR,
@@ -1392,8 +1392,12 @@ mod tests {
 
     #[test]
     fn status_options_and_rpc() {
-        let options = parse(["status", "--format", "json"].into_iter().map(str::to_string))
-            .unwrap();
+        let options = parse(
+            ["status", "--format", "json"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
         assert_eq!(options.action, Action::Status);
         assert_eq!(options.format, Format::Json);
 

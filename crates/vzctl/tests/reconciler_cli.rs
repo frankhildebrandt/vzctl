@@ -61,7 +61,7 @@ fn plan_uses_cli_v1_envelope_and_is_read_only() {
     assert_eq!(envelope["apiVersion"], "vzctl.dev/v1");
     assert_eq!(envelope["command"], "plan");
     assert_eq!(envelope["status"], "ok");
-    assert_eq!(envelope["summary"]["actions"], 8);
+    assert_eq!(envelope["summary"]["actions"], 9);
     assert_eq!(envelope["actions"][0]["action"], "create");
 }
 

@@ -15,10 +15,8 @@ fn state_directory() -> PathBuf {
         .unwrap()
         .as_nanos();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = PathBuf::from("/private/tmp").join(format!(
-        "vzctl-vm-cli-{}-{nonce}-{seq}",
-        std::process::id()
-    ));
+    let path = PathBuf::from("/private/tmp")
+        .join(format!("vzctl-vm-cli-{}-{nonce}-{seq}", std::process::id()));
     fs::create_dir_all(path.join("vms")).unwrap();
     path
 }
@@ -302,7 +300,9 @@ fn vm_exec_inspect_services_and_guest_ps() {
     });
 
     let exec = Command::new(env!("CARGO_BIN_EXE_vzctl"))
-        .args(["vm", "exec", "web", "--format", "json", "--", "echo", "hello"])
+        .args([
+            "vm", "exec", "web", "--format", "json", "--", "echo", "hello",
+        ])
         .env("VZCTL_STATE_DIR", &state)
         .output()
         .unwrap();

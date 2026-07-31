@@ -137,10 +137,7 @@ fn run(args: impl Iterator<Item = String>, socket_path: &Path, ps_top_level: boo
         }
     };
     let command = options.command();
-    let follow_streamed = matches!(
-        options.operation,
-        Operation::Logs { follow: true, .. }
-    );
+    let follow_streamed = matches!(options.operation, Operation::Logs { follow: true, .. });
     match execute(&options, socket_path) {
         Ok(envelope) => {
             match options.format {
@@ -249,11 +246,7 @@ fn parse_stop(args: Vec<String>) -> Result<Options, Failure> {
         None => true,
         Some("true" | "1" | "yes") => true,
         Some("false" | "0" | "no") => false,
-        Some(other) => {
-            return Err(usage(format!(
-                "--wait requires true|false (got {other})"
-            )))
-        }
+        Some(other) => return Err(usage(format!("--wait requires true|false (got {other})"))),
     };
     // bare --wait without value is treated as presence via dedicated parse below
     Ok(Options {
@@ -331,9 +324,9 @@ fn parse_logs(args: Vec<String>) -> Result<Options, Failure> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| usage("--tail requires a line count"))?;
-                tail = value.parse::<usize>().map_err(|_| {
-                    usage(format!("invalid --tail value: {value}"))
-                })?;
+                tail = value
+                    .parse::<usize>()
+                    .map_err(|_| usage(format!("invalid --tail value: {value}")))?;
                 index += 2;
             }
             "--format" => {
@@ -642,10 +635,7 @@ fn validate_vm_id(id: &str) -> Result<(), Failure> {
     if crate::valid_vm_id(id) {
         Ok(())
     } else {
-        Err(Failure::new(
-            EXIT_INVALID,
-            format!("invalid VM id: {id}"),
-        ))
+        Err(Failure::new(EXIT_INVALID, format!("invalid VM id: {id}")))
     }
 }
 
@@ -907,7 +897,10 @@ fn delete_vm(id: &str, force: bool, socket_path: &Path) -> Result<Value, Failure
         Ok(snapshot) => {
             for attachment in snapshot["attachments"].as_array().into_iter().flatten() {
                 if attachment["vm_id"] == id {
-                    let network = attachment["network"].as_str().unwrap_or_default().to_string();
+                    let network = attachment["network"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
                     match rpc(
                         socket_path,
                         "net.detach",
@@ -925,10 +918,7 @@ fn delete_vm(id: &str, force: bool, socket_path: &Path) -> Result<Value, Failure
     }
 
     fs::remove_dir_all(&bundle).map_err(|error| {
-        Failure::new(
-            EXIT_VM_DISK,
-            format!("purge {}: {error}", bundle.display()),
-        )
+        Failure::new(EXIT_VM_DISK, format!("purge {}: {error}", bundle.display()))
     })?;
 
     Ok(json!({
@@ -1157,10 +1147,7 @@ fn exec_tty_vm(
         .as_str()
         .ok_or_else(|| Failure::new(EXIT_SUPERVISOR, "vm.exec_tty missing socket path"))?;
     let mut stream = UnixStream::connect(path).map_err(|error| {
-        Failure::new(
-            EXIT_SUPERVISOR,
-            format!("exec tty socket {path}: {error}"),
-        )
+        Failure::new(EXIT_SUPERVISOR, format!("exec tty socket {path}: {error}"))
     })?;
     eprintln!("attached to {id} exec tty (Ctrl-P Ctrl-Q to detach)");
     let mut resize = [0_u8; 4];
@@ -1325,9 +1312,7 @@ fn mux_tty_session(stream: &mut UnixStream) -> Result<u8, Failure> {
     Ok(exit_code)
 }
 
-fn read_mux_frame_nonblocking(
-    stream: &mut UnixStream,
-) -> Result<Option<(u8, Vec<u8>)>, Failure> {
+fn read_mux_frame_nonblocking(stream: &mut UnixStream) -> Result<Option<(u8, Vec<u8>)>, Failure> {
     use std::io::Read;
     let mut header = [0_u8; 5];
     match stream.read_exact(&mut header) {
@@ -1337,10 +1322,7 @@ fn read_mux_frame_nonblocking(
             return Err(Failure::new(EXIT_SUPERVISOR, "mux connection closed"));
         }
         Err(error) => {
-            return Err(Failure::new(
-                EXIT_SUPERVISOR,
-                format!("mux read: {error}"),
-            ));
+            return Err(Failure::new(EXIT_SUPERVISOR, format!("mux read: {error}")));
         }
     }
     let length = u32::from_le_bytes(header[1..5].try_into().unwrap()) as usize;
@@ -1382,7 +1364,8 @@ fn transfer_vm(
                     ),
                 ));
             }
-            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             let result = rpc(
                 socket_path,
                 "vm.exec",
@@ -1393,7 +1376,8 @@ fn transfer_vm(
                     "stdin_b64": encoded,
                 }),
             )?;
-            if result["exit"].as_u64().unwrap_or(1) != 0 || result["truncated"].as_bool().unwrap_or(false)
+            if result["exit"].as_u64().unwrap_or(1) != 0
+                || result["truncated"].as_bool().unwrap_or(false)
             {
                 return Err(Failure::new(
                     EXIT_GUEST,
@@ -1437,11 +1421,10 @@ fn transfer_vm(
                 ));
             }
             let encoded = result["stdout"].as_str().unwrap_or("").trim();
-            let bytes = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                encoded,
-            )
-            .map_err(|error| Failure::new(EXIT_GUEST, format!("invalid guest base64: {error}")))?;
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                .map_err(|error| {
+                    Failure::new(EXIT_GUEST, format!("invalid guest base64: {error}"))
+                })?;
             if bytes.len() > TRANSFER_MAX_BYTES {
                 return Err(Failure::new(
                     EXIT_UNAVAILABLE,
@@ -1502,11 +1485,7 @@ fn transfer_envelope(id: &str, direction: &str, src: &str, dst: &str, bytes: usi
     })
 }
 
-fn services_vm(
-    id: &str,
-    action: &ServicesAction,
-    socket_path: &Path,
-) -> Result<Value, Failure> {
+fn services_vm(id: &str, action: &ServicesAction, socket_path: &Path) -> Result<Value, Failure> {
     let cmd = match action {
         ServicesAction::List => vec![
             "systemctl".to_string(),
@@ -1522,11 +1501,7 @@ fn services_vm(
             vec!["systemctl".to_string(), "stop".to_string(), unit.clone()]
         }
         ServicesAction::Restart(unit) => {
-            vec![
-                "systemctl".to_string(),
-                "restart".to_string(),
-                unit.clone(),
-            ]
+            vec!["systemctl".to_string(), "restart".to_string(), unit.clone()]
         }
     };
     let envelope = exec_vm(id, &cmd, None, &BTreeMap::new(), 30_000, socket_path)?;
@@ -1679,10 +1654,7 @@ fn read_serial_tail(path: &Path, tail: usize) -> Result<(Vec<String>, usize), Fa
             format!("cannot read serial log {}: {error}", path.display()),
         )
     })?;
-    let all: Vec<(String, bool)> = content
-        .lines()
-        .map(|line| redact_log_line(line))
-        .collect();
+    let all: Vec<(String, bool)> = content.lines().map(|line| redact_log_line(line)).collect();
     let start = all.len().saturating_sub(tail);
     let mut redacted = 0usize;
     let lines = all[start..]
@@ -1750,8 +1722,7 @@ fn follow_serial_log(path: &Path) -> Result<(), Failure> {
 
 fn redact_log_line(line: &str) -> (String, bool) {
     let lower = line.to_ascii_lowercase();
-    if lower.contains("password") || lower.contains("chpasswd") || lower.contains("root_password")
-    {
+    if lower.contains("password") || lower.contains("chpasswd") || lower.contains("root_password") {
         ("[redacted]".to_string(), true)
     } else {
         (line.to_string(), false)
@@ -1790,9 +1761,12 @@ fn state_file_component(value: &str) -> String {
         })
         .take(64)
         .collect();
-    let hash = value.as_bytes().iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    });
+    let hash = value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
     format!("{prefix}-{hash:x}")
 }
 
@@ -1856,10 +1830,7 @@ fn raw_console_session(stream: &mut UnixStream) -> Result<(), Failure> {
                     if consume_console_stdin(&mut detach, &input[..count], &mut forward) {
                         if !forward.is_empty() {
                             stream.write_all(&forward).map_err(|error| {
-                                Failure::new(
-                                    EXIT_SUPERVISOR,
-                                    format!("console write: {error}"),
-                                )
+                                Failure::new(EXIT_SUPERVISOR, format!("console write: {error}"))
                             })?;
                         }
                         break;
@@ -2010,12 +1981,10 @@ fn read_manifest(bundle: &Path) -> Result<Value, Failure> {
 }
 
 fn read_manifest_file(path: &Path) -> Result<Value, Failure> {
-    let bytes = fs::read(path).map_err(|error| {
-        Failure::new(EXIT_VM_DISK, format!("read {}: {error}", path.display()))
-    })?;
-    serde_json::from_slice(&bytes).map_err(|error| {
-        Failure::new(EXIT_VM_DISK, format!("parse {}: {error}", path.display()))
-    })
+    let bytes = fs::read(path)
+        .map_err(|error| Failure::new(EXIT_VM_DISK, format!("read {}: {error}", path.display())))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| Failure::new(EXIT_VM_DISK, format!("parse {}: {error}", path.display())))
 }
 
 fn wait_stopped(vm_id: &str, socket_path: &Path) -> Result<(), Failure> {
@@ -2051,7 +2020,10 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         .set_read_timeout(timeout)
         .and_then(|_| stream.set_write_timeout(timeout))
         .map_err(|error| {
-            Failure::new(EXIT_SUPERVISOR, format!("supervisor timeout setup: {error}"))
+            Failure::new(
+                EXIT_SUPERVISOR,
+                format!("supervisor timeout setup: {error}"),
+            )
         })?;
     let request = json!({
         "jsonrpc": "2.0",
@@ -2059,15 +2031,12 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         "params": params,
         "id": 1,
     });
-    writeln!(stream, "{request}").map_err(|error| {
-        Failure::new(EXIT_SUPERVISOR, format!("supervisor request: {error}"))
-    })?;
+    writeln!(stream, "{request}")
+        .map_err(|error| Failure::new(EXIT_SUPERVISOR, format!("supervisor request: {error}")))?;
     let mut line = String::new();
     BufReader::new(stream)
         .read_line(&mut line)
-        .map_err(|error| {
-            Failure::new(EXIT_SUPERVISOR, format!("supervisor response: {error}"))
-        })?;
+        .map_err(|error| Failure::new(EXIT_SUPERVISOR, format!("supervisor response: {error}")))?;
     let response: Value = serde_json::from_str(&line).map_err(|error| {
         Failure::new(
             EXIT_SUPERVISOR,
@@ -2085,29 +2054,27 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         } else {
             EXIT_VM_OP
         };
-        return Err(Failure::new(
-            code,
+        return Err(Failure::new(code, {
+            let message = error["message"]
+                .as_str()
+                .unwrap_or("VM operation failed")
+                .to_string();
+            if message == "Method not found"
+                && (method == "vm.exec" || method.starts_with("vm.agent."))
             {
-                let message = error["message"]
-                    .as_str()
-                    .unwrap_or("VM operation failed")
-                    .to_string();
-                if message == "Method not found"
-                    && (method == "vm.exec" || method.starts_with("vm.agent."))
-                {
-                    format!(
-                        "helper does not support {method}; restart the VM \
+                format!(
+                    "helper does not support {method}; restart the VM \
                          (`vzctl vm stop <id> && vzctl vm start <id>`) after upgrading vz-helper"
-                    )
-                } else {
-                    message
-                }
-            },
-        ));
+                )
+            } else {
+                message
+            }
+        }));
     }
-    response.get("result").cloned().ok_or_else(|| {
-        Failure::new(EXIT_SUPERVISOR, "supervisor response has no result")
-    })
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| Failure::new(EXIT_SUPERVISOR, "supervisor response has no result"))
 }
 
 fn print_human(command: &str, envelope: &Value) {
@@ -2154,9 +2121,7 @@ fn print_human(command: &str, envelope: &Value) {
         "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" => {
             println!(
                 "{}",
-                envelope["summary"]["message"]
-                    .as_str()
-                    .unwrap_or(command)
+                envelope["summary"]["message"].as_str().unwrap_or(command)
             );
         }
         "vm.inspect" => {
@@ -2232,7 +2197,10 @@ fn print_human(command: &str, envelope: &Value) {
         }
         "vm.ps" => {
             if let Some(processes) = envelope["processes"].as_array() {
-                println!("{:<8} {:<12} {:<6} {:<6} {}", "PID", "USER", "%CPU", "%MEM", "ARGS");
+                println!(
+                    "{:<8} {:<12} {:<6} {:<6} {}",
+                    "PID", "USER", "%CPU", "%MEM", "ARGS"
+                );
                 for process in processes {
                     if let Some(raw) = process["raw"].as_str() {
                         println!("{raw}");
@@ -2297,10 +2265,8 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = PathBuf::from("/private/tmp").join(format!(
-            "vzctl-vm-{}-{nonce}-{seq}",
-            std::process::id()
-        ));
+        let path = PathBuf::from("/private/tmp")
+            .join(format!("vzctl-vm-{}-{nonce}-{seq}", std::process::id()));
         fs::create_dir_all(path.join("vms")).unwrap();
         path
     }
@@ -2323,18 +2289,16 @@ mod tests {
 
     #[test]
     fn parse_lifecycle_commands() {
-        let list = parse(["list".into(), "--format".into(), "json".into()].into_iter(), false)
-            .unwrap();
+        let list = parse(
+            ["list".into(), "--format".into(), "json".into()].into_iter(),
+            false,
+        )
+        .unwrap();
         assert_eq!(list.operation, Operation::List);
         assert_eq!(list.format, Format::Json);
 
         let start = parse(["start".into(), "web".into()].into_iter(), false).unwrap();
-        assert_eq!(
-            start.operation,
-            Operation::Start {
-                id: "web".into()
-            }
-        );
+        assert_eq!(start.operation, Operation::Start { id: "web".into() });
 
         let stop = parse(
             ["stop".into(), "web".into(), "--wait".into(), "false".into()].into_iter(),
@@ -2603,13 +2567,7 @@ mod tests {
             }
         );
         let err = parse(
-            [
-                "exec".into(),
-                "web".into(),
-                "-i".into(),
-                "bash".into(),
-            ]
-            .into_iter(),
+            ["exec".into(), "web".into(), "-i".into(), "bash".into()].into_iter(),
             false,
         )
         .unwrap_err();
@@ -2684,11 +2642,7 @@ mod tests {
         fs::create_dir_all(&logs).unwrap();
         write_bundle(&state, "web", &[]);
         let path = logs.join(format!("{}.serial.log", state_file_component("web")));
-        fs::write(
-            &path,
-            "line1\npassword=secret\nline3\nline4\n",
-        )
-        .unwrap();
+        fs::write(&path, "line1\npassword=secret\nline3\nline4\n").unwrap();
 
         std::env::set_var("VZCTL_STATE_DIR", &state);
         std::env::set_var("VZCTL_LOGS_DIR", &logs);
@@ -2699,10 +2653,7 @@ mod tests {
 
         assert_eq!(envelope["command"], "vm.logs");
         assert_eq!(envelope["status"], "ok");
-        assert_eq!(
-            envelope["lines"],
-            json!(["[redacted]", "line3", "line4"])
-        );
+        assert_eq!(envelope["lines"], json!(["[redacted]", "line3", "line4"]));
         assert_eq!(envelope["summary"]["redacted"], 1);
         assert_eq!(envelope["log"]["path"], path.display().to_string());
     }

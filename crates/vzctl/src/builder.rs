@@ -107,10 +107,7 @@ pub fn resolve_builder_image(images_dir: &Path) -> Result<PathBuf, BuilderFailur
         }
         return Err(BuilderFailure::new(
             12,
-            format!(
-                "VZCTL_BUILDER_IMAGE is not a file: {}",
-                path.display()
-            ),
+            format!("VZCTL_BUILDER_IMAGE is not a file: {}", path.display()),
         ));
     }
     let cached = builder_image_path(images_dir);
@@ -136,7 +133,10 @@ fn verify_cached_sha256(path: &Path) -> Result<(), BuilderFailure> {
     }
     let expected = fs::read_to_string(&digest_path)
         .map_err(|error| {
-            BuilderFailure::new(12, format!("cannot read {}: {error}", digest_path.display()))
+            BuilderFailure::new(
+                12,
+                format!("cannot read {}: {error}", digest_path.display()),
+            )
         })?
         .split_whitespace()
         .next()
@@ -224,10 +224,7 @@ pub fn parse_builder_result_line(line: &str) -> Option<BuilderResult> {
             .get("message")
             .and_then(Value::as_str)
             .map(str::to_string),
-        op: value
-            .get("op")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        op: value.get("op").and_then(Value::as_str).map(str::to_string),
     })
 }
 
@@ -416,31 +413,31 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
             "--vm-id",
             &vm_id,
             "--bundle",
-            bundle.to_str().ok_or_else(|| {
-                BuilderFailure::new(12, "builder bundle path is not UTF-8")
-            })?,
+            bundle
+                .to_str()
+                .ok_or_else(|| BuilderFailure::new(12, "builder bundle path is not UTF-8"))?,
             "--disk",
-            disk.to_str().ok_or_else(|| {
-                BuilderFailure::new(12, "builder disk path is not UTF-8")
-            })?,
+            disk.to_str()
+                .ok_or_else(|| BuilderFailure::new(12, "builder disk path is not UTF-8"))?,
             "--data-disk",
-            data_disk.to_str().ok_or_else(|| {
-                BuilderFailure::new(12, "builder data-disk path is not UTF-8")
-            })?,
+            data_disk
+                .to_str()
+                .ok_or_else(|| BuilderFailure::new(12, "builder data-disk path is not UTF-8"))?,
             "--cidata",
-            cidata.to_str().ok_or_else(|| {
-                BuilderFailure::new(12, "builder cidata path is not UTF-8")
-            })?,
+            cidata
+                .to_str()
+                .ok_or_else(|| BuilderFailure::new(12, "builder cidata path is not UTF-8"))?,
             "--supervisor-sock",
-            state.join("missing.sock").to_str().unwrap_or("/tmp/vzb-missing.sock"),
+            state
+                .join("missing.sock")
+                .to_str()
+                .unwrap_or("/tmp/vzb-missing.sock"),
         ])
         .env("VZCTL_STATE_DIR", &state)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            BuilderFailure::new(12, format!("cannot start vz-helper: {error}"))
-        })?;
+        .map_err(|error| BuilderFailure::new(12, format!("cannot start vz-helper: {error}")))?;
 
     let result = match wait_for_result(&mut child, &vm_id, options.timeout) {
         Ok(result) => {
@@ -467,16 +464,13 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
     if !result.ok {
         return Err(BuilderFailure::new(
             result.exit,
-            result
-                .message
-                .clone()
-                .unwrap_or_else(|| {
-                    format!(
-                        "builder {} failed in phase {}",
-                        options.runbook.op,
-                        result.phase.as_deref().unwrap_or("unknown")
-                    )
-                }),
+            result.message.clone().unwrap_or_else(|| {
+                format!(
+                    "builder {} failed in phase {}",
+                    options.runbook.op,
+                    result.phase.as_deref().unwrap_or("unknown")
+                )
+            }),
         ));
     }
     Ok(result)
@@ -500,7 +494,10 @@ fn wait_for_result(
         if started.elapsed() > timeout {
             return Err(BuilderFailure::new(
                 13,
-                format!("builder timed out after {}s waiting for result marker", timeout.as_secs()),
+                format!(
+                    "builder timed out after {}s waiting for result marker",
+                    timeout.as_secs()
+                ),
             ));
         }
 
@@ -655,8 +652,7 @@ fn helper_path() -> Result<PathBuf, BuilderFailure> {
     if let Ok(path) = which("vz-helper") {
         return Ok(path);
     }
-    let local = dirs_home()
-        .join(".local/bin/vz-helper");
+    let local = dirs_home().join(".local/bin/vz-helper");
     if local.is_file() {
         return Ok(local);
     }
@@ -724,7 +720,11 @@ fn write_seed(
                 )
             })?;
             let b64 = base64_encode(&bytes);
-            let mode = if name == "vzctl-agent" { "0755" } else { "0644" };
+            let mode = if name == "vzctl-agent" {
+                "0755"
+            } else {
+                "0644"
+            };
             write_files.push_str(&format!(
                 "  - path: /var/lib/vzctl-builder/staging/{name}\n    permissions: '{mode}'\n    encoding: b64\n    content: {b64}\n"
             ));
@@ -738,9 +738,7 @@ fn write_seed(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let user_data = format!(
-        "#cloud-config\nwrite_files:\n{write_files}runcmd:\n{runcmd}\n"
-    );
+    let user_data = format!("#cloud-config\nwrite_files:\n{write_files}runcmd:\n{runcmd}\n");
     fs::write(seed.join("user-data"), user_data).map_err(io_err)?;
     // Empty network-config keeps cloud-init happy without DHCP waits when NAT is present.
     fs::write(seed.join("network-config"), "version: 2\n").map_err(io_err)?;
@@ -794,9 +792,7 @@ fn create_cidata_iso(seed: &Path, destination: &Path) -> Result<(), BuilderFailu
         .arg(destination)
         .arg(seed)
         .output()
-        .map_err(|error| {
-            BuilderFailure::new(12, format!("cannot start hdiutil: {error}"))
-        })?;
+        .map_err(|error| BuilderFailure::new(12, format!("cannot start hdiutil: {error}")))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -817,9 +813,7 @@ fn copy_or_clone(source: &Path, destination: &Path) -> Result<(), BuilderFailure
             return Ok(());
         }
     }
-    fs::copy(source, destination)
-        .map(|_| ())
-        .map_err(io_err)
+    fs::copy(source, destination).map(|_| ()).map_err(io_err)
 }
 
 fn link_or_copy(source: &Path, destination: &Path) -> Result<(), BuilderFailure> {
@@ -832,9 +826,7 @@ fn link_or_copy(source: &Path, destination: &Path) -> Result<(), BuilderFailure>
     if fs::hard_link(source, destination).is_ok() {
         return Ok(());
     }
-    fs::copy(source, destination)
-        .map(|_| ())
-        .map_err(io_err)
+    fs::copy(source, destination).map(|_| ()).map_err(io_err)
 }
 
 #[cfg(target_os = "macos")]
@@ -987,7 +979,9 @@ mod tests {
     fn runbooks_mount_target_disk_directly() {
         let bake = bake_runbook("/mnt/staging");
         assert!(
-            bake.commands.iter().any(|c| c.contains("mount") && c.contains("/mnt/target")),
+            bake.commands
+                .iter()
+                .any(|c| c.contains("mount") && c.contains("/mnt/target")),
             "bake runbook should mount the target root directly"
         );
         assert!(
@@ -1009,7 +1003,9 @@ mod tests {
         );
         let seal = seal_runbook();
         assert!(
-            seal.commands.iter().any(|c| c.contains("mount") && c.contains("/mnt/target")),
+            seal.commands
+                .iter()
+                .any(|c| c.contains("mount") && c.contains("/mnt/target")),
             "seal runbook should mount the target root directly"
         );
         assert!(
@@ -1026,7 +1022,9 @@ mod tests {
             "seal must be a single runcmd to avoid false-success markers"
         );
         assert!(
-            bake.commands.iter().any(|c| c.contains("vzctl-agent.openrc")),
+            bake.commands
+                .iter()
+                .any(|c| c.contains("vzctl-agent.openrc")),
             "bake must install OpenRC unit for Alpine"
         );
     }

@@ -1128,7 +1128,10 @@ mod tests {
         assert_eq!(environment.spec.vms["web"].cpus, Some(2));
         assert_eq!(environment.spec.vms["web"].memory.as_deref(), Some("2Gi"));
         assert_eq!(environment.spec.ports.len(), 1);
-        assert_eq!(environment.spec.vms["web"].ports, vec!["8080:80".to_string()]);
+        assert_eq!(
+            environment.spec.vms["web"].ports,
+            vec!["8080:80".to_string()]
+        );
         assert!(environment.spec.vms["docker"]
             .roles
             .iter()
@@ -1185,8 +1188,12 @@ spec:
       ports: ["8080:80"]
 "#;
         let issues = validate_source(source).unwrap_err();
-        assert!(issues.iter().any(|issue| issue.message.contains("unsupported VM role")));
-        assert!(issues.iter().any(|issue| issue.message.contains("collides")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("unsupported VM role")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("collides")));
     }
 
     #[test]

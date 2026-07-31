@@ -319,7 +319,13 @@ fn execute_step(
         "ensure_nets" => ensure_networks(environment, options.force, socket_path),
         "ensure_dns" => ensure_dns(environment, &options.config),
         "ensure_images" => ensure_images(environment),
-        "ensure_vms" => ensure_vms(environment, options.force, plan, &options.config, socket_path),
+        "ensure_vms" => ensure_vms(
+            environment,
+            options.force,
+            plan,
+            &options.config,
+            socket_path,
+        ),
         "attach_nets" => {
             ensure_attachments(environment, options.mode, socket_path)?;
             prune_networks(environment, options.mode, plan, socket_path)
@@ -520,10 +526,7 @@ fn ensure_vms(
             }
         }
         if vm.roles.iter().any(|role| role == "docker") {
-            owned.extend([
-                "--project".to_string(),
-                environment.spec.project.clone(),
-            ]);
+            owned.extend(["--project".to_string(), environment.spec.project.clone()]);
         }
         if let Some(cloud_init) = &vm.cloud_init {
             let path = if Path::new(cloud_init).is_absolute() {
@@ -542,7 +545,6 @@ fn ensure_vms(
     }
     Ok(())
 }
-
 
 fn ensure_attachments(
     environment: &Environment,
@@ -777,9 +779,8 @@ fn ensure_docker_context(environment: &Environment) -> Result<(), Failure> {
     if !has_docker {
         return Ok(());
     }
-    crate::docker::ensure_context(&environment.spec.project, &crate::state_dir(), None).map_err(
-        |error| Failure::new(EXIT_STEP, format!("docker context: {error}")),
-    )?;
+    crate::docker::ensure_context(&environment.spec.project, &crate::state_dir(), None)
+        .map_err(|error| Failure::new(EXIT_STEP, format!("docker context: {error}")))?;
     Ok(())
 }
 
@@ -820,7 +821,10 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
     }
 
     let snapshot = rpc(socket_path, "net.list", json!({}))?;
-    let attachments = snapshot["attachments"].as_array().cloned().unwrap_or_default();
+    let attachments = snapshot["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut desired = Vec::new();
     for forward in forwards {
         let guest_ip = attachments
@@ -1361,8 +1365,7 @@ fn adopt_report(
             }
             let labels = &manifest["labels"];
             let matches_stack = labels["stack_id"].as_str() == Some(stack_id)
-                || (labels["project"].as_str() == Some(project)
-                    && candidates.contains(&name));
+                || (labels["project"].as_str() == Some(project) && candidates.contains(&name));
             if matches_stack || candidates.contains(&name) {
                 candidates.insert(name);
             }
@@ -1378,12 +1381,7 @@ fn adopt_report(
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|record| {
-            matches!(
-                record["state"].as_str(),
-                Some("starting") | Some("running")
-            )
-        })
+        .filter(|record| matches!(record["state"].as_str(), Some("starting") | Some("running")))
         .filter_map(|record| record["vm_id"].as_str().map(str::to_string))
         .collect();
 
