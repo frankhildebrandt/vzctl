@@ -89,7 +89,7 @@ pub(crate) fn render(
         }
 
         blocks.push_str(&format!(
-            "https://{} {{\n\ttls {} {}\n\treverse_proxy {}\n}}\n\n",
+            "https://{} {{\n\ttls \"{}\" \"{}\"\n\treverse_proxy {}\n}}\n\n",
             site_hosts.join(", "),
             cert.display(),
             key.display(),
