@@ -19,7 +19,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | P3 — Stacks | hypernetwork reconcile | **complete** (#34 closed; #36/#37/#38/#52 ✅) |
 | P4 — Docker + Ports | SSH Context, Ports basic | **complete** (#39 closed; #40/#41 ✅; #42 virtiofs → v0.1.x) |
 | v0.1.x — Polish | virtiofs, Docker polish | **#42 virtiofs landed**; Docker polish residual |
-| v0.2 — Ingress/OIDC/CA | Caddy, Dex, CA, Tauri | open |
+| v0.2 — Ingress/OIDC/CA | Caddy, Dex, CA, Tauri | **complete** (#43 closed; #44–#47 ✅; polish #54) |
 
 ## Epics
 
@@ -34,7 +34,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | **implementation complete** (#31/#32/#51/#33 ✅) |
 | [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | **closed** (#36/#37/#38/#52 ✅; adopt report-only; reclaim deferred) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Docker Context + Ports | P4 | **closed** (#40/#41 ✅; #42 deferred v0.1.x) |
-| [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | **implementation landed** (#44–#47 code on `feat/v02-ingress-oidc`) |
+| [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | **closed** (#44–#47 ✅; UI polish → #54) |
 | [#48](https://github.com/frankhildebrandt/vzctl/issues/48) | DX Logs / Docs | P1 | Alpha `vm logs` (#49) ✅; v0.1.x Diagnose residual |
 
 ## Closed Gates / ADRs
@@ -97,6 +97,17 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#40](https://github.com/frankhildebrandt/vzctl/issues/40) | Docker VM role + SSH context + `vzctl docker` | **complete** (cloudInit merge, DNS svc, purge/doctor) |
 | [#41](https://github.com/frankhildebrandt/vzctl/issues/41) | Port-Forwards + Collision-Check | **complete** (Supervisor userspace proxy, `port list`) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Epic Docker Context + Ports | **closed** (Alpha DoD; virtiofs #42 out) |
+
+## v0.2 Ingress / CA / OIDC / Tauri
+
+| # | Story | Status |
+|---|---|---|
+| [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | Epic v0.2 | **closed** (PR #53) |
+| [#44](https://github.com/frankhildebrandt/vzctl/issues/44) | Caddy Ingress | **closed** |
+| [#45](https://github.com/frankhildebrandt/vzctl/issues/45) | Local CA + Guest rollout | **closed** |
+| [#46](https://github.com/frankhildebrandt/vzctl/issues/46) | Dex OIDC + clients:auto | **closed** |
+| [#47](https://github.com/frankhildebrandt/vzctl/issues/47) | Tauri UI Alpha | **closed** (CLI wrapper + events) |
+| [#54](https://github.com/frankhildebrandt/vzctl/issues/54) | Tauri UI polish (topology/purge/deeplink/land WT) | **open** |
 
 ## Label-Schema
 
