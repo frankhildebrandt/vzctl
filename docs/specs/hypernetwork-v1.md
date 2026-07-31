@@ -53,6 +53,13 @@ Validate-Fehler. Unbekannte Felder werden abgewiesen. Das exportierte Schema ist
 JSON Schema Draft 7 und hat die ID
 `https://vzctl.dev/schemas/hypernetwork-v1.schema.json`.
 
+virtiofs-Mounts (siehe [virtiofs-v1.md](virtiofs-v1.md)):
+
+- Stack: `spec.volumes` — Map `name → Hostpfad` (relativ zur Config-Datei oder absolut)
+- VM: `spec.vms.*.mounts` — `{ source: <volume>, target: /abs/path, readOnly?: false }`
+- Volume-Namen: 1–36 Zeichen `[A-Za-z0-9][A-Za-z0-9_-]*`, Tag `vzctl` ist reserviert
+- Targets absolut und unique pro VM; `source` muss ein bekanntes Volume referenzieren
+
 ## Semantische Regeln
 
 - Image-, Network-, Route-, Policy- und VM-Referenzen müssen existieren.

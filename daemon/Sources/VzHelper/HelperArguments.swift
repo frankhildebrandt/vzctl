@@ -20,6 +20,7 @@ struct RunOptions: Sendable {
     let cpuCount: Int
     let memorySize: UInt64
     let agentTokenURL: URL
+    let mounts: [VirtioFSMountSpec]
     let timeHintReason: AgentTimeHintReason?
     let mock: Bool
     let stateDirectory: URL
@@ -107,6 +108,8 @@ enum HelperArguments {
         } else {
             timeHintReason = nil
         }
+        let mounts = try VirtioFSShare.loadManifestMounts(bundleURL: bundleURL)
+        try VirtioFSShare.ensureHostDirectories(mounts)
 
         return RunOptions(
             vmID: vmID,
@@ -119,6 +122,7 @@ enum HelperArguments {
             cpuCount: resources.cpuCount,
             memorySize: resources.memorySize,
             agentTokenURL: agentTokenURL,
+            mounts: mounts,
             timeHintReason: timeHintReason,
             mock: values["--mock"] != nil,
             stateDirectory: stateDirectory

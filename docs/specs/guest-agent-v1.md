@@ -168,6 +168,13 @@ a `rotate_token` method are not part of v1.
 | `report_ip` | `{}` | `interfaces` array | 2 s / 10 s |
 | `health` | `{}` | `status`, `uptime_ms`, `checks` | 2 s / 10 s |
 | `time_hint` | `host_unix_ms`, `reason` | `observed_guest_unix_ms`, `offset_ms`, `action` | 2 s / 5 s |
+| `fs.mount` | `name`, `target`, optional `read_only` | `mounted: true`, `name`, `target` | 10 s / 30 s |
+| `fs.unmount` | `name` and/or `target` | `mounted: false`, `name`, `target` | 10 s / 30 s |
+
+Capability `fs_mount` advertises the virtiofs bind helpers. The agent invokes
+`/usr/local/lib/vzctl/virtiofs-bind` via `sudo -n` (installed by system
+NoCloud); it does **not** hold `CAP_SYS_ADMIN` itself. See
+[virtiofs-v1.md](virtiofs-v1.md).
 
 All time values are integer milliseconds. A caller may choose a shorter
 deadline. Values above the maximum return `proto`; zero and negative values are

@@ -14,6 +14,7 @@
     "bundle": "/state/vms/web",
     "managed-by": "vzctl",
     "roles": [],
+    "mounts": [],
     "resources": {
       "cpus": 2,
       "memory_mib": 1024

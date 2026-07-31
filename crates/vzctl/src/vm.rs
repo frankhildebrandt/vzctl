@@ -73,6 +73,21 @@ enum Operation {
         follow: bool,
         tail: usize,
     },
+    Mount {
+        id: String,
+        source: PathBuf,
+        target: String,
+        name: Option<String>,
+        read_only: bool,
+    },
+    Unmount {
+        id: String,
+        target: Option<String>,
+        name: Option<String>,
+    },
+    Mounts {
+        id: String,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -175,6 +190,9 @@ impl Options {
             Operation::Services { .. } => "vm.services",
             Operation::GuestPs { .. } => "vm.ps",
             Operation::Logs { .. } => "vm.logs",
+            Operation::Mount { .. } => "vm.mount",
+            Operation::Unmount { .. } => "vm.unmount",
+            Operation::Mounts { .. } => "vm.mounts",
         }
     }
 }
@@ -186,7 +204,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
             usage(if ps_top_level {
                 "usage: vzctl ps [--format human|json]"
             } else {
-                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps ..."
+                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts ..."
             })
         })?;
     let rest = args.collect::<Vec<_>>();
@@ -203,6 +221,9 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
         "transfer" if !ps_top_level => parse_transfer(rest),
         "attach" if !ps_top_level => parse_attach(rest),
         "services" if !ps_top_level => parse_services(rest),
+        "mount" if !ps_top_level => parse_mount(rest),
+        "unmount" if !ps_top_level => parse_unmount(rest),
+        "mounts" if !ps_top_level => parse_mounts_list(rest),
         other => Err(usage(if ps_top_level {
             format!("unknown ps option: {other}")
         } else {
@@ -305,6 +326,120 @@ fn parse_inspect(args: Vec<String>) -> Result<Options, Failure> {
         operation: Operation::Inspect { id },
         format,
     })
+}
+
+fn parse_mount(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm mount requires a VM id")?;
+    validate_vm_id(&id)?;
+    let mut format = Format::Human;
+    let mut source = None;
+    let mut target = None;
+    let mut name = None;
+    let mut read_only = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source" => {
+                source = Some(PathBuf::from(require_value(&args, &mut index, "--source")?));
+            }
+            "--target" => {
+                target = Some(require_value(&args, &mut index, "--target")?);
+            }
+            "--tag" | "--name" => {
+                name = Some(require_value(&args, &mut index, "--tag")?);
+            }
+            "--ro" | "--read-only" => {
+                read_only = true;
+                index += 1;
+            }
+            "--format" => {
+                format = parse_format_value(&require_value(&args, &mut index, "--format")?)?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("unknown vm mount option: {other}")));
+            }
+            other => {
+                return Err(usage(format!("unexpected vm mount argument: {other}")));
+            }
+        }
+    }
+    let source = source.ok_or_else(|| usage("vm mount requires --source PATH"))?;
+    let target = target.ok_or_else(|| usage("vm mount requires --target PATH"))?;
+    Ok(Options {
+        operation: Operation::Mount {
+            id,
+            source,
+            target,
+            name,
+            read_only,
+        },
+        format,
+    })
+}
+
+fn parse_unmount(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm unmount requires a VM id")?;
+    validate_vm_id(&id)?;
+    let mut format = Format::Human;
+    let mut target = None;
+    let mut name = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--target" => {
+                target = Some(require_value(&args, &mut index, "--target")?);
+            }
+            "--tag" | "--name" => {
+                name = Some(require_value(&args, &mut index, "--tag")?);
+            }
+            "--format" => {
+                format = parse_format_value(&require_value(&args, &mut index, "--format")?)?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("unknown vm unmount option: {other}")));
+            }
+            other => {
+                return Err(usage(format!("unexpected vm unmount argument: {other}")));
+            }
+        }
+    }
+    if target.is_none() && name.is_none() {
+        return Err(usage("vm unmount requires --target or --tag"));
+    }
+    Ok(Options {
+        operation: Operation::Unmount { id, target, name },
+        format,
+    })
+}
+
+fn parse_mounts_list(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm mounts requires a VM id")?;
+    validate_vm_id(&id)?;
+    let (format, flags) = parse_flags(&args[1..], &[])?;
+    if !flags.is_empty() {
+        return Err(usage("vm mounts accepts only --format human|json"));
+    }
+    Ok(Options {
+        operation: Operation::Mounts { id },
+        format,
+    })
+}
+
+fn require_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, Failure> {
+    if *index + 1 >= args.len() {
+        return Err(usage(format!("{flag} requires a value")));
+    }
+    let value = args[*index + 1].clone();
+    *index += 2;
+    Ok(value)
+}
+
+fn parse_format_value(value: &str) -> Result<Format, Failure> {
+    match value {
+        "human" => Ok(Format::Human),
+        "json" => Ok(Format::Json),
+        other => Err(usage(format!("unsupported format: {other}"))),
+    }
 }
 
 fn parse_logs(args: Vec<String>) -> Result<Options, Failure> {
@@ -680,6 +815,17 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         Operation::Services { id, action } => services_vm(id, action, socket_path),
         Operation::GuestPs { id } => guest_ps_vm(id, socket_path),
         Operation::Logs { id, follow, tail } => logs_vm(id, *follow, *tail),
+        Operation::Mount {
+            id,
+            source,
+            target,
+            name,
+            read_only,
+        } => mount_vm(id, source, target, name.as_deref(), *read_only, socket_path),
+        Operation::Unmount { id, target, name } => {
+            unmount_vm(id, target.as_deref(), name.as_deref(), socket_path)
+        }
+        Operation::Mounts { id } => list_vm_mounts(id, socket_path),
     }
 }
 
@@ -1969,6 +2115,209 @@ fn bundle_path(id: &str) -> PathBuf {
     crate::state_dir().join("vms").join(id)
 }
 
+fn helper_is_running(vm_id: &str, socket_path: &Path) -> Result<bool, Failure> {
+    match rpc(socket_path, "vm.list", json!({})) {
+        Ok(records) => Ok(records.as_array().into_iter().flatten().any(|record| {
+            record["vm_id"] == vm_id
+                && matches!(record["state"].as_str(), Some("starting" | "running"))
+        })),
+        Err(failure) if failure.code == EXIT_SUPERVISOR => Ok(false),
+        Err(failure) => Err(failure),
+    }
+}
+
+fn mount_vm(
+    id: &str,
+    source: &Path,
+    target: &str,
+    name: Option<&str>,
+    read_only: bool,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let bundle = bundle_path(id);
+    let _ = read_manifest(&bundle)?;
+    let mut flag = format!("source={},target={}", source.display(), target);
+    if let Some(name) = name {
+        flag = format!("tag={name},{flag}");
+    }
+    if read_only {
+        flag.push_str(",ro");
+    }
+    let mount = crate::mounts::parse_mount_flag(&flag)
+        .map_err(|message| Failure::new(EXIT_INVALID, message))?;
+    let mut mounts = crate::mounts::read_manifest_mounts(&bundle)
+        .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
+    if mounts
+        .iter()
+        .any(|existing| existing.name == mount.name && existing.target != mount.target)
+    {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            format!(
+                "mount name {} already maps to {}",
+                mount.name,
+                mounts
+                    .iter()
+                    .find(|existing| existing.name == mount.name)
+                    .map(|existing| existing.target.as_str())
+                    .unwrap_or("?")
+            ),
+        ));
+    }
+    if mounts
+        .iter()
+        .any(|existing| existing.target == mount.target && existing.name != mount.name)
+    {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            format!("mount target {} is already in use", mount.target),
+        ));
+    }
+    mounts.retain(|existing| existing.name != mount.name);
+    mounts.push(mount.clone());
+    crate::mounts::write_manifest_mounts(&bundle, &mounts)
+        .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
+
+    if helper_is_running(id, socket_path)? {
+        let result = rpc(
+            socket_path,
+            "vm.mount.add",
+            json!({
+                "vm_id": id,
+                "name": mount.name,
+                "source": mount.source,
+                "target": mount.target,
+                "read_only": mount.read_only,
+            }),
+        )?;
+        return Ok(json!({
+            "apiVersion": API_VERSION,
+            "command": "vm.mount",
+            "status": "ok",
+            "exit_code": 0,
+            "summary": {
+                "message": "mount added (live)",
+                "vm_id": id,
+                "live": true,
+            },
+            "vm_id": id,
+            "mount": mount.to_json(),
+            "mounts": result.get("mounts").cloned().unwrap_or(json!([])),
+            "live": true,
+        }));
+    }
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.mount",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": "mount recorded (VM stopped; applied on next start)",
+            "vm_id": id,
+            "live": false,
+        },
+        "vm_id": id,
+        "mount": mount.to_json(),
+        "mounts": mounts.iter().map(crate::mounts::ResolvedMount::to_json).collect::<Vec<_>>(),
+        "live": false,
+    }))
+}
+
+fn unmount_vm(
+    id: &str,
+    target: Option<&str>,
+    name: Option<&str>,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let bundle = bundle_path(id);
+    let _ = read_manifest(&bundle)?;
+    let mut mounts = crate::mounts::read_manifest_mounts(&bundle)
+        .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
+    let before = mounts.len();
+    mounts.retain(|mount| {
+        if let Some(name) = name {
+            if mount.name == name {
+                return false;
+            }
+        }
+        if let Some(target) = target {
+            if mount.target == target {
+                return false;
+            }
+        }
+        true
+    });
+    if mounts.len() == before {
+        return Err(Failure::new(EXIT_INVALID, "mount not found"));
+    }
+    crate::mounts::write_manifest_mounts(&bundle, &mounts)
+        .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
+
+    if helper_is_running(id, socket_path)? {
+        let mut params = json!({ "vm_id": id });
+        if let Some(name) = name {
+            params["name"] = json!(name);
+        }
+        if let Some(target) = target {
+            params["target"] = json!(target);
+        }
+        let result = rpc(socket_path, "vm.mount.remove", params)?;
+        return Ok(json!({
+            "apiVersion": API_VERSION,
+            "command": "vm.unmount",
+            "status": "ok",
+            "exit_code": 0,
+            "summary": {
+                "message": "mount removed (live)",
+                "vm_id": id,
+                "live": true,
+            },
+            "vm_id": id,
+            "mounts": result.get("mounts").cloned().unwrap_or(json!([])),
+            "live": true,
+        }));
+    }
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.unmount",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": "mount removed from manifest",
+            "vm_id": id,
+            "live": false,
+        },
+        "vm_id": id,
+        "mounts": mounts.iter().map(crate::mounts::ResolvedMount::to_json).collect::<Vec<_>>(),
+        "live": false,
+    }))
+}
+
+fn list_vm_mounts(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    let bundle = bundle_path(id);
+    let _ = read_manifest(&bundle)?;
+    let mounts = crate::mounts::read_manifest_mounts(&bundle)
+        .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
+    let live = if helper_is_running(id, socket_path)? {
+        rpc(socket_path, "vm.mount.list", json!({ "vm_id": id })).ok()
+    } else {
+        None
+    };
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.mounts",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": format!("{} mount(s)", mounts.len()),
+            "vm_id": id,
+        },
+        "vm_id": id,
+        "mounts": mounts.iter().map(crate::mounts::ResolvedMount::to_json).collect::<Vec<_>>(),
+        "runtime": live,
+    }))
+}
+
 fn read_manifest(bundle: &Path) -> Result<Value, Failure> {
     let manifest = bundle.join("vm.json");
     if !manifest.is_file() {
@@ -2118,11 +2467,33 @@ fn print_human(command: &str, envelope: &Value) {
                 }
             }
         }
-        "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" => {
+        "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" | "vm.mount"
+        | "vm.unmount" => {
             println!(
                 "{}",
                 envelope["summary"]["message"].as_str().unwrap_or(command)
             );
+        }
+        "vm.mounts" => {
+            let mounts = envelope["mounts"].as_array().cloned().unwrap_or_default();
+            if mounts.is_empty() {
+                println!("no mounts");
+            } else {
+                println!("{:<16} {:<8} {}", "NAME", "MODE", "TARGET");
+                for mount in mounts {
+                    println!(
+                        "{:<16} {:<8} {} ← {}",
+                        mount["name"].as_str().unwrap_or("?"),
+                        if mount["read_only"].as_bool() == Some(true) {
+                            "ro"
+                        } else {
+                            "rw"
+                        },
+                        mount["target"].as_str().unwrap_or("?"),
+                        mount["source"].as_str().unwrap_or("?")
+                    );
+                }
+            }
         }
         "vm.inspect" => {
             let vm = &envelope["vm"];

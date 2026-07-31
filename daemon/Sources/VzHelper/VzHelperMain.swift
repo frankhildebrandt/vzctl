@@ -261,11 +261,40 @@ enum VzHelperMain {
                             stateDirectory: stateDirectory,
                             vmID: options.vmID
                         )
+                    },
+                    mountHandler: { method, params in
+                        switch method {
+                        case "mount.list":
+                            return HelperMountConfigurator.list(runtime: created)
+                        case "mount.add":
+                            return try await HelperMountConfigurator.add(
+                                params: params,
+                                runtime: created,
+                                token: token
+                            )
+                        case "mount.remove":
+                            return try await HelperMountConfigurator.remove(
+                                params: params,
+                                runtime: created,
+                                token: token
+                            )
+                        default:
+                            throw HelperError.invalid("unknown mount method: \(method)")
+                        }
                     }
                 )
             }
             try control?.start()
             defer { control?.stop() }
+            if let token = timeSyncToken {
+                Task {
+                    try? await Task.sleep(for: .seconds(8))
+                    try? await HelperMountConfigurator.applyManifestMounts(
+                        runtime: created,
+                        token: token
+                    )
+                }
+            }
             print(
                 "vm-id=\(options.vmID) state=running serial=\(created.serialLogURL.path)"
             )

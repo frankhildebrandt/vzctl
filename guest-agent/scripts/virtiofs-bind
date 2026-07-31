@@ -1,0 +1,65 @@
+#!/bin/sh
+# Privileged virtiofs bind helper for vzctl-agent (invoked via sudo -n).
+# Usage:
+#   virtiofs-bind mount <name> <target> [ro]
+#   virtiofs-bind unmount <name> <target>
+set -eu
+
+DEVICE_TAG=vzctl
+GUEST_ROOT=/mnt/vzctl
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+valid_name() {
+  name=$1
+  [ "$name" != "$DEVICE_TAG" ] || return 1
+  printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]{0,35}$'
+}
+
+ensure_virtiofs_root() {
+  mkdir -p "$GUEST_ROOT"
+  if ! mountpoint -q "$GUEST_ROOT" 2>/dev/null; then
+    mount -t virtiofs "$DEVICE_TAG" "$GUEST_ROOT" || die "cannot mount virtiofs tag $DEVICE_TAG"
+  fi
+}
+
+cmd=${1:-}
+case "$cmd" in
+  mount)
+    name=${2:-}
+    target=${3:-}
+    mode=${4:-}
+    [ -n "$name" ] && [ -n "$target" ] || die "usage: virtiofs-bind mount <name> <target> [ro]"
+    valid_name "$name" || die "invalid mount name"
+    case "$target" in
+      /*) ;;
+      *) die "target must be absolute" ;;
+    esac
+    [ "$target" != / ] || die "target must not be /"
+    ensure_virtiofs_root
+    source="$GUEST_ROOT/$name"
+    [ -d "$source" ] || die "share $name is not visible under $GUEST_ROOT"
+    mkdir -p "$target"
+    if mountpoint -q "$target" 2>/dev/null; then
+      exit 0
+    fi
+    if [ "$mode" = ro ]; then
+      mount --bind -o ro "$source" "$target" || die "bind mount failed"
+    else
+      mount --bind "$source" "$target" || die "bind mount failed"
+    fi
+    ;;
+  unmount)
+    name=${2:-}
+    target=${3:-}
+    if [ -n "$target" ] && mountpoint -q "$target" 2>/dev/null; then
+      umount "$target" || die "umount $target failed"
+    fi
+    ;;
+  *)
+    die "usage: virtiofs-bind mount|unmount ..."
+    ;;
+esac

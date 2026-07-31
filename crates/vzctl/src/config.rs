@@ -82,6 +82,9 @@ pub(crate) struct Spec {
     /// Stack-level host port forwards, e.g. `"8080:web:80"` or `"127.0.0.1:5432:db:5432"`.
     #[serde(default)]
     pub(crate) ports: Vec<String>,
+    /// Named host directories for virtiofs mounts (`name → path`, relative to config dir).
+    #[serde(default)]
+    pub(crate) volumes: BTreeMap<String, String>,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
 }
@@ -205,6 +208,19 @@ pub(crate) struct VmConfig {
     /// VM-level host port forwards, e.g. `"8080:80"` or `"127.0.0.1:8080:80"`.
     #[serde(default)]
     pub(crate) ports: Vec<String>,
+    /// virtiofs mounts; `source` references `spec.volumes` name.
+    #[serde(default)]
+    pub(crate) mounts: Vec<VmMount>,
+}
+
+/// Declared host→guest virtiofs mount (`source` = volume name).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VmMount {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    #[serde(default, rename = "readOnly")]
+    pub(crate) read_only: bool,
 }
 
 /// Parsed host→guest TCP port forward (Alpha: bind loopback only).
@@ -218,6 +234,8 @@ pub(crate) struct PortForward {
 }
 
 const ALLOWED_VM_ROLES: &[&str] = &["router", "docker"];
+/// VirtioFS MultipleDirectoryShare device tag (reserved; not a volume name).
+pub(crate) const VIRTIOFS_DEVICE_TAG: &str = "vzctl";
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -300,10 +318,18 @@ pub(crate) fn validate_path(path: &Path) -> Result<Environment, Vec<ValidationIs
             "io",
         )]
     })?;
-    validate_source(&source)
+    let base = path.parent().map(Path::to_path_buf);
+    validate_source_with_base(&source, base.as_deref())
 }
 
 pub(crate) fn validate_source(source: &str) -> Result<Environment, Vec<ValidationIssue>> {
+    validate_source_with_base(source, None)
+}
+
+pub(crate) fn validate_source_with_base(
+    source: &str,
+    config_dir: Option<&Path>,
+) -> Result<Environment, Vec<ValidationIssue>> {
     let document: Value = serde_yaml::from_str(source).map_err(|error| {
         let location = error
             .location()
@@ -348,7 +374,7 @@ pub(crate) fn validate_source(source: &str) -> Result<Environment, Vec<Validatio
             "schema",
         )]
     })?;
-    let issues = validate_references(&environment);
+    let issues = validate_references(&environment, config_dir);
     if issues.is_empty() {
         Ok(environment)
     } else {
@@ -356,7 +382,10 @@ pub(crate) fn validate_source(source: &str) -> Result<Environment, Vec<Validatio
     }
 }
 
-fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
+fn validate_references(
+    environment: &Environment,
+    config_dir: Option<&Path>,
+) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let mut networks = BTreeMap::new();
 
@@ -367,6 +396,7 @@ fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
         &mut issues,
     );
     validate_name_keys("$.spec.vms", environment.spec.vms.keys(), &mut issues);
+    validate_volume_keys(&environment.spec.volumes, config_dir, &mut issues);
 
     for (name, network) in &environment.spec.networks {
         let path = format!("{}.cidr", json_path_key("$.spec.networks", name));
@@ -527,6 +557,13 @@ fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
             Some(vm_name.as_str()),
             &environment.spec.vms,
             &mut host_binds,
+            &mut issues,
+        );
+        validate_vm_mounts(
+            vm_name,
+            &vm.mounts,
+            &environment.spec.volumes,
+            &vm_base,
             &mut issues,
         );
         if let Some(0) = vm.cpus {
@@ -892,6 +929,112 @@ fn valid_name(name: &str) -> bool {
         })
 }
 
+pub(crate) fn valid_volume_name(name: &str) -> bool {
+    if name == VIRTIOFS_DEVICE_TAG {
+        return false;
+    }
+    (1..=36).contains(&name.len())
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn validate_volume_keys(
+    volumes: &BTreeMap<String, String>,
+    config_dir: Option<&Path>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (name, path) in volumes {
+        let base = json_path_key("$.spec.volumes", name);
+        if !valid_volume_name(name) {
+            issues.push(ValidationIssue::new(
+                base.clone(),
+                format!(
+                    "volume name must be 1-36 chars [A-Za-z0-9][A-Za-z0-9_-]* and must not be reserved tag {VIRTIOFS_DEVICE_TAG:?}"
+                ),
+                "semantic",
+            ));
+        }
+        if path.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                base.clone(),
+                "volume path must not be empty",
+                "semantic",
+            ));
+            continue;
+        }
+        let resolved = resolve_volume_path(path, config_dir);
+        match resolved {
+            None => {
+                // Relative path without config dir (string-only validate): skip existence.
+            }
+            Some(candidate) => {
+                if !candidate.is_dir() {
+                    issues.push(ValidationIssue::new(
+                        base,
+                        format!(
+                            "volume path {:?} is not an existing directory",
+                            candidate.display()
+                        ),
+                        "semantic",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn resolve_volume_path(path: &str, config_dir: Option<&Path>) -> Option<PathBuf> {
+    let raw = PathBuf::from(path);
+    if raw.is_absolute() {
+        return Some(raw);
+    }
+    config_dir.map(|dir| dir.join(raw))
+}
+
+fn validate_vm_mounts(
+    vm_name: &str,
+    mounts: &[VmMount],
+    volumes: &BTreeMap<String, String>,
+    vm_base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let mut targets = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+    for (index, mount) in mounts.iter().enumerate() {
+        let base = format!("{vm_base}.mounts[{index}]");
+        if !volumes.contains_key(&mount.source) {
+            issues.push(ValidationIssue::new(
+                format!("{base}.source"),
+                format!(
+                    "mount source {:?} references unknown volume (VM {vm_name})",
+                    mount.source
+                ),
+                "semantic",
+            ));
+        } else if !sources.insert(mount.source.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{base}.source"),
+                format!("duplicate mount source {:?}", mount.source),
+                "semantic",
+            ));
+        }
+        if !mount.target.starts_with('/') || mount.target.len() < 2 {
+            issues.push(ValidationIssue::new(
+                format!("{base}.target"),
+                "mount target must be an absolute path (not /)",
+                "semantic",
+            ));
+        } else if !targets.insert(mount.target.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{base}.target"),
+                format!("duplicate mount target {:?}", mount.target),
+                "semantic",
+            ));
+        }
+    }
+}
+
 fn require_network(
     name: &str,
     path: &str,
@@ -1194,6 +1337,85 @@ spec:
         assert!(issues
             .iter()
             .any(|issue| issue.message.contains("collides")));
+    }
+
+    #[test]
+    fn rejects_unknown_volume_and_reserved_tag() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  volumes:
+    vzctl: /tmp
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      mounts:
+        - { source: missing, target: /srv/app }
+        - { source: missing, target: /srv/app }
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("reserved tag")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("unknown volume")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("duplicate mount target")));
+    }
+
+    #[test]
+    fn accepts_volumes_and_mounts_without_path_base() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  volumes:
+    web-src: ../app
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      mounts:
+        - { source: web-src, target: /srv/app }
+"#;
+        let environment = validate_source(source).unwrap();
+        assert_eq!(environment.spec.volumes["web-src"], "../app");
+        assert_eq!(environment.spec.vms["web"].mounts.len(), 1);
+        assert_eq!(environment.spec.vms["web"].mounts[0].target, "/srv/app");
     }
 
     #[test]

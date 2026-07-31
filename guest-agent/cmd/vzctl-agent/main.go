@@ -47,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint"}
+var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -450,6 +450,10 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 		return successResponse(req.ID, map[string]any{"interfaces": interfaces})
 	case "time_hint":
 		return handleTimeHint(req, policy)
+	case "fs.mount":
+		return handleFSMount(req)
+	case "fs.unmount":
+		return handleFSUnmount(req)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,

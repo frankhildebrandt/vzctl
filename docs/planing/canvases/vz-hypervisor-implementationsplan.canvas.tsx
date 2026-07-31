@@ -26,7 +26,7 @@ const PHASES = [
   { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
   { id: "P3", name: "Stacks", weeks: "5–7", goal: "#34 closed · #36/#37/#38/#52 ✅", done: true },
   { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: true },
-  { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
+  { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs ✅, Docker-Polish, Diagnose", done: false },
   { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
 ] as const;
 
@@ -612,7 +612,7 @@ export default function VzHypervisorImplementationsplan() {
                 <Struck>Docker SSH-Context + Ports basic (#39/#40/#41)</Struck>
                 <Struck>`vzctl vm logs` (#49)</Struck>
                 <Text size="small" tone="secondary">
-                  v0.1.x residual: virtiofs (#42), Docker-Polish
+                  v0.1.x residual: Docker-Polish / Diagnose (#48); virtiofs (#42) landed
                 </Text>
               </Stack>
             </CardBody>
@@ -761,8 +761,8 @@ spec:
         <Callout tone="success" title="P4 Epic #39 closed · Next v0.1.x / v0.2">
           #40/#41: Docker SSH-Context (`vzctl docker`), cloudInit-Merge,
           DNS <Code>docker.svc</Code>, Userspace Port-Forwards
-          (`vzctl port list`) und Collision-Check. #42 virtiofs bleibt v0.1.x.
-          Weiter: virtiofs (#42), DX (#48 residual) oder Ingress/OIDC (#43).
+          (`vzctl port list`) und Collision-Check. #42 virtiofs (live share-swap +
+          `vm mount`) ist gelandet. Weiter: DX (#48 residual) oder Ingress/OIDC (#43).
         </Callout>
       </Stack>
 

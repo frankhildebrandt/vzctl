@@ -539,6 +539,27 @@ fn ensure_vms(
                 path.to_string_lossy().into_owned(),
             ]);
         }
+        for mount in &vm.mounts {
+            let Some(volume_path) = environment.spec.volumes.get(&mount.source) else {
+                return Err(Failure::new(
+                    EXIT_INVALID,
+                    format!("VM {name} mount source {:?} is unknown", mount.source),
+                ));
+            };
+            let resolved =
+                crate::config::resolve_volume_path(volume_path, Some(config_dir.as_path()))
+                    .unwrap_or_else(|| PathBuf::from(volume_path));
+            let mut flag = format!(
+                "tag={},source={},target={}",
+                mount.source,
+                resolved.display(),
+                mount.target
+            );
+            if mount.read_only {
+                flag.push_str(",ro");
+            }
+            owned.extend(["--mount".to_string(), flag]);
+        }
         owned.extend(["--format".to_string(), "json".to_string()]);
         let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
         run_self(&refs)?;

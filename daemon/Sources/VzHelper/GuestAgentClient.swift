@@ -261,6 +261,34 @@ final class GuestAgentClient: @unchecked Sendable {
         )
     }
 
+    func fsMount(
+        name: String,
+        target: String,
+        readOnly: Bool = false,
+        timeout: TimeInterval = 10
+    ) throws {
+        _ = try request(
+            method: "fs.mount",
+            params: [
+                "name": name,
+                "target": target,
+                "read_only": readOnly,
+            ],
+            timeout: timeout
+        )
+    }
+
+    func fsUnmount(
+        name: String? = nil,
+        target: String? = nil,
+        timeout: TimeInterval = 10
+    ) throws {
+        var params: [String: Any] = [:]
+        if let name { params["name"] = name }
+        if let target { params["target"] = target }
+        _ = try request(method: "fs.unmount", params: params, timeout: timeout)
+    }
+
     private func request(
         method: String,
         params: [String: Any],

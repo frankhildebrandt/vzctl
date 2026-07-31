@@ -27,7 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P4 / Epic #39 complete** — Docker SSH-Context (`vzctl docker`), Port-Forwards
-(`vzctl port list`, Collision-Check), DNS `docker.svc.{project}.vz.test`.
+**#42 virtiofs Mounts** — deklarativ (`volumes`/`mounts`), live `vm mount` via
+VZ share-swap + Guest-Agent `fs.mount` (siehe [virtiofs-v1.md](../specs/virtiofs-v1.md)).
 
-Weiter mit **v0.1.x / #42** virtiofs oder **Epic #48** DX residual / **#43** v0.2.
+Weiter: Docker-Polish / Diagnose (**#48** residual) oder **Epic #43** v0.2.

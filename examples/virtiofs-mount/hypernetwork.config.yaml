@@ -1,0 +1,32 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: virtiofs-mount
+spec:
+  project: virtiofs-mount
+  domain: virtiofs-mount.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: false, upstream: system }
+  images:
+    ubuntu-base:
+      from: ubuntu-latest
+      role: base
+  networks:
+    lan:
+      cidr: 10.77.0.0/24
+      mode: shared
+  routes: []
+  policies: []
+  volumes:
+    app: ./share
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 8G
+      networks:
+        - { name: lan, ip: 10.77.0.10 }
+      mounts:
+        - { source: app, target: /srv/app }

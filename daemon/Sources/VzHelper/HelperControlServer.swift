@@ -7,6 +7,7 @@ final class HelperControlServer: @unchecked Sendable {
     let socketPath: String
     private let routeHandler: @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
     private let agentHandler: @Sendable (String, JSONValue?) async throws -> JSONValue
+    private let mountHandler: @Sendable (String, JSONValue?) async throws -> JSONValue
     private let lock = NSLock()
     private var listener: Int32 = -1
     private var ownsSocket = false
@@ -15,7 +16,8 @@ final class HelperControlServer: @unchecked Sendable {
         vmID: String,
         stateDirectory: URL,
         routeHandler: @escaping @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue,
-        agentHandler: @escaping @Sendable (String, JSONValue?) async throws -> JSONValue
+        agentHandler: @escaping @Sendable (String, JSONValue?) async throws -> JSONValue,
+        mountHandler: @escaping @Sendable (String, JSONValue?) async throws -> JSONValue
     ) {
         socketPath = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
@@ -23,6 +25,7 @@ final class HelperControlServer: @unchecked Sendable {
             .path
         self.routeHandler = routeHandler
         self.agentHandler = agentHandler
+        self.mountHandler = mountHandler
     }
 
     func start() throws {
@@ -140,6 +143,26 @@ final class HelperControlServer: @unchecked Sendable {
                     do {
                         box.finish(
                             .success(try await agentHandler(request.method, request.params))
+                        )
+                    } catch {
+                        box.finish(.failure(error))
+                    }
+                }
+            } else if request.method.hasPrefix("mount.") {
+                guard ["mount.list", "mount.add", "mount.remove"].contains(request.method) else {
+                    write(
+                        JSONRPCResponse(
+                            error: JSONRPCError(code: -32601, message: "Method not found"),
+                            id: request.id ?? .null
+                        ),
+                        to: fd
+                    )
+                    return
+                }
+                Task {
+                    do {
+                        box.finish(
+                            .success(try await mountHandler(request.method, request.params))
                         )
                     } catch {
                         box.finish(.failure(error))

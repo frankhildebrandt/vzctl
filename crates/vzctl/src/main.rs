@@ -17,6 +17,7 @@ mod config;
 mod dns;
 mod docker;
 mod image;
+mod mounts;
 mod network;
 mod port;
 mod reconciler;
@@ -112,6 +113,7 @@ struct VmCreateOptions {
     root_password: Option<String>,
     cloud_init: Option<PathBuf>,
     project: Option<String>,
+    mounts: Vec<mounts::ResolvedMount>,
     format: OutputFormat,
 }
 
@@ -143,6 +145,7 @@ struct VmCreateResult {
     cpus: u32,
     memory_mib: u64,
     roles: Vec<String>,
+    mounts: Vec<mounts::ResolvedMount>,
     clone_mode: CloneMode,
     filesystem: String,
     identity: VmIdentity,
@@ -1426,7 +1429,7 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
         None | Some("help") | Some("-h") | Some("--help") => {
             eprintln!(
-                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps ..."
+                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts ..."
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -1499,6 +1502,7 @@ fn parse_vm_create_options(
     let mut root_password = None;
     let mut cloud_init = None;
     let mut project = None;
+    let mut mount_list = Vec::new();
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
 
@@ -1543,12 +1547,13 @@ fn parse_vm_create_options(
                 cpus = Some(parsed);
             }
             "--memory" => {
-                let value = args.next().ok_or_else(|| {
-                    VmCreateFailure::new(EXIT_USAGE, "--memory requires a size")
-                })?;
-                memory_mib = Some(parse_memory_mib(&value).map_err(|message| {
-                    VmCreateFailure::new(EXIT_INVALID_INPUT, message)
-                })?);
+                let value = args
+                    .next()
+                    .ok_or_else(|| VmCreateFailure::new(EXIT_USAGE, "--memory requires a size"))?;
+                memory_mib = Some(
+                    parse_memory_mib(&value)
+                        .map_err(|message| VmCreateFailure::new(EXIT_INVALID_INPUT, message))?,
+                );
             }
             "--role" => {
                 let role = args.next().ok_or_else(|| {
@@ -1587,6 +1592,28 @@ fn parse_vm_create_options(
                     VmCreateFailure::new(EXIT_USAGE, "--network requires a network name")
                 })?);
             }
+            "--mount" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(
+                        EXIT_USAGE,
+                        "--mount requires tag=…,source=…,target=…[,ro]",
+                    )
+                })?;
+                let mount = mounts::parse_mount_flag(&value)
+                    .map_err(|message| VmCreateFailure::new(EXIT_INVALID_INPUT, message))?;
+                if mount_list.iter().any(|existing: &mounts::ResolvedMount| {
+                    existing.name == mount.name || existing.target == mount.target
+                }) {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        format!(
+                            "duplicate mount name or target: {} → {}",
+                            mount.name, mount.target
+                        ),
+                    ));
+                }
+                mount_list.push(mount);
+            }
             "--root-password" => {
                 let value = args.next().ok_or_else(|| {
                     VmCreateFailure::new(EXIT_USAGE, "--root-password requires a password")
@@ -1619,7 +1646,8 @@ fn parse_vm_create_options(
                     EXIT_USAGE,
                     "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
                      [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] \
-                     [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]",
+                     [--mount tag=…,source=…,target=…[,ro]] [--cloud-init PATH] [--project P] \
+                     [--root-password <secret>] [--format human|json]",
                 ))
             }
             _ if arg.starts_with('-') => {
@@ -1643,7 +1671,8 @@ fn parse_vm_create_options(
             EXIT_USAGE,
             "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
              [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] \
-             [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]",
+             [--mount tag=…,source=…,target=…[,ro]] [--cloud-init PATH] [--project P] \
+             [--root-password <secret>] [--format human|json]",
         )
     })?;
     if !valid_vm_id(&id) {
@@ -1672,6 +1701,7 @@ fn parse_vm_create_options(
         root_password,
         cloud_init,
         project,
+        mounts: mount_list,
         format,
     })
 }
@@ -1906,6 +1936,7 @@ fn prepare_vm_disks(
         cpus: options.cpus,
         memory_mib: options.memory_mib,
         roles: options.roles.clone(),
+        mounts: options.mounts.clone(),
         clone_mode,
         filesystem,
         identity,
@@ -1926,6 +1957,7 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
         "managed-by": "vzctl",
         "vm_id": result.id,
         "roles": result.roles,
+        "mounts": result.mounts.iter().map(mounts::ResolvedMount::to_json).collect::<Vec<_>>(),
         "resources": {
             "cpus": result.cpus,
             "memory_mib": result.memory_mib,
@@ -2010,6 +2042,14 @@ fn print_vm_create_human(result: &VmCreateResult) {
     if !result.roles.is_empty() {
         println!("  roles: {}", result.roles.join(", "));
     }
+    for mount in &result.mounts {
+        println!(
+            "  mount: {} → {} ({})",
+            mount.source.display(),
+            mount.target,
+            if mount.read_only { "ro" } else { "rw" }
+        );
+    }
     if let Some(network) = &result.network {
         println!(
             "  network: {} ({}/{}, gateway {}){}",
@@ -2046,6 +2086,7 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "bundle": result.bundle_path,
             "managed-by": "vzctl",
             "roles": result.roles,
+            "mounts": result.mounts.iter().map(mounts::ResolvedMount::to_json).collect::<Vec<_>>(),
             "resources": {
                 "cpus": result.cpus,
                 "memory_mib": result.memory_mib,
@@ -2293,6 +2334,7 @@ fn prepare_cloud_init_seed(
         );
         file
     })];
+    append_virtiofs_bind_files(&mut write_files);
     let mut runcmd = Vec::new();
 
     if roles.iter().any(|role| role == "router") {
@@ -2457,6 +2499,52 @@ fn write_cloud_init_iso(
         )
     })?;
     Ok(())
+}
+
+fn append_virtiofs_bind_files(write_files: &mut Vec<serde_yaml::Value>) {
+    let script = include_str!("../../../guest-agent/scripts/virtiofs-bind");
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/usr/local/lib/vzctl/virtiofs-bind".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0755".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(script.to_string()),
+        );
+        file
+    }));
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/sudoers.d/vzctl-virtiofs".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0440".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(
+                "vzctl-agent ALL=(root) NOPASSWD: /usr/local/lib/vzctl/virtiofs-bind\n".into(),
+            ),
+        );
+        file
+    }));
 }
 
 fn cloud_init_root_password_snippet(password: &str) -> String {
@@ -4033,6 +4121,7 @@ mod tests {
                 root_password: None,
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Json,
             }
         );
@@ -4163,6 +4252,7 @@ mod tests {
                 root_password: None,
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -4175,6 +4265,56 @@ mod tests {
                 .unwrap();
         assert_eq!(manifest["resources"]["cpus"], json!(4));
         assert_eq!(manifest["resources"]["memory_mib"], json!(2048));
+        assert_eq!(manifest["mounts"], json!([]));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vm_create_persists_mounts_in_manifest() {
+        let directory = test_directory("vm-mounts-manifest");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let share = directory.join("share");
+        fs::create_dir_all(&share).unwrap();
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+        let result = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
+                roles: Vec::new(),
+                requested_network: None,
+                network: None,
+                root_password: None,
+                cloud_init: None,
+                project: None,
+                mounts: vec![mounts::ResolvedMount {
+                    name: "app".to_string(),
+                    source: share.clone(),
+                    target: "/srv/app".to_string(),
+                    read_only: false,
+                }],
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(result.bundle_path.join("vm.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["mounts"][0]["name"], json!("app"));
+        assert_eq!(manifest["mounts"][0]["target"], json!("/srv/app"));
+        assert_eq!(
+            manifest["mounts"][0]["source"].as_str().unwrap(),
+            share.to_string_lossy()
+        );
+        let user_data = &backend.seeds()[0].2;
+        assert!(user_data.contains("/usr/local/lib/vzctl/virtiofs-bind"));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -4206,6 +4346,7 @@ mod tests {
                 root_password: Some("pass:word".to_string()),
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -4340,6 +4481,7 @@ mod tests {
                     root_password: None,
                     cloud_init: None,
                     project: None,
+                    mounts: Vec::new(),
                     format: OutputFormat::Json,
                 },
                 &backend,
@@ -4419,6 +4561,7 @@ mod tests {
                 root_password: None,
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Human,
             },
             &backend,
@@ -4463,6 +4606,7 @@ mod tests {
                 root_password: None,
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -4478,6 +4622,8 @@ mod tests {
         assert!(user_data.contains("/etc/sysctl.d/90-vzctl-router.conf"));
         assert!(user_data.contains("net.ipv4.ip_forward=1"));
         assert!(user_data.contains("iptables -P FORWARD DROP"));
+        assert!(user_data.contains("/usr/local/lib/vzctl/virtiofs-bind"));
+        assert!(user_data.contains("/etc/sudoers.d/vzctl-virtiofs"));
         let network_config = &backend.seeds()[0].1;
         assert!(network_config.contains("10.70.0.10/24"));
         assert!(network_config.contains("via: 10.70.0.0"));
@@ -4510,6 +4656,7 @@ mod tests {
                 root_password: None,
                 cloud_init: None,
                 project: None,
+                mounts: Vec::new(),
                 format: OutputFormat::Json,
             },
             &backend,
@@ -4568,6 +4715,7 @@ mod tests {
                     root_password: None,
                     cloud_init: None,
                     project: None,
+                    mounts: Vec::new(),
                     format: OutputFormat::Human,
                 },
                 &NativeVmDiskBackend,
@@ -4635,6 +4783,7 @@ mod tests {
             cpus: DEFAULT_VM_CPUS,
             memory_mib: DEFAULT_VM_MEMORY_MIB,
             roles: Vec::new(),
+            mounts: Vec::new(),
             clone_mode: CloneMode::Linked,
             filesystem: "apfs".to_string(),
             identity: VmIdentity {

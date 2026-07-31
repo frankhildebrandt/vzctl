@@ -18,7 +18,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | P2 — Net + DNS | vmnet, Dual-DNS, Policies | **complete** (#25 closed; #30 DoD ✅) |
 | P3 — Stacks | hypernetwork reconcile | **complete** (#34 closed; #36/#37/#38/#52 ✅) |
 | P4 — Docker + Ports | SSH Context, Ports basic | **complete** (#39 closed; #40/#41 ✅; #42 virtiofs → v0.1.x) |
-| v0.1.x — Polish | virtiofs, Docker polish | open |
+| v0.1.x — Polish | virtiofs, Docker polish | **#42 virtiofs landed**; Docker polish residual |
 | v0.2 — Ingress/OIDC/CA | Caddy, Dex, CA, Tauri | open |
 
 ## Epics

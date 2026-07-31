@@ -589,6 +589,23 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return routeErrorResponse(error, request: request)
             }
+        case "vm.mount.list", "vm.mount.add", "vm.mount.remove":
+            do {
+                let params = try objectParams(request.params, context: request.method)
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                try requireRunningHelper(vmID: vmID)
+                let helperMethod = "mount." + String(request.method.dropFirst("vm.mount.".count))
+                let result = try HelperAgentClient.run(
+                    method: helperMethod,
+                    params: request.params,
+                    vmID: vmID,
+                    stateDirectory: stateDirectory,
+                    timeoutSeconds: 45
+                )
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return routeErrorResponse(error, request: request)
+            }
         case "route.apply", "route.plan", "route.status":
             do {
                 let operation = RouterOperation(

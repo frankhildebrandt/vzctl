@@ -11,12 +11,15 @@ enum VirtualMachineEvent: Sendable {
 
 final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecked Sendable {
     let serialLogURL: URL
+    let bundleURL: URL
 
     private let queue: DispatchQueue
     private let virtualMachine: VZVirtualMachine
     private let eventStream: AsyncStream<VirtualMachineEvent>
     private let eventContinuation: AsyncStream<VirtualMachineEvent>.Continuation
     private let consoleLock = NSLock()
+    private let mountsLock = NSLock()
+    private var mounts: [VirtioFSMountSpec]
     private var serialInputWriter: FileHandle?
     private var serialOutputRead: FileHandle?
     private var serialLogWriter: FileHandle?
@@ -38,6 +41,8 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         serialLogURL = logsDirectory.appendingPathComponent(
             "\(StateFileName.component(options.vmID)).serial.log"
         )
+        bundleURL = options.bundleURL
+        mounts = options.mounts
         queue = DispatchQueue(label: "vzctl.helper.\(StateFileName.component(options.vmID))")
 
         let pair = AsyncStream<VirtualMachineEvent>.makeStream()
@@ -123,6 +128,32 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
             }
             return try GuestAgentClient(fileDescriptor: waiter.takeFileDescriptor())
         }.value
+    }
+
+    func currentMounts() -> [VirtioFSMountSpec] {
+        mountsLock.withLock { mounts }
+    }
+
+    func applyShare(_ next: [VirtioFSMountSpec]) async throws {
+        try VirtioFSShare.ensureHostDirectories(next)
+        let share = try VirtioFSShare.makeShare(mounts: next, bundleURL: bundleURL)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                guard
+                    let device = virtualMachine.directorySharingDevices
+                    .compactMap({ $0 as? VZVirtioFileSystemDevice })
+                    .first(where: { $0.tag == VirtioFSShare.deviceTag })
+                else {
+                    continuation.resume(
+                        throwing: HelperError.invalid("virtiofs device \(VirtioFSShare.deviceTag) is missing")
+                    )
+                    return
+                }
+                device.share = share
+                mountsLock.withLock { mounts = next }
+                continuation.resume()
+            }
+        }
     }
 
     func writeToGuest(_ data: Data) {
@@ -414,6 +445,12 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         )
         console.ports[0] = port
         configuration.consoleDevices = [console]
+
+        let virtiofs = try VirtioFSShare.makeDeviceConfiguration(
+            mounts: options.mounts,
+            bundleURL: options.bundleURL
+        )
+        configuration.directorySharingDevices = [virtiofs]
 
         try configuration.validate()
         return ConfigurationResources(

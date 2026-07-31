@@ -155,3 +155,59 @@ import Testing
     }
     #expect(options.macAddress == "02:aa:bb:cc:dd:ee")
 }
+
+@Test func helperReadsMountsFromManifest() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vzctl-helper-mounts-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let share = directory.appendingPathComponent("share", isDirectory: true)
+    try FileManager.default.createDirectory(at: share, withIntermediateDirectories: true)
+    FileManager.default.createFile(
+        atPath: directory.appendingPathComponent("disk.raw").path,
+        contents: Data()
+    )
+    try """
+    {
+      "identity": {
+        "nics": [{"index": 0, "mac": "02:12:34:56:78:9a", "address": "dhcp"}]
+      },
+      "mounts": [
+        {
+          "name": "web-src",
+          "source": "\(share.path)",
+          "target": "/srv/app",
+          "read_only": false
+        }
+      ]
+    }
+    """.write(
+        to: directory.appendingPathComponent("vm.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let mounts = try VirtioFSShare.loadManifestMounts(bundleURL: directory)
+    #expect(mounts.count == 1)
+    #expect(mounts[0].name == "web-src")
+    #expect(mounts[0].target == "/srv/app")
+    #expect(mounts[0].sourceURL.path == share.standardizedFileURL.path)
+
+    let command = try HelperArguments.parse(
+        ["run", "--vm-id", "web", "--bundle", directory.path, "--mock"],
+        environment: ["VZCTL_STATE_DIR": directory.path]
+    )
+    guard case let .run(options) = command else {
+        Issue.record("expected run command")
+        return
+    }
+    #expect(options.mounts.count == 1)
+    #expect(options.mounts[0].name == "web-src")
+}
+
+@Test func virtiofsRejectsReservedDeviceTag() {
+    #expect(throws: (any Error).self) {
+        try VirtioFSShare.validateName("vzctl")
+    }
+}
+
