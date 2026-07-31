@@ -25,11 +25,8 @@ type ConfirmKind = "up" | "down" | "purge" | null;
 
 export function StackCard({
   project,
-  onForget,
 }: {
   project: Project;
-  /** Optional: remove from local project list (not stack purge). */
-  onForget?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
@@ -243,16 +240,6 @@ export function StackCard({
           >
             Details →
           </Link>
-          {onForget ? (
-            <button
-              type="button"
-              className="debug-btn stack-card-forget"
-              disabled={busy}
-              onClick={onForget}
-            >
-              Aus Liste
-            </button>
-          ) : null}
         </div>
       </article>
 
@@ -280,12 +267,10 @@ export function StackCardsSection({
   title = "Stacks",
   projects,
   emptyHint,
-  onForget,
 }: {
   title?: string;
   projects: Project[];
   emptyHint?: ReactNode;
-  onForget?: (path: string) => void;
 }) {
   if (projects.length === 0) {
     return (
@@ -308,11 +293,7 @@ export function StackCardsSection({
       {title ? <h2 className="section-title">{title}</h2> : null}
       <div className="stack-cards">
         {projects.map((project) => (
-          <StackCard
-            key={project.path}
-            project={project}
-            onForget={onForget ? () => onForget(project.path) : undefined}
-          />
+          <StackCard key={project.path} project={project} />
         ))}
       </div>
     </section>

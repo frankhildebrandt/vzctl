@@ -26,7 +26,6 @@ import {
 } from "@/components/IconButton";
 import { ResultPanel, type ResultModel } from "@/components/ResultPanel";
 import { IngressLinksCard } from "@/components/IngressLinks";
-import { StackCardsSection } from "@/components/StackCard";
 import { StackStatusCard } from "@/components/StackStatus";
 import { DashboardPage, PlaceholderPage } from "@/components/pages";
 import { VmDetailPage } from "@/components/VmDetailPage";
@@ -177,7 +176,7 @@ function ProjectListPage() {
         <div>
           <h2 className="section-title">Stacks</h2>
           <p className="muted">
-            Declarative Environments — Start, Stop und Löschen pro Stack.
+            Erinnerte Environments mit <code>hypernetwork.config.yaml</code>.
           </p>
         </div>
         <button
@@ -199,21 +198,43 @@ function ProjectListPage() {
         </div>
       ) : null}
 
-      <StackCardsSection
-        title=""
-        projects={projects}
-        emptyHint={
-          <>
-            Noch keine Stacks. Öffne ein Verzeichnis mit{" "}
-            <code>hypernetwork.config.yaml</code>. Die Auswahl bleibt lokal
-            gespeichert.
-          </>
-        }
-        onForget={(path) => {
-          const project = projects.find((item) => item.path === path);
-          if (project) setPendingRemove({ path: project.path, name: project.name });
-        }}
-      />
+      {projects.length === 0 ? (
+        <div className="card">
+          <h2>Noch keine Stacks</h2>
+          <p className="muted">
+            Öffne ein Verzeichnis mit <code>hypernetwork.config.yaml</code>.
+            Die Auswahl bleibt lokal gespeichert.
+          </p>
+        </div>
+      ) : (
+        <ul className="project-list">
+          {projects.map((project) => (
+            <li key={project.path} className="project-item">
+              <Link
+                to="/env"
+                search={{ path: project.path }}
+                className="project-link"
+              >
+                <span className="project-name">{project.name}</span>
+                <span className="path">{project.path}</span>
+                <span className="muted project-meta">
+                  Zuletzt: {formatOpenedAt(project.openedAt)}
+                </span>
+              </Link>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  setPendingRemove({ path: project.path, name: project.name })
+                }
+              >
+                Entfernen
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <ConfirmDialog
         open={pendingRemove != null}
