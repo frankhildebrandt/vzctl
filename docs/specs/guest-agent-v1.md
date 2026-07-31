@@ -445,8 +445,10 @@ that the guest stopped. Alpha persistence and E2E wiring remain #15.
 - No shell-string `exec`; only array argv is accepted. Shell behavior requires
   an explicit argv such as `["/bin/sh", "-c", "..."]` from an authorized
   caller and should be rejected by higher-level policy by default.
-- The service runs as a dedicated unprivileged account. No root, sudo,
-  `CAP_SYS_ADMIN` or broad filesystem access by default.
+- The service runs as a dedicated unprivileged account (`vzctl-agent`), not as
+  root and without `CAP_SYS_ADMIN`. Passwordless `sudo` is granted for agent
+  helpers and interactive `vm exec`; the unit must not set hardening options
+  that imply `no_new_privs` (they override `NoNewPrivileges=no`).
 - Apply the frame, stdin and output limits before allocating unbounded buffers.
 - Do not log tokens, environment values, stdin, stdout or stderr by default.
 - Compare tokens in constant time and rate-limit failed handshakes.

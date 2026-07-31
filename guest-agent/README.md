@@ -16,9 +16,10 @@ P0 agent slice implements:
 - `time_hint` measurement and thresholded `CLOCK_REALTIME` stepping.
 
 Only implemented command methods are advertised as capabilities. `time_hint`
-defaults to a 1-second threshold. The hardened systemd service grants the
-dedicated agent user only `CAP_SYS_TIME`; no shell or privileged time daemon is
-used.
+defaults to a 1-second threshold. The systemd service runs as `vzctl-agent` with
+`CAP_SYS_TIME` plus `CAP_SETUID`/`CAP_SETGID` for passwordless `sudo` (helpers
+and interactive `vm exec`). Hardening flags that imply `no_new_privs` are
+omitted so setuid sudo works.
 
 ## Build and test
 

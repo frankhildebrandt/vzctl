@@ -149,11 +149,30 @@ final class GuestAgentClient: @unchecked Sendable {
         if let cwd { params["cwd"] = cwd }
         if !environment.isEmpty { params["env"] = environment }
         if let stdin { params["stdin_b64"] = stdin.base64EncodedString() }
-        let result = try request(
-            method: "exec",
-            params: params,
-            timeout: helperTimeout ?? (Double(timeoutMilliseconds) / 1_000 + 1)
-        )
+        let result: [String: Any]
+        do {
+            result = try request(
+                method: "exec",
+                params: params,
+                timeout: helperTimeout ?? (Double(timeoutMilliseconds) / 1_000 + 1)
+            )
+        } catch let GuestAgentError.remote(code, message, details) where code == "exec_failed" {
+            // Wire contract: non-zero exits are error responses with details.
+            // Callers (router status/apply) expect AgentExecResult, not a throw.
+            let exit = details.values["exit"] as? Int ?? 1
+            let stdout = details.values["stdout"] as? String ?? ""
+            let stderr = details.values["stderr"] as? String ?? ""
+            let truncated = details.values["truncated"] as? Bool ?? false
+            if details.values["exit"] == nil, details.values["signal"] != nil {
+                throw GuestAgentError.remote(code: code, message: message, details: details)
+            }
+            return AgentExecResult(
+                exit: exit,
+                stdout: stdout,
+                stderr: stderr.isEmpty ? message : stderr,
+                truncated: truncated
+            )
+        }
         guard
             let exit = result["exit"] as? Int,
             let stdout = result["stdout"] as? String,

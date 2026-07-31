@@ -17,25 +17,19 @@ UMask=0077
 ExecStart=/usr/local/sbin/vzctl-agent --port 21950 --token-file /var/lib/vzctl/agent.token
 Restart=on-failure
 RestartSec=2s
-NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_TIME
 AmbientCapabilities=CAP_SYS_TIME
 PrivateTmp=yes
-PrivateDevices=yes
-ProtectSystem=strict
-ProtectHome=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 ProtectClock=no
-ProtectHostname=yes
-ProtectProc=invisible
-ProcSubset=pid
-RestrictSUIDSGID=yes
-RestrictRealtime=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_VSOCK
+# Interactive `vm exec` and sudo -n helpers (virtiofs-bind, router-apply,
+# update-ca-certificates) need privilege escalation. systemd.exec: many
+# sandbox flags force no_new_privs (and ignore NoNewPrivileges=no) —
+# PrivateDevices, ProtectKernelTunables, ProtectHostname, LockPersonality,
+# MemoryDenyWriteExecute, RestrictRealtime, RestrictAddressFamilies,
+# RestrictSUIDSGID. ProtectSystem=strict also leaves sudo root in a
+# read-only mount namespace. CapabilityBoundingSet must stay unrestricted
+# so setuid sudo-rs can restore uids and nft can use CAP_NET_ADMIN.
+NoNewPrivileges=no
+RestrictSUIDSGID=no
 
 [Install]
 WantedBy=multi-user.target

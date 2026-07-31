@@ -365,13 +365,16 @@ enum RouterGuestConfigurator {
         encoder.outputFormatting = [.sortedKeys]
         let payload = try encoder.encode(plan.json)
         let applied = try client.exec(
-            argv: ["/bin/sh", "-ceu", routerApplyScript, "--", plan.nftables],
+            argv: [
+                "/usr/bin/sudo", "-n", "/usr/local/lib/vzctl/router-apply", plan.nftables,
+            ],
             stdin: payload,
             timeoutMilliseconds: 30_000
         )
         guard applied.exit == 0, !applied.truncated else {
+            let detail = applied.stderr.isEmpty ? applied.stdout : applied.stderr
             throw RouteApplyError.guest(
-                "router apply failed (exit \(applied.exit)): \(applied.stderr)"
+                "router apply failed (exit \(applied.exit)): \(detail)"
             )
         }
         return response(
@@ -459,52 +462,5 @@ enum RouterGuestConfigurator {
           exit 3
         fi
         cat /etc/vzctl/routes.json
-        """
-
-    static let routerApplyScript = """
-        changed=false
-        install_if_changed() {
-          source_file=$1
-          target_file=$2
-          mode=$3
-          if [ ! -f "$target_file" ] || ! cmp -s "$source_file" "$target_file"; then
-            install -m "$mode" "$source_file" "$target_file"
-            changed=true
-          fi
-        }
-        umask 022
-        mkdir -p /etc/vzctl /etc/sysctl.d
-        routes_tmp=$(mktemp)
-        sysctl_tmp=$(mktemp)
-        nft_tmp=$(mktemp)
-        load_tmp=$(mktemp)
-        trap 'rm -f "$routes_tmp" "$sysctl_tmp" "$nft_tmp" "$load_tmp"' EXIT
-        cat >"$routes_tmp"
-        printf '%s\\n' "$1" >"$nft_tmp"
-        printf 'net.ipv4.ip_forward=1\\n' >"$sysctl_tmp"
-        if ! command -v nft >/dev/null 2>&1; then
-          echo 'nftables backend is required' >&2
-          exit 1
-        fi
-        if [ ! -f /etc/vzctl/routes.json ] ||
-           ! cmp -s "$routes_tmp" /etc/vzctl/routes.json ||
-           [ ! -f /etc/vzctl/vzctl.nft ] ||
-           ! cmp -s "$nft_tmp" /etc/vzctl/vzctl.nft ||
-           ! nft list table inet vzctl >/dev/null 2>&1; then
-          if nft list table inet vzctl >/dev/null 2>&1; then
-            printf 'delete table inet vzctl\\n' >"$load_tmp"
-          fi
-          cat "$nft_tmp" >>"$load_tmp"
-          nft -f "$load_tmp"
-          install -m 0644 "$routes_tmp" /etc/vzctl/routes.json
-          install -m 0644 "$nft_tmp" /etc/vzctl/vzctl.nft
-          changed=true
-        fi
-        install_if_changed "$sysctl_tmp" /etc/sysctl.d/90-vzctl-router.conf 0644
-        if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
-          changed=true
-        fi
-        sysctl -q -w net.ipv4.ip_forward=1
-        printf 'changed=%s\\n' "$changed"
         """
 }
