@@ -304,7 +304,8 @@ fn next_value(
 }
 
 fn resolve_scope(options: &Options) -> Result<Scope, Failure> {
-    let config_exists = options.config.is_file();
+    let config = crate::config::config_path(&options.config);
+    let config_exists = config.is_file();
     if options.config_explicit && !config_exists {
         return Err(Failure::new(
             EXIT_INVALID,
@@ -312,7 +313,7 @@ fn resolve_scope(options: &Options) -> Result<Scope, Failure> {
         ));
     }
     let config_project = if config_exists {
-        Some(project_from_config(&options.config)?)
+        Some(project_from_config(&config)?)
     } else {
         None
     };
@@ -322,7 +323,7 @@ fn resolve_scope(options: &Options) -> Result<Scope, Failure> {
                 EXIT_INVALID,
                 format!(
                     "--project {explicit} does not match spec.project {configured} in {}",
-                    options.config.display()
+                    config.display()
                 ),
             ));
         }
@@ -335,13 +336,10 @@ fn resolve_scope(options: &Options) -> Result<Scope, Failure> {
     })?;
     validate_project(&project)?;
     let owner = if config_exists {
-        let canonical = fs::canonicalize(&options.config).map_err(|error| {
+        let canonical = fs::canonicalize(&config).map_err(|error| {
             Failure::new(
                 EXIT_INVALID,
-                format!(
-                    "cannot resolve config {}: {error}",
-                    options.config.display()
-                ),
+                format!("cannot resolve config {}: {error}", config.display()),
             )
         })?;
         format!(
@@ -1315,6 +1313,31 @@ mod tests {
             EXIT_RESOLVER
         );
         assert_eq!(fs::read_to_string(target).unwrap(), "keep\n");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scope_accepts_environment_directory() {
+        let dir = temp_dir("config-dir");
+        let config = dir.join(DEFAULT_CONFIG);
+        fs::write(
+            &config,
+            "apiVersion: hypernetwork/v1\nspec:\n  project: edge-dmz\n",
+        )
+        .unwrap();
+        let options = Options {
+            action: Action::Install,
+            project: None,
+            config: dir.clone(),
+            config_explicit: true,
+            format: Format::Human,
+            query_name: None,
+            query_type: QueryType::A,
+            server: DEFAULT_DNS_SERVER.to_string(),
+        };
+        let resolved = resolve_scope(&options).unwrap();
+        assert_eq!(resolved.project, "edge-dmz");
+        assert!(resolved.owner.starts_with("config-"));
         fs::remove_dir_all(dir).unwrap();
     }
 

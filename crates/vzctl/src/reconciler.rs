@@ -249,7 +249,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             &stack_id,
             &holder,
             step,
-            "completed",
+            "running",
             None,
         )?;
         let mut execution_options = options.clone();
@@ -275,7 +275,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             &stack_id,
             &holder,
             step,
-            "running",
+            "completed",
             None,
         )?;
     }
@@ -490,20 +490,21 @@ fn ensure_vms(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     for name in order {
+        let runtime_id = vm_runtime_id(environment, &name);
         let vm = &environment.spec.vms[&name];
         let action = plan
             .actions
             .iter()
-            .find(|action| action.kind == "vm" && action.name == name);
+            .find(|action| action.kind == "vm" && action.name == runtime_id);
         if action.is_some_and(|action| action.action == "update" && action.breaking) {
             if !force {
                 return Err(Failure::new(EXIT_INVALID, "VM recreate requires --force"));
             }
-            stop_one(&name, socket_path)?;
-            wait_stopped(&name, socket_path)?;
-            remove_managed_vm(&name)?;
+            stop_one(&runtime_id, socket_path)?;
+            wait_stopped(&runtime_id, socket_path)?;
+            remove_managed_vm(&runtime_id)?;
         }
-        let bundle = crate::state_dir().join("vms").join(&name);
+        let bundle = crate::state_dir().join("vms").join(&runtime_id);
         if bundle.join("vm.json").is_file() {
             continue;
         }
@@ -512,11 +513,13 @@ fn ensure_vms(
         let mut owned = vec![
             "vm".to_string(),
             "create".to_string(),
-            name.clone(),
+            runtime_id.clone(),
             "--from".to_string(),
             image_name.clone(),
             "--data-disk".to_string(),
             size.to_string(),
+            "--project".to_string(),
+            environment.spec.project.clone(),
         ];
         if let Some(cpus) = vm.cpus {
             if cpus == 0 {
@@ -538,9 +541,6 @@ fn ensure_vms(
             if role == "router" || role == "docker" {
                 owned.extend(["--role".to_string(), role.clone()]);
             }
-        }
-        if vm.roles.iter().any(|role| role == "docker") {
-            owned.extend(["--project".to_string(), environment.spec.project.clone()]);
         }
         if let Some(cloud_init) = &vm.cloud_init {
             let path = if Path::new(cloud_init).is_absolute() {
@@ -591,18 +591,25 @@ fn ensure_attachments(
         .spec
         .vms
         .iter()
-        .flat_map(|(vm_id, vm)| {
-            vm.networks
-                .iter()
-                .map(move |network| (vm_id.as_str(), network.name.as_str(), network.ip.as_str()))
+        .flat_map(|(config_name, vm)| {
+            let runtime_id = vm_runtime_id(environment, config_name);
+            vm.networks.iter().map(move |network| {
+                (
+                    runtime_id.clone(),
+                    network.name.clone(),
+                    network.ip.clone(),
+                )
+            })
         })
         .collect::<BTreeSet<_>>();
-    if mode == Mode::Apply {
+    // Up and apply both converge attachments. Detach stack-owned drift first so
+    // IP moves (auto-allocated create → desired static IP) cannot collide.
+    if matches!(mode, Mode::Apply | Mode::Up) {
         for attachment in snapshot["attachments"].as_array().into_iter().flatten() {
             let current = (
-                attachment["vm_id"].as_str().unwrap_or_default(),
-                attachment["network"].as_str().unwrap_or_default(),
-                attachment["ip"].as_str().unwrap_or_default(),
+                attachment["vm_id"].as_str().unwrap_or_default().to_string(),
+                attachment["network"].as_str().unwrap_or_default().to_string(),
+                attachment["ip"].as_str().unwrap_or_default().to_string(),
             );
             if attachment["project"] == environment.spec.project
                 && attachment["stack"] == stack_id(environment)
@@ -619,18 +626,23 @@ fn ensure_attachments(
             }
         }
     }
-    for (vm_id, vm) in &environment.spec.vms {
+    for (config_name, vm) in &environment.spec.vms {
+        let runtime_id = vm_runtime_id(environment, config_name);
         for attachment in &vm.networks {
             let exists = snapshot["attachments"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .any(|item| {
-                    item["vm_id"] == *vm_id
+                    item["vm_id"] == runtime_id
                         && item["network"] == attachment.name
                         && item["ip"] == attachment.ip
                 });
+            // After detach above, re-check is stale — only skip when the original
+            // snapshot already had the exact desired triple (no-op). Otherwise attach.
             if !exists {
+                // If we detached this vm/network in the loop above, snapshot still
+                // lists the old row; treat same vm+network as needing attach.
                 let mut labels = serde_json::Map::new();
                 labels.insert("managed-by".into(), json!("vzctl"));
                 if vm.roles.iter().any(|role| role == "docker") {
@@ -640,7 +652,7 @@ fn ensure_attachments(
                     socket_path,
                     "net.attach",
                     json!({
-                        "vm_id": vm_id,
+                        "vm_id": runtime_id,
                         "network": attachment.name,
                         "ip": attachment.ip,
                         "labels": labels,
@@ -687,12 +699,13 @@ fn prune_networks(
 }
 
 fn start_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
-    for vm_id in dependency_order(&environment.spec.vms)? {
-        let bundle = crate::state_dir().join("vms").join(&vm_id);
+    for name in dependency_order(&environment.spec.vms)? {
+        let runtime_id = vm_runtime_id(environment, &name);
+        let bundle = crate::state_dir().join("vms").join(&runtime_id);
         rpc(
             socket_path,
             "vm.start",
-            json!({"vm_id": vm_id, "bundle": bundle}),
+            json!({"vm_id": runtime_id, "bundle": bundle}),
         )?;
     }
     Ok(())
@@ -703,7 +716,7 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
         .spec
         .vms
         .keys()
-        .cloned()
+        .map(|name| vm_runtime_id(environment, name))
         .collect::<BTreeSet<_>>();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -732,9 +745,10 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
 fn stop_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
     let mut order = dependency_order(&environment.spec.vms)?;
     order.reverse();
-    for vm_id in order {
-        stop_one(&vm_id, socket_path)?;
-        wait_stopped(&vm_id, socket_path)?;
+    for name in order {
+        let runtime_id = vm_runtime_id(environment, &name);
+        stop_one(&runtime_id, socket_path)?;
+        wait_stopped(&runtime_id, socket_path)?;
     }
     Ok(())
 }
@@ -790,8 +804,8 @@ fn detach_networks(environment: &Environment, socket_path: &Path) -> Result<(), 
 }
 
 fn purge_managed(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
-    for vm_id in environment.spec.vms.keys() {
-        remove_managed_vm(vm_id)?;
+    for name in environment.spec.vms.keys() {
+        remove_managed_vm(&vm_runtime_id(environment, name))?;
     }
     let snapshot = rpc(socket_path, "net.list", json!({}))?;
     for network in snapshot["networks"].as_array().into_iter().flatten() {
@@ -862,10 +876,11 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
         .unwrap_or_default();
     let mut desired = Vec::new();
     for forward in forwards {
+        let runtime_id = vm_runtime_id(environment, &forward.vm);
         let guest_ip = attachments
             .iter()
             .find(|item| {
-                item["vm_id"] == forward.vm
+                item["vm_id"] == runtime_id
                     && item["project"] == environment.spec.project
                     && item["stack"] == stack_id(environment)
             })
@@ -875,7 +890,7 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
                     EXIT_STEP,
                     format!(
                         "port forward {} needs attachment IP for VM {}",
-                        forward.source, forward.vm
+                        forward.source, runtime_id
                     ),
                 )
             })?
@@ -885,7 +900,7 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
             "host_port": forward.host_port,
             "guest_ip": guest_ip,
             "guest_port": forward.guest_port,
-            "vm_id": forward.vm,
+            "vm_id": runtime_id,
             "source": forward.source,
             "project": environment.spec.project,
             "stack": stack_id(environment),
@@ -1064,6 +1079,7 @@ fn ensure_ca_rollout(environment: &Environment, socket_path: &Path) -> Result<()
     let fingerprint = crate::certs::read_fingerprint(&state_dir)
         .map_err(|e| Failure::new(EXIT_STEP, e))?;
     for name in environment.spec.vms.keys() {
+        let runtime_id = vm_runtime_id(environment, name);
         // Best-effort live inject via supervisor → helper → agent exec.
         let script = format!(
             "mkdir -p /usr/local/share/ca-certificates /var/lib/vzctl && \
@@ -1075,7 +1091,7 @@ fn ensure_ca_rollout(environment: &Environment, socket_path: &Path) -> Result<()
             socket_path,
             "vm.exec",
             json!({
-                "vm_id": name,
+                "vm_id": runtime_id,
                 "cmd": ["bash", "-lc", script],
                 "timeout_ms": 60_000,
             }),
@@ -1107,6 +1123,7 @@ fn ensure_oidc_inject(environment: &Environment, socket_path: &Path) -> Result<(
         if !environment.spec.vms.contains_key(id) {
             continue;
         }
+        let runtime_id = vm_runtime_id(environment, id);
         let env_block = format!(
             "OIDC_ISSUER={}\nOIDC_CLIENT_ID={id}\nOIDC_CLIENT_SECRET={secret}\n\
              OIDC_REDIRECT_URI={redirect}\nOIDC_CA_PATH=/etc/ssl/certs/ca-certificates.crt\n",
@@ -1119,7 +1136,7 @@ fn ensure_oidc_inject(environment: &Environment, socket_path: &Path) -> Result<(
             socket_path,
             "vm.exec",
             json!({
-                "vm_id": id,
+                "vm_id": runtime_id,
                 "cmd": ["bash", "-lc", script],
                 "timeout_ms": 30_000,
             }),
@@ -1238,7 +1255,12 @@ fn desired_resources(environment: &Environment) -> Result<Vec<Resource>, Failure
         add("network", name, json!(network), "active")?;
     }
     for (name, vm) in &environment.spec.vms {
-        add("vm", name, json!(vm), "running")?;
+        add(
+            "vm",
+            &vm_runtime_id(environment, name),
+            json!(vm),
+            "running",
+        )?;
     }
     for route in &environment.spec.routes {
         add("route", &route.name, json!(route), "active")?;
@@ -1628,25 +1650,21 @@ fn adopt_report(
         }
     }
     let project = environment.spec.project.as_str();
-    if let Ok(entries) = fs::read_dir(crate::state_dir().join("vms")) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let manifest_path = entry.path().join("vm.json");
-            let Ok(raw) = fs::read_to_string(&manifest_path) else {
-                continue;
-            };
-            let Ok(manifest) = serde_json::from_str::<Value>(&raw) else {
-                continue;
-            };
-            if manifest["managed-by"] != "vzctl" {
-                continue;
-            }
-            let labels = &manifest["labels"];
-            let matches_stack = labels["stack_id"].as_str() == Some(stack_id)
-                || (labels["project"].as_str() == Some(project) && candidates.contains(&name));
-            if matches_stack || candidates.contains(&name) {
-                candidates.insert(name);
-            }
+    for (vm_id, manifest_path) in discover_vm_manifests(&crate::state_dir().join("vms")) {
+        let Ok(raw) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if manifest["managed-by"] != "vzctl" {
+            continue;
+        }
+        let labels = &manifest["labels"];
+        let matches_stack = labels["stack_id"].as_str() == Some(stack_id)
+            || (labels["project"].as_str() == Some(project) && candidates.contains(&vm_id));
+        if matches_stack || candidates.contains(&vm_id) {
+            candidates.insert(vm_id);
         }
     }
 
@@ -1703,6 +1721,45 @@ fn helper_lock_path(vm_id: &str) -> PathBuf {
     crate::state_dir()
         .join("helpers")
         .join(format!("{}.lock", state_file_component(vm_id)))
+}
+
+fn discover_vm_manifests(vms_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(vms_dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let manifest = path.join("vm.json");
+        if manifest.is_file() {
+            found.push((name, manifest));
+            continue;
+        }
+        // Nested project/vm bundles: vms/{project}/{vm}/vm.json
+        let Ok(children) = fs::read_dir(&path) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let child_path = child.path();
+            if !child_path.is_dir() {
+                continue;
+            }
+            let child_name = child.file_name().to_string_lossy().to_string();
+            let nested_manifest = child_path.join("vm.json");
+            if nested_manifest.is_file() {
+                found.push((format!("{name}/{child_name}"), nested_manifest));
+            }
+        }
+    }
+    found
+}
+
+fn vm_runtime_id(environment: &Environment, config_name: &str) -> String {
+    crate::runtime_vm_id(&environment.spec.project, config_name)
 }
 
 fn state_file_component(value: &str) -> String {
@@ -1854,6 +1911,23 @@ mod tests {
             labels: BTreeMap::from([("spec".to_string(), spec.to_string())]),
             state: state.to_string(),
         }
+    }
+
+    #[test]
+    fn desired_vm_resources_use_project_runtime_ids() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/edge-dmz/hypernetwork.config.yaml");
+        let environment = config::validate_path(&path).expect("edge-dmz config");
+        let desired = desired_resources(&environment).unwrap();
+        let vm_names = desired
+            .iter()
+            .filter(|resource| resource.kind == "vm")
+            .map(|resource| resource.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(vm_names.contains("edge-dmz/web"));
+        assert!(vm_names.contains("edge-dmz/router"));
+        assert!(!vm_names.contains("web"));
+        assert!(!vm_names.contains("router"));
     }
 
     #[test]

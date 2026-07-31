@@ -55,9 +55,16 @@ pub(crate) fn render(
         let upstream = IngressUpstream::parse(&route.to)?;
         let backend = match upstream {
             IngressUpstream::Vm { name, port } => {
-                let ip = vm_ips.get(&name).ok_or_else(|| {
-                    format!("ingress route {} needs attachment IP for VM {name}", route.host)
-                })?;
+                let runtime = crate::runtime_vm_id(&environment.spec.project, &name);
+                let ip = vm_ips
+                    .get(&runtime)
+                    .or_else(|| vm_ips.get(&name))
+                    .ok_or_else(|| {
+                        format!(
+                            "ingress route {} needs attachment IP for VM {runtime}",
+                            route.host
+                        )
+                    })?;
                 format!("{ip}:{port}")
             }
             IngressUpstream::Oidc { port } => format!("127.0.0.1:{port}"),

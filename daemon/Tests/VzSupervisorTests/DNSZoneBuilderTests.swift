@@ -60,6 +60,33 @@ import VzDaemonKit
     #expect(zone.ttl == 15)
 }
 
+@Test func zoneBuilderUsesBasenameForNamespacedVmIDs() {
+    let snapshot = NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "dmz",
+                cidr: "10.80.0.0/24",
+                project: "edge-dmz"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "edge-dmz/web",
+                networkName: "dmz",
+                ip: "10.80.0.10",
+                project: "edge-dmz"
+            ),
+        ]
+    )
+
+    let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 15)
+
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "edge-dmz/web.dmz.edge-dmz.vz.test", horizon: .guest) == nil)
+    #expect(DNSZoneBuilder.vmDNSLabel("edge-dmz/web") == "web")
+    #expect(DNSZoneBuilder.vmDNSLabel("web") == "web")
+}
+
 @Test func attachmentProjectOverridesNetworkAndServicesReturnAllBackends() {
     let snapshot = NetworkSnapshot(
         networks: [

@@ -60,7 +60,7 @@ enum DNSZoneBuilder {
             guard let network = networks[attachment.networkName],
                   network.runtimeState == "active",
                   let project = attachment.project ?? network.project,
-                  let vm = dnsLabel(attachment.vmID),
+                  let vm = dnsLabel(vmDNSLabel(attachment.vmID)),
                   let net = dnsLabel(attachment.networkName),
                   let projectLabel = dnsLabel(project),
                   ipv4Bytes(attachment.ip) != nil
@@ -147,6 +147,15 @@ enum DNSZoneBuilder {
             return nil
         }
         return label
+    }
+
+    /// Runtime VM IDs may be namespaced as `{project}/{vm}`; DNS uses the basename.
+    static func vmDNSLabel(_ value: String) -> String {
+        if let slash = value.lastIndex(of: "/") {
+            let basename = String(value[value.index(after: slash)...])
+            return basename.isEmpty ? value : basename
+        }
+        return value
     }
 }
 
