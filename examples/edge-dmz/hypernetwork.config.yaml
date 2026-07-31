@@ -35,6 +35,26 @@ spec:
         - { to: dmz, proto: icmp }
   ports:
     - "8080:web:80"
+  certs:
+    enabled: true
+    onRotate: reinject
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    hostAliases: true
+    redirectHttp: true
+    routes:
+      - host: web.svc.edge-dmz.vz.test
+        to: "web:80"
+        requires: [oidc]
+      - host: auth.svc.edge-dmz.vz.test
+        to: "oidc:5556"
+  oidc:
+    enabled: true
+    mode: embedded
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
   vms:
     router:
       from: ubuntu-base
@@ -55,6 +75,7 @@ spec:
       cloudInit: cloud-init/web.yaml
       dependsOn: [router]
       roles: []
+      requires: [oidc]
     docker:
       from: ubuntu-base
       clone: linked

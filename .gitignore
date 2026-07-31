@@ -1,6 +1,12 @@
 .DS_Store
 .cursor/
 .vzctl/
+apps/vzctl-ui/node_modules/
+apps/vzctl-ui/dist/
+apps/vzctl-ui/src-tauri/target/
+daemon/Vendor/caddy/caddy
+daemon/Vendor/dex/dex
+
 .tmp-builder-appliance/
 *.local.yaml
 secrets/

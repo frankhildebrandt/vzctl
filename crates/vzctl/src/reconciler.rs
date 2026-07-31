@@ -29,6 +29,11 @@ const APPLY_STEPS: &[&str] = &[
     "attach_nets",
     "start_helpers",
     "await_agents",
+    "ensure_ca",
+    "ensure_oidc",
+    "ensure_ingress",
+    "ensure_ca_rollout",
+    "ensure_oidc_inject",
     "ensure_docker_context",
     "ensure_ports",
     "apply_routes_policies",
@@ -216,6 +221,8 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         .then(|| journal["step"].as_str().unwrap_or("validate").to_string());
     let steps = if effective_mode == Mode::Down {
         vec![
+            "purge_ingress",
+            "purge_oidc",
             "stop_helpers",
             "detach_nets",
             "destroy_managed",
@@ -332,9 +339,16 @@ fn execute_step(
         }
         "start_helpers" => start_helpers(environment, socket_path),
         "await_agents" => await_helpers(environment, socket_path),
+        "ensure_ca" => ensure_ca(environment),
+        "ensure_oidc" => ensure_oidc(environment, &options.config, socket_path),
+        "ensure_ingress" => ensure_ingress(environment, socket_path),
+        "ensure_ca_rollout" => ensure_ca_rollout(environment, socket_path),
+        "ensure_oidc_inject" => ensure_oidc_inject(environment, socket_path),
         "ensure_docker_context" => ensure_docker_context(environment),
         "ensure_ports" => ensure_ports(environment, socket_path),
         "apply_routes_policies" => apply_routes(environment, socket_path),
+        "purge_ingress" => purge_ingress(environment, socket_path),
+        "purge_oidc" => purge_oidc(environment, socket_path),
         "stop_helpers" => stop_helpers(environment, socket_path),
         "detach_nets" if options.purge => detach_networks(environment, socket_path),
         "destroy_managed" if options.purge => purge_managed(environment, socket_path),
@@ -886,6 +900,249 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
             "ports": desired,
         }),
     )?;
+    Ok(())
+}
+
+fn ensure_ca(environment: &Environment) -> Result<(), Failure> {
+    let enabled = environment
+        .spec
+        .certs
+        .as_ref()
+        .is_some_and(|c| c.enabled)
+        || environment
+            .spec
+            .ingress
+            .as_ref()
+            .is_some_and(|i| i.enabled)
+        || environment.spec.oidc.as_ref().is_some_and(|o| o.enabled);
+    if !enabled {
+        return Ok(());
+    }
+    crate::certs::ensure_ca(&crate::state_dir(), false)
+        .map_err(|e| Failure::new(EXIT_STEP, format!("ensure CA: {e}")))?;
+    Ok(())
+}
+
+fn ensure_oidc(
+    environment: &Environment,
+    config_path: &Path,
+    socket_path: &Path,
+) -> Result<(), Failure> {
+    let Some(oidc) = environment.spec.oidc.as_ref().filter(|o| o.enabled) else {
+        return Ok(());
+    };
+    let state_dir = crate::state_dir();
+    let mut vm_names = Vec::new();
+    for (name, vm) in &environment.spec.vms {
+        if vm.requires.iter().any(|r| r == "oidc") {
+            vm_names.push(name.clone());
+        }
+    }
+    let mut route_hosts = Vec::new();
+    if let Some(ingress) = &environment.spec.ingress {
+        for route in &ingress.routes {
+            route_hosts.push((route.host.clone(), route.requires.clone()));
+        }
+    }
+    let clients = crate::oidc::auto_clients(
+        &environment.spec.project,
+        &environment.spec.domain,
+        &vm_names,
+        &route_hosts,
+    );
+    crate::oidc::write_clients(&state_dir, &environment.spec.project, &clients)
+        .map_err(|e| Failure::new(EXIT_STEP, format!("oidc clients: {e}")))?;
+
+    let password_file = oidc.password_file.as_ref().map(|rel| {
+        config::config_path(config_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(rel)
+    });
+    let storage = state_dir
+        .join("runtime")
+        .join("oidc")
+        .join(&environment.spec.project);
+    fs::create_dir_all(&storage).map_err(|e| Failure::new(EXIT_STEP, e.to_string()))?;
+    let config_yaml = crate::oidc::render_dex_config(
+        &oidc.issuer,
+        &oidc.listen,
+        &clients,
+        password_file.as_deref(),
+        &storage,
+    )
+    .map_err(|e| Failure::new(EXIT_STEP, format!("dex config: {e}")))?;
+
+    let binary = state_dir.join("bin").join("dex");
+    let binary = if binary.exists() {
+        binary
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../daemon/Vendor/dex/dex")
+    };
+    rpc(
+        socket_path,
+        "oidc.ensure",
+        json!({
+            "project": environment.spec.project,
+            "config": config_yaml,
+            "binary": binary.display().to_string(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let Some(ingress) = environment.spec.ingress.as_ref().filter(|i| i.enabled) else {
+        return Ok(());
+    };
+    let state_dir = crate::state_dir();
+    // Mint leafs for each route (+ localhost aliases).
+    for route in &ingress.routes {
+        let mut extras = Vec::new();
+        if ingress.host_aliases {
+            if let Some(alias) = crate::ingress::short_localhost(&route.host) {
+                extras.push(alias);
+            }
+        }
+        crate::certs::mint_leaf(&state_dir, &route.host, &extras)
+            .map_err(|e| Failure::new(EXIT_STEP, format!("mint {}: {e}", route.host)))?;
+    }
+
+    let snapshot = rpc(socket_path, "net.list", json!({}))?;
+    let attachments = snapshot["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let rendered = crate::ingress::render(environment, &attachments, &state_dir)
+        .map_err(|e| Failure::new(EXIT_STEP, format!("caddyfile: {e}")))?;
+
+    rpc(
+        socket_path,
+        "dns.host_services.ensure",
+        json!({ "hosts": rendered.hosts }),
+    )?;
+
+    let binary = state_dir.join("bin").join("caddy");
+    let binary = if binary.exists() {
+        binary
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../daemon/Vendor/caddy/caddy")
+    };
+    rpc(
+        socket_path,
+        "ingress.ensure",
+        json!({
+            "project": environment.spec.project,
+            "caddyfile": rendered.caddyfile,
+            "binary": binary.display().to_string(),
+            "http_port": ingress.http_port,
+            "https_port": ingress.https_port,
+            "gateways": rendered.gateways,
+        }),
+    )?;
+    Ok(())
+}
+
+fn ensure_ca_rollout(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let enabled = environment
+        .spec
+        .certs
+        .as_ref()
+        .is_some_and(|c| c.enabled)
+        || environment
+            .spec
+            .ingress
+            .as_ref()
+            .is_some_and(|i| i.enabled)
+        || environment.spec.oidc.as_ref().is_some_and(|o| o.enabled);
+    if !enabled {
+        return Ok(());
+    }
+    let state_dir = crate::state_dir();
+    let pem = crate::certs::read_ca_pem(&state_dir)
+        .map_err(|e| Failure::new(EXIT_STEP, e))?;
+    let fingerprint = crate::certs::read_fingerprint(&state_dir)
+        .map_err(|e| Failure::new(EXIT_STEP, e))?;
+    for name in environment.spec.vms.keys() {
+        // Best-effort live inject via supervisor → helper → agent exec.
+        let script = format!(
+            "mkdir -p /usr/local/share/ca-certificates /var/lib/vzctl && \
+             cat > /usr/local/share/ca-certificates/vzctl-local.crt <<'EOF'\n{pem}\nEOF\n\
+             echo {fingerprint} > /var/lib/vzctl/ca.fingerprint && \
+             (sudo -n /usr/sbin/update-ca-certificates || update-ca-certificates || true)"
+        );
+        let _ = rpc(
+            socket_path,
+            "vm.exec",
+            json!({
+                "vm_id": name,
+                "cmd": ["bash", "-lc", script],
+                "timeout_ms": 60_000,
+            }),
+        );
+    }
+    Ok(())
+}
+
+fn ensure_oidc_inject(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let Some(oidc) = environment.spec.oidc.as_ref().filter(|o| o.enabled) else {
+        return Ok(());
+    };
+    let path = crate::oidc::clients_path(&crate::state_dir(), &environment.spec.project);
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| Failure::new(EXIT_STEP, e.to_string()))?;
+    let clients: Value =
+        serde_json::from_str(&raw).map_err(|e| Failure::new(EXIT_STEP, e.to_string()))?;
+    let list = clients["clients"].as_array().cloned().unwrap_or_default();
+    for client in list {
+        let id = client["id"].as_str().unwrap_or("client");
+        let secret = client["secret"].as_str().unwrap_or("");
+        let redirect = client["redirectURIs"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !environment.spec.vms.contains_key(id) {
+            continue;
+        }
+        let env_block = format!(
+            "OIDC_ISSUER={}\nOIDC_CLIENT_ID={id}\nOIDC_CLIENT_SECRET={secret}\n\
+             OIDC_REDIRECT_URI={redirect}\nOIDC_CA_PATH=/etc/ssl/certs/ca-certificates.crt\n",
+            oidc.issuer
+        );
+        let script = format!(
+            "mkdir -p /etc/vzctl && cat > /etc/vzctl/oidc.env <<'EOF'\n{env_block}EOF\nchmod 600 /etc/vzctl/oidc.env"
+        );
+        let _ = rpc(
+            socket_path,
+            "vm.exec",
+            json!({
+                "vm_id": id,
+                "cmd": ["bash", "-lc", script],
+                "timeout_ms": 30_000,
+            }),
+        );
+    }
+    Ok(())
+}
+
+fn purge_ingress(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let _ = rpc(
+        socket_path,
+        "ingress.purge",
+        json!({ "project": environment.spec.project }),
+    );
+    Ok(())
+}
+
+fn purge_oidc(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let _ = rpc(
+        socket_path,
+        "oidc.purge",
+        json!({ "project": environment.spec.project }),
+    );
     Ok(())
 }
 

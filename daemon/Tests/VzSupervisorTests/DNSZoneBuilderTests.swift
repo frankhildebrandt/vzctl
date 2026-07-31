@@ -5,6 +5,36 @@ import VzDaemonKit
 
 @testable import VzSupervisor
 
+@Test func hostServicesUseSplitHorizonAddresses() {
+    let snapshot = NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "dmz",
+                cidr: "10.80.0.0/24",
+                project: "edge-dmz"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "web",
+                networkName: "dmz",
+                ip: "10.80.0.10",
+                project: "edge-dmz"
+            ),
+        ]
+    )
+
+    let zone = DNSZoneBuilder.build(
+        snapshot: snapshot,
+        ttl: 15,
+        hostServices: ["auth.svc.edge-dmz.vz.test", "web.svc.edge-dmz.vz.test"]
+    )
+
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["127.0.0.1"])
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.0"])
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
+}
+
 @Test func zoneBuilderCreatesVMARecordFromActualAttachments() {
     let snapshot = NetworkSnapshot(
         networks: [
@@ -26,7 +56,7 @@ import VzDaemonKit
     let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 15)
 
     #expect(zone.zones == ["edge-dmz.vz.test"])
-    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test.") == ["10.80.0.10"])
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test.", horizon: .guest) == ["10.80.0.10"])
     #expect(zone.ttl == 15)
 }
 
@@ -60,13 +90,13 @@ import VzDaemonKit
 
     let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 5)
 
-    #expect(zone.addresses(for: "api-1.lan.shop.vz.test") == ["10.90.0.10"])
-    #expect(zone.addresses(for: "api.svc.shop.vz.test") == [
+    #expect(zone.addresses(for: "api-1.lan.shop.vz.test", horizon: .guest) == ["10.90.0.10"])
+    #expect(zone.addresses(for: "api.svc.shop.vz.test", horizon: .guest) == [
         "10.90.0.10",
         "10.90.0.11",
     ])
-    #expect(zone.addresses(for: "metrics.svc.shop.vz.test") == ["10.90.0.10"])
-    #expect(zone.addresses(for: "api-1.lan.fallback.vz.test") == nil)
+    #expect(zone.addresses(for: "metrics.svc.shop.vz.test", horizon: .guest) == ["10.90.0.10"])
+    #expect(zone.addresses(for: "api-1.lan.fallback.vz.test", horizon: .guest) == nil)
 }
 
 @Test func zoneBuilderSkipsOrphanedNetworksAndInvalidDNSLabels() {

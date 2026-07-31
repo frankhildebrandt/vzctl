@@ -85,8 +85,152 @@ pub(crate) struct Spec {
     /// Named host directories for virtiofs mounts (`name → path`, relative to config dir).
     #[serde(default)]
     pub(crate) volumes: BTreeMap<String, String>,
+    /// Local CA / trust rollout (v0.2).
+    #[serde(default)]
+    pub(crate) certs: Option<CertsConfig>,
+    /// Caddy ingress on loopback (v0.2).
+    #[serde(default)]
+    pub(crate) ingress: Option<IngressConfig>,
+    /// Embedded Dex OIDC (v0.2).
+    #[serde(default)]
+    pub(crate) oidc: Option<OidcConfig>,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CertsConfig {
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+    /// After CA rotate: reinject into running guests, or reboot them.
+    #[serde(default, rename = "onRotate")]
+    pub(crate) on_rotate: CertsOnRotate,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CertsOnRotate {
+    #[default]
+    Reinject,
+    Reboot,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IngressConfig {
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+    /// Alpha/v0.2: only `127.0.0.1`.
+    #[serde(default = "default_loopback")]
+    pub(crate) bind: String,
+    #[serde(default = "default_http_port", rename = "httpPort")]
+    pub(crate) http_port: u16,
+    #[serde(default = "default_https_port", rename = "httpsPort")]
+    pub(crate) https_port: u16,
+    /// Publish `{short}.localhost` host aliases for the same upstreams.
+    #[serde(default = "default_true", rename = "hostAliases")]
+    pub(crate) host_aliases: bool,
+    #[serde(default = "default_true", rename = "redirectHttp")]
+    pub(crate) redirect_http: bool,
+    #[serde(default)]
+    pub(crate) routes: Vec<IngressRoute>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IngressRoute {
+    pub(crate) host: String,
+    /// `vm:port` or `oidc:<port>` (Dex upstream on loopback).
+    pub(crate) to: String,
+    #[serde(default)]
+    pub(crate) requires: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OidcConfig {
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) mode: OidcMode,
+    /// Canonical issuer URL — must be `https://auth.svc.{project}.vz.test` style (never `*.localhost`).
+    pub(crate) issuer: String,
+    #[serde(default = "default_oidc_listen")]
+    pub(crate) listen: String,
+    #[serde(default)]
+    pub(crate) clients: OidcClients,
+    /// Relative to config dir; bcrypt htpasswd-style file for Dex static passwords.
+    #[serde(default, rename = "passwordFile")]
+    pub(crate) password_file: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OidcMode {
+    #[default]
+    Embedded,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OidcClients {
+    #[default]
+    Auto,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_loopback() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_http_port() -> u16 {
+    80
+}
+
+fn default_https_port() -> u16 {
+    443
+}
+
+fn default_oidc_listen() -> String {
+    "127.0.0.1:5556".to_string()
+}
+
+/// Parsed ingress upstream target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressUpstream {
+    Vm { name: String, port: u16 },
+    Oidc { port: u16 },
+}
+
+impl IngressUpstream {
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        let Some((left, right)) = raw.split_once(':') else {
+            return Err(
+                "ingress route to must be vm:port or oidc:<port>".to_string(),
+            );
+        };
+        if left.is_empty() || right.is_empty() {
+            return Err("ingress route to must be vm:port or oidc:<port>".to_string());
+        }
+        let port: u16 = right
+            .parse()
+            .map_err(|_| format!("invalid port in ingress route to {raw:?}"))?;
+        if port == 0 {
+            return Err("ingress route port must be in 1...65535".to_string());
+        }
+        if left.eq_ignore_ascii_case("oidc") {
+            Ok(Self::Oidc { port })
+        } else {
+            Ok(Self::Vm {
+                name: left.to_string(),
+                port,
+            })
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -679,8 +823,216 @@ fn validate_references(
         }
     }
     detect_dependency_cycles(&environment.spec.vms, &mut issues);
+    validate_certs_ingress_oidc(environment, &mut issues);
     sort_and_deduplicate(&mut issues);
     issues
+}
+
+fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<ValidationIssue>) {
+    let oidc_enabled = environment
+        .spec
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.enabled);
+    let ingress_enabled = environment
+        .spec
+        .ingress
+        .as_ref()
+        .is_some_and(|ingress| ingress.enabled);
+
+    if let Some(certs) = &environment.spec.certs {
+        let _ = certs; // enabled + onRotate validated by schema/serde
+    }
+
+    let mut oidc_route_hosts = BTreeSet::new();
+    if let Some(ingress) = &environment.spec.ingress {
+        let base = "$.spec.ingress";
+        if ingress.enabled {
+            if ingress.bind != "127.0.0.1" {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.bind"),
+                    format!(
+                        "unsupported bind address {:?}; v0.2 only allows 127.0.0.1",
+                        ingress.bind
+                    ),
+                    "semantic",
+                ));
+            }
+            if ingress.http_port == 0 {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.httpPort"),
+                    "httpPort must be in 1...65535",
+                    "semantic",
+                ));
+            }
+            if ingress.https_port == 0 {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.httpsPort"),
+                    "httpsPort must be in 1...65535",
+                    "semantic",
+                ));
+            }
+            if ingress.routes.is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.routes"),
+                    "ingress.enabled requires at least one route",
+                    "semantic",
+                ));
+            }
+            let mut hosts = BTreeSet::new();
+            for (index, route) in ingress.routes.iter().enumerate() {
+                let route_base = format!("{base}.routes[{index}]");
+                if route.host.is_empty() {
+                    issues.push(ValidationIssue::new(
+                        format!("{route_base}.host"),
+                        "ingress route host must not be empty",
+                        "semantic",
+                    ));
+                } else if route.host.ends_with(".localhost") {
+                    issues.push(ValidationIssue::new(
+                        format!("{route_base}.host"),
+                        "ingress route host must not use *.localhost; use *.svc.{project}.vz.test (hostAliases publishes localhost separately)",
+                        "semantic",
+                    ));
+                } else if !hosts.insert(route.host.as_str()) {
+                    issues.push(ValidationIssue::new(
+                        format!("{route_base}.host"),
+                        format!("duplicate ingress host {:?}", route.host),
+                        "semantic",
+                    ));
+                }
+                match IngressUpstream::parse(&route.to) {
+                    Ok(IngressUpstream::Vm { name, .. }) => {
+                        if !environment.spec.vms.contains_key(&name) {
+                            issues.push(ValidationIssue::new(
+                                format!("{route_base}.to"),
+                                format!("ingress route references unknown VM {name:?}"),
+                                "semantic",
+                            ));
+                        }
+                    }
+                    Ok(IngressUpstream::Oidc { .. }) => {
+                        oidc_route_hosts.insert(route.host.clone());
+                        if !oidc_enabled {
+                            issues.push(ValidationIssue::new(
+                                format!("{route_base}.to"),
+                                "ingress oidc upstream requires spec.oidc.enabled",
+                                "semantic",
+                            ));
+                        }
+                    }
+                    Err(message) => {
+                        issues.push(ValidationIssue::new(
+                            format!("{route_base}.to"),
+                            message,
+                            "semantic",
+                        ));
+                    }
+                }
+                for (req_index, req) in route.requires.iter().enumerate() {
+                    if req == "oidc" && !oidc_enabled {
+                        issues.push(ValidationIssue::new(
+                            format!("{route_base}.requires[{req_index}]"),
+                            "requires: [oidc] needs spec.oidc.enabled",
+                            "semantic",
+                        ));
+                    } else if req != "oidc" && req != "guest-agent-v1" {
+                        issues.push(ValidationIssue::new(
+                            format!("{route_base}.requires[{req_index}]"),
+                            format!("unsupported require {req:?}; allowed: oidc, guest-agent-v1"),
+                            "semantic",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(oidc) = &environment.spec.oidc {
+        let base = "$.spec.oidc";
+        if oidc.enabled {
+            if oidc.issuer.is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.issuer"),
+                    "oidc.issuer must not be empty",
+                    "semantic",
+                ));
+            } else {
+                if oidc.issuer.contains(".localhost") {
+                    issues.push(ValidationIssue::new(
+                        format!("{base}.issuer"),
+                        "oidc.issuer must never use *.localhost; use https://auth.svc.{project}.vz.test",
+                        "semantic",
+                    ));
+                }
+                if let Some(host) = oidc_issuer_host(&oidc.issuer) {
+                    if ingress_enabled && !oidc_route_hosts.contains(host) {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.issuer"),
+                            format!(
+                                "oidc.issuer host {host:?} must match an ingress route with to: oidc:<port>"
+                            ),
+                            "semantic",
+                        ));
+                    }
+                    let expected = format!("auth.svc.{}", environment.spec.domain);
+                    if host != expected {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.issuer"),
+                            format!("oidc.issuer host must be {expected:?} (got {host:?})"),
+                            "semantic",
+                        ));
+                    }
+                } else {
+                    issues.push(ValidationIssue::new(
+                        format!("{base}.issuer"),
+                        "oidc.issuer must be an https:// URL",
+                        "semantic",
+                    ));
+                }
+            }
+            if !oidc.listen.starts_with("127.0.0.1:") {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.listen"),
+                    format!(
+                        "oidc.listen must bind 127.0.0.1 (got {:?})",
+                        oidc.listen
+                    ),
+                    "semantic",
+                ));
+            }
+        }
+    }
+
+    for (vm_name, vm) in &environment.spec.vms {
+        let vm_base = json_path_key("$.spec.vms", vm_name);
+        for (index, req) in vm.requires.iter().enumerate() {
+            if req == "oidc" && !oidc_enabled {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.requires[{index}]"),
+                    "requires: [oidc] needs spec.oidc.enabled",
+                    "semantic",
+                ));
+            } else if req != "oidc" && req != "guest-agent-v1" {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.requires[{index}]"),
+                    format!("unsupported require {req:?}; allowed: oidc, guest-agent-v1"),
+                    "semantic",
+                ));
+            }
+        }
+    }
+}
+
+fn oidc_issuer_host(issuer: &str) -> Option<&str> {
+    let rest = issuer.strip_prefix("https://")?;
+    let host = rest.split('/').next()?;
+    let host = host.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 /// Collect all declared port forwards from an environment (stack + VM level).
@@ -1436,6 +1788,102 @@ spec:
         assert!(issues
             .iter()
             .any(|issue| issue.message.contains("collides with DHCP")));
+    }
+
+    #[test]
+    fn accepts_ingress_oidc_and_certs() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  certs: { enabled: true, onRotate: reinject }
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    hostAliases: true
+    routes:
+      - { host: web.svc.edge-dmz.vz.test, to: "web:80", requires: [oidc] }
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    mode: embedded
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      requires: [oidc]
+"#;
+        let environment = validate_source(source).unwrap();
+        assert!(environment.spec.ingress.as_ref().unwrap().enabled);
+        assert_eq!(
+            environment.spec.oidc.as_ref().unwrap().issuer,
+            "https://auth.svc.edge-dmz.vz.test"
+        );
+    }
+
+    #[test]
+    fn rejects_localhost_oidc_issuer_and_unknown_ingress_vm() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  ingress:
+    enabled: true
+    routes:
+      - { host: web.svc.edge-dmz.vz.test, to: "missing:80" }
+      - { host: auth.localhost, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    issuer: https://auth.localhost
+    listen: "127.0.0.1:5556"
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("unknown VM")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("*.localhost")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("never use *.localhost")));
     }
 
     #[test]

@@ -60,6 +60,36 @@ virtiofs-Mounts (siehe [virtiofs-v1.md](virtiofs-v1.md)):
 - Volume-Namen: 1–36 Zeichen `[A-Za-z0-9][A-Za-z0-9_-]*`, Tag `vzctl` ist reserviert
 - Targets absolut und unique pro VM; `source` muss ein bekanntes Volume referenzieren
 
+v0.2 Ingress / CA / OIDC (siehe [certs-v1.md](certs-v1.md), [ingress-v1.md](ingress-v1.md),
+[oidc-v1.md](oidc-v1.md)):
+
+```yaml
+certs:
+  enabled: true
+  onRotate: reinject   # reinject | reboot
+ingress:
+  enabled: true
+  bind: "127.0.0.1"    # nur Loopback in v0.2
+  hostAliases: true    # web.localhost → gleicher Upstream (Host only)
+  redirectHttp: true
+  routes:
+    - { host: web.svc.edge-dmz.vz.test, to: "web:80", requires: [oidc] }
+    - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+oidc:
+  enabled: true
+  mode: embedded
+  issuer: https://auth.svc.edge-dmz.vz.test   # nie *.localhost
+  listen: "127.0.0.1:5556"
+  clients: auto
+  passwordFile: .vzctl/oidc/passwords.bcrypt
+```
+
+- `ingress.routes[].to`: `vm:port` oder `oidc:<port>`
+- `oidc.issuer` Host muss `auth.svc.{domain}` sein und (wenn Ingress enabled)
+  zu einer Route mit `to: oidc:…` passen
+- `requires: [oidc]` (VM oder Route) braucht `oidc.enabled`
+- `*.localhost` ist kein kanonischer Route-Host; nur Host-Alias über `hostAliases`
+
 ## Semantische Regeln
 
 - Image-, Network-, Route-, Policy- und VM-Referenzen müssen existieren.
