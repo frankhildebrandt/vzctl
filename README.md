@@ -75,9 +75,11 @@ make install ACTIVATE=0
 
 [vzctl Public License v1](LICENSE) — AGPL-basierte Source-Available-Lizenz:
 
+- Änderungen müssen veröffentlicht werden (Copyleft / Affero: Corresponding Source bei Distribution und bei Netz-Nutzung einer modifizierten Version)
 - kein Verkauf (inkl. Enterprise-/Pro-Builds, bezahlte Forks)
 - kein Bundling / OEM / White-Label in kommerzieller Software
 - kein bezahltes Hosting / SaaS von vzctl selbst (keine Thin-Wrapper)
 
 Erlaubt: interne Nutzung, auch kommerziell; echte Beratungs-/Support-Dienste.
+Rein private interne Mods ohne Weitergabe/Netz-Interaktion für Dritte müssen nicht veröffentlicht werden.
 Basis-Copyleft: [GNU AGPLv3](LICENSE.AGPL-3.0) (per Referenz). Keine OSI-/FSF-Open-Source-Lizenz. Sonderrechte nur per kommerzieller Vereinbarung.

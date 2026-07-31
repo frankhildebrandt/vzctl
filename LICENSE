@@ -8,10 +8,11 @@ General Public License version 3, but it is NOT the AGPL, is NOT an
 OSI-approved Open Source license, and is NOT a Free Software license as
 defined by the Free Software Foundation.
 
-The purpose of Sections 2–4 is to keep vzctl free for end users and operators,
-while blocking sale of the software and commercial "open-source polishing"
-(OEM wrapping, proprietary bundling, paid forks, and paid hosted offerings of
-vzctl itself).
+The purpose of this License is to keep vzctl free for end users and operators,
+to require publication of modifications under the same Affero-style copyleft
+as AGPLv3, and to block sale of the software and commercial "open-source
+polishing" (OEM wrapping, proprietary bundling, paid forks, and paid hosted
+offerings of vzctl itself).
 
 
 0. Definitions
@@ -20,6 +21,19 @@ vzctl itself).
 including any modified version or derivative work.
 
 "You" means any individual or legal entity exercising rights under this License.
+
+"Corresponding Source" means the complete preferred form for making
+modifications to the Software, including all scripts, build/install tooling,
+and other materials required to generate, install, run, and modify the
+object code, as that concept is used in AGPLv3.
+
+"Convey" / "distribute" means any transfer or provision of copies of the
+Software to third parties (source or object form), as those concepts are used
+in AGPLv3.
+
+"Network interaction" means allowing users to interact with the Software
+remotely through a computer network (including APIs, UIs, CLI proxies, and
+control planes), as contemplated by AGPLv3 section 13.
 
 "Sell" means to charge, or arrange for others to charge, any fee, subscription,
 license fee, royalty, or other consideration for:
@@ -55,15 +69,66 @@ The copyleft, source-disclosure, patent, warranty, and liability terms of the
 GNU Affero General Public License version 3 (the text of which is included in
 this repository as LICENSE.AGPL-3.0) are incorporated by reference as
 obligations you must satisfy as if you were a licensee under that license,
-except where this License expressly states otherwise.
+except where this License expressly states otherwise. Section 2 restates the
+core Affero source-publication duties for clarity; if anything in Section 2
+conflicts with the incorporated AGPLv3 text on those duties, the stricter
+obligation applies.
 
 This License is a separate copyright grant. The AGPL text is used only to
 define those shared obligations; it does not independently license the
 Software. AGPL sections 7 and 10 (including any right to remove "further
-restrictions") do not apply to, and cannot sever, Sections 2–5 of this License.
+restrictions") do not apply to, and cannot sever, Sections 2–6 of this License.
 
 
-2. No Sale
+2. Publication of Changes (Affero / AGPL Copyleft)
+
+Modifications are allowed, but they are not private forever once you
+distribute the Software or let others use a modified version over a network.
+You must publish your changes under this License as set out below.
+
+2.1 Distribution of binaries or source
+
+If you Convey the Software (modified or not) in object or executable form,
+you must also provide the Corresponding Source of that version to recipients
+under this License, using one of the AGPLv3-compliant methods (accompany the
+binaries, a written offer, network server access, or peer-to-peer as in
+AGPLv3). The Corresponding Source must include all of your modifications.
+
+2.2 Network use of a modified version (Affero obligation)
+
+If you modify the Software and run a modified version that users can interact
+with remotely through a computer network, you must offer those users a
+prominent opportunity to receive the Corresponding Source of that modified
+version from a network server at no charge, under this License, as required
+by AGPLv3 section 13. This applies even if you do not distribute binaries and
+even if you do not charge for access.
+
+2.3 Same license; no closed modifications
+
+Any modified version or derivative work that you Convey, or whose
+Corresponding Source you must offer under Section 2.1 or 2.2, must be
+licensed as a whole under this License (vzctl Public License v1), including
+Sections 3–6. You may not keep required Corresponding Source proprietary,
+nor relicense required Corresponding Source under plain AGPL or any other
+terms that omit Sections 3–6.
+
+2.4 What must be published
+
+"Your changes" means all modifications, additions, and derivative material
+that are part of the Corresponding Source for the version you Convey or
+expose to network users — including patches, new modules that form part of
+the covered work, and build/install scripts needed to reproduce that version.
+
+2.5 Private internal use
+
+If you modify the Software solely for private use inside your organization
+and you neither Convey it to third parties nor provide Network interaction
+with that modified version to third parties, Section 2 does not by itself
+require you to publish those internal-only changes. As soon as you Convey or
+provide such Network interaction, Sections 2.1–2.4 apply.
+
+
+3. No Sale
 
 You may not Sell the Software.
 
@@ -84,8 +149,12 @@ Allowed:
     remains available under this License at no charge and is not the product
     being sold.
 
+Section 3 does not waive Section 2: if you Convey or provide Network
+interaction with a modified version in connection with otherwise allowed
+activity, you must still publish Corresponding Source as required above.
 
-3. No Commercial Bundling / No Open-Source Polishing
+
+4. No Commercial Bundling / No Open-Source Polishing
 
 You may not Bundle the Software into a Commercial Product.
 
@@ -109,10 +178,10 @@ Allowed:
   - combining the Software only with software that is itself licensed under
     this License or under AGPLv3 (or another strong copyleft that keeps the
     combination non-proprietary), provided the result is not Sold and is not
-    offered as a Commercial Product.
+    offered as a Commercial Product, and provided Section 2 is satisfied.
 
 
-4. No Commercial Hosted Offering of the Software
+5. No Commercial Hosted Offering of the Software
 
 You may not Provide as a Service a Commercial Product whose primary purpose
 or primary value is access to the Software or a thin wrapper around it.
@@ -132,33 +201,37 @@ Allowed:
     behalf, without providing the Software's functionality as a paid product
     to third parties.
 
+If a permitted use still involves Network interaction with a modified
+version by third parties, Section 2.2 applies.
 
-5. No Circumvention
+
+6. No Circumvention
 
 You may not do indirectly what this License prohibits directly, including
 through affiliates, resellers, agents, "partner" SKUs, separate download
 portals, dual packaging, or contracts that effectively Sell, Bundle, or
-Provide as a Service the Software in violation of Sections 2–4.
+Provide as a Service the Software in violation of Sections 3–5, or that
+avoid the source-publication duties in Section 2.
 
 Any attempt to relicense, sublicense, or redistribute the Software under
-plain AGPL or any other terms that omit Sections 2–4 is void and is a
+plain AGPL or any other terms that omit Sections 2–6 is void and is a
 breach of this License.
 
 
-6. Same License for Distributions
+7. Same License for Distributions
 
 If you distribute the Software, you must do so under this License (vzctl
-Public License v1), including Sections 2–5. Recipients must receive a copy
+Public License v1), including Sections 2–6. Recipients must receive a copy
 of this License and of LICENSE.AGPL-3.0.
 
 
-7. Acceptance
+8. Acceptance
 
 By using, copying, modifying, or distributing the Software, you accept this
 License. If you do not accept all terms, you have no license.
 
 
-8. Termination
+9. Termination
 
 Any breach automatically terminates your rights under this License. Upon
 termination you must cease all use and distribution of the Software.
@@ -166,14 +239,14 @@ Licenses previously granted to downstream recipients who received the
 Software in compliance with this License survive termination of your rights.
 
 
-9. No Trademark License
+10. No Trademark License
 
 This License does not grant rights to use the names, logos, or trademarks of
 the copyright holder, except for reasonable attribution required to state
 the Software's origin.
 
 
-10. Disclaimer
+11. Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -187,5 +260,5 @@ SOFTWARE.
 Commercial licensing
 
 If you need rights beyond this License (sale, commercial bundling, OEM,
-managed/hosted offering of the Software, or similar), contact the copyright
-holder for a separate commercial agreement.
+managed/hosted offering of the Software, closed modifications, or similar),
+contact the copyright holder for a separate commercial agreement.
