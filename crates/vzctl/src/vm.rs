@@ -88,6 +88,11 @@ enum Operation {
     Mounts {
         id: String,
     },
+    Modify {
+        id: String,
+        cpus: Option<u32>,
+        memory_mib: Option<u64>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -193,6 +198,7 @@ impl Options {
             Operation::Mount { .. } => "vm.mount",
             Operation::Unmount { .. } => "vm.unmount",
             Operation::Mounts { .. } => "vm.mounts",
+            Operation::Modify { .. } => "vm.modify",
         }
     }
 }
@@ -204,7 +210,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
             usage(if ps_top_level {
                 "usage: vzctl ps [--format human|json]"
             } else {
-                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts ..."
+                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify ..."
             })
         })?;
     let rest = args.collect::<Vec<_>>();
@@ -224,6 +230,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
         "mount" if !ps_top_level => parse_mount(rest),
         "unmount" if !ps_top_level => parse_unmount(rest),
         "mounts" if !ps_top_level => parse_mounts_list(rest),
+        "modify" if !ps_top_level => parse_modify(rest),
         other => Err(usage(if ps_top_level {
             format!("unknown ps option: {other}")
         } else {
@@ -324,6 +331,77 @@ fn parse_inspect(args: Vec<String>) -> Result<Options, Failure> {
     }
     Ok(Options {
         operation: Operation::Inspect { id },
+        format,
+    })
+}
+
+fn parse_modify(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm modify requires a VM id")?;
+    validate_vm_id(&id)?;
+    let mut format = Format::Human;
+    let mut cpus = None;
+    let mut memory_mib = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--cpus" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--cpus requires a positive integer"))?;
+                let parsed = value.parse::<u32>().map_err(|_| {
+                    Failure::new(EXIT_INVALID, format!("invalid --cpus: {value}"))
+                })?;
+                if parsed == 0 {
+                    return Err(Failure::new(
+                        EXIT_INVALID,
+                        "--cpus must be greater than zero",
+                    ));
+                }
+                cpus = Some(parsed);
+                index += 2;
+            }
+            "--memory" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--memory requires a size"))?;
+                memory_mib = Some(
+                    crate::parse_memory_mib(value)
+                        .map_err(|message| Failure::new(EXIT_INVALID, message))?,
+                );
+                index += 2;
+            }
+            "--format" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--format requires human or json"))?;
+                format = match value.as_str() {
+                    "human" => Format::Human,
+                    "json" => Format::Json,
+                    other => {
+                        return Err(usage(format!("unsupported vm format: {other}")));
+                    }
+                };
+                index += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("unknown vm modify option: {other}")));
+            }
+            other => {
+                return Err(usage(format!("unexpected vm modify argument: {other}")));
+            }
+        }
+    }
+    if cpus.is_none() && memory_mib.is_none() {
+        return Err(usage(
+            "vm modify requires at least one of --cpus or --memory",
+        ));
+    }
+    Ok(Options {
+        operation: Operation::Modify {
+            id,
+            cpus,
+            memory_mib,
+        },
         format,
     })
 }
@@ -770,7 +848,12 @@ fn validate_vm_id(id: &str) -> Result<(), Failure> {
     if crate::valid_vm_id(id) {
         Ok(())
     } else {
-        Err(Failure::new(EXIT_INVALID, format!("invalid VM id: {id}")))
+        Err(Failure::new(
+            EXIT_INVALID,
+            format!(
+                "invalid VM id: {id} (flat label or project/vm, alphanumeric/._-)"
+            ),
+        ))
     }
 }
 
@@ -826,6 +909,11 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             unmount_vm(id, target.as_deref(), name.as_deref(), socket_path)
         }
         Operation::Mounts { id } => list_vm_mounts(id, socket_path),
+        Operation::Modify {
+            id,
+            cpus,
+            memory_mib,
+        } => modify_vm(id, *cpus, *memory_mib, socket_path),
     }
 }
 
@@ -1016,56 +1104,101 @@ fn stop_vm(id: &str, wait: bool, socket_path: &Path) -> Result<Value, Failure> {
 
 fn delete_vm(id: &str, force: bool, socket_path: &Path) -> Result<Value, Failure> {
     let bundle = bundle_path(id);
-    let manifest = read_manifest(&bundle)?;
-    if manifest["managed-by"] != "vzctl" {
-        return Err(Failure::new(
-            EXIT_INVALID,
-            format!(
-                "refusing to delete unmanaged VM bundle {}",
-                bundle.display()
-            ),
-        ));
+    let manifest = match read_manifest(&bundle) {
+        Ok(manifest) => Some(manifest),
+        Err(failure) if force && failure.code == EXIT_INVALID => None,
+        Err(failure) => return Err(failure),
+    };
+    if let Some(manifest) = &manifest {
+        if manifest["managed-by"] != "vzctl" {
+            return Err(Failure::new(
+                EXIT_INVALID,
+                format!(
+                    "refusing to delete unmanaged VM bundle {}",
+                    bundle.display()
+                ),
+            ));
+        }
     }
 
-    match rpc(socket_path, "vm.stop", json!({ "vm_id": id })) {
-        Ok(_) => {}
-        Err(failure) if force && failure.code == EXIT_SUPERVISOR => {}
-        Err(failure) => return Err(failure),
-    }
-    match wait_stopped(id, socket_path) {
-        Ok(()) => {}
-        Err(_) if force => {}
-        Err(failure) => return Err(failure),
-    }
-
+    // Prefer supervisor purge (clears helper bookkeeping + SQLite attachments/ports).
+    // Fall back to stop + detach when purge is unavailable (older supervisor).
     let mut detached = Vec::new();
-    match rpc(socket_path, "net.list", json!({})) {
-        Ok(snapshot) => {
-            for attachment in snapshot["attachments"].as_array().into_iter().flatten() {
-                if attachment["vm_id"] == id {
-                    let network = attachment["network"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string();
-                    match rpc(
-                        socket_path,
-                        "net.detach",
-                        json!({ "vm_id": id, "network": network }),
-                    ) {
-                        Ok(_) => detached.push(network),
-                        Err(_) if force => {}
-                        Err(failure) => return Err(map_network_failure(failure)),
+    let mut ports_removed = 0u64;
+    let mut purged_runtime = false;
+    let purge_result = rpc(socket_path, "vm.purge", json!({ "vm_id": id }));
+    match purge_result {
+        Ok(result) => {
+            purged_runtime = true;
+            if let Some(networks) = result["detached_networks"].as_array() {
+                for network in networks {
+                    if let Some(name) = network.as_str() {
+                        detached.push(name.to_string());
                     }
                 }
             }
+            ports_removed = result["ports_removed"].as_u64().unwrap_or(0);
         }
-        Err(failure) if force && failure.code == EXIT_SUPERVISOR => {}
-        Err(failure) => return Err(map_network_failure(failure)),
+        Err(failure)
+            if force
+                || failure.message.contains("Method not found")
+                || failure.message.contains("vm.purge") =>
+        {
+            match rpc(socket_path, "vm.stop", json!({ "vm_id": id })) {
+                Ok(_) => {}
+                Err(_) if force => {}
+                Err(stop_failure) => return Err(stop_failure),
+            }
+            match wait_stopped(id, socket_path) {
+                Ok(()) => {}
+                Err(_) if force => {}
+                Err(wait_failure) => return Err(wait_failure),
+            }
+            match rpc(socket_path, "net.list", json!({})) {
+                Ok(snapshot) => {
+                    for attachment in snapshot["attachments"].as_array().into_iter().flatten() {
+                        if attachment["vm_id"] == id {
+                            let network = attachment["network"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string();
+                            match rpc(
+                                socket_path,
+                                "net.detach",
+                                json!({ "vm_id": id, "network": network }),
+                            ) {
+                                Ok(_) => detached.push(network),
+                                Err(_) if force => {}
+                                Err(detach_failure) => {
+                                    return Err(map_network_failure(detach_failure))
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) if force => {}
+                Err(list_failure) => return Err(map_network_failure(list_failure)),
+            }
+        }
+        Err(failure) => return Err(failure),
     }
 
-    fs::remove_dir_all(&bundle).map_err(|error| {
-        Failure::new(EXIT_VM_DISK, format!("purge {}: {error}", bundle.display()))
-    })?;
+    let purged = if bundle.is_dir() {
+        fs::remove_dir_all(&bundle).map_err(|error| {
+            Failure::new(EXIT_VM_DISK, format!("purge {}: {error}", bundle.display()))
+        })?;
+        true
+    } else if manifest.is_some() {
+        true
+    } else {
+        false
+    };
+
+    let message = if purged {
+        format!("VM {id} deleted")
+    } else {
+        format!("VM {id} cleaned up (no bundle; runtime/DB purged)")
+    };
 
     Ok(json!({
         "apiVersion": API_VERSION,
@@ -1073,16 +1206,22 @@ fn delete_vm(id: &str, force: bool, socket_path: &Path) -> Result<Value, Failure
         "status": "ok",
         "exit_code": 0,
         "summary": {
-            "message": format!("VM {id} deleted"),
+            "message": message,
             "vm_id": id,
             "deleted": true,
+            "purged_bundle": purged,
+            "purged_runtime": purged_runtime,
             "detached": detached.len(),
+            "ports_removed": ports_removed,
         },
         "vm": {
             "id": id,
             "deleted": true,
             "bundle": bundle,
+            "purged_bundle": purged,
+            "purged_runtime": purged_runtime,
             "detached_networks": detached,
+            "ports_removed": ports_removed,
         },
     }))
 }
@@ -1206,6 +1345,9 @@ fn inspect_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
             "bundle": bundle,
             "managed-by": manifest.get("managed-by").cloned().unwrap_or(Value::Null),
             "roles": manifest.get("roles").cloned().unwrap_or_else(|| json!([])),
+            "resources": manifest.get("resources").cloned().unwrap_or_else(|| {
+                json!({ "cpus": 2, "memory_mib": 1024 })
+            }),
             "updated_at": updated_at,
         },
         "identity": manifest.get("identity").cloned().unwrap_or(Value::Null),
@@ -2078,37 +2220,73 @@ fn scan_bundles() -> Result<BTreeMap<String, Value>, Failure> {
         if !path.is_dir() {
             continue;
         }
+        let top_name = entry.file_name().to_string_lossy().to_string();
         let manifest_path = path.join("vm.json");
-        if !manifest_path.is_file() {
+        if manifest_path.is_file() {
+            insert_bundle_entry(&mut vms, &top_name, &path, &manifest_path)?;
             continue;
         }
-        let manifest = read_manifest_file(&manifest_path)?;
-        let id = manifest["vm_id"]
-            .as_str()
-            .or_else(|| path.file_name().and_then(|name| name.to_str()))
-            .unwrap_or("unknown")
-            .to_string();
-        let mut entry = json!({
-            "id": id,
-            "state": "stopped",
-            "pid": Value::Null,
-            "bundle": path,
-            "managed-by": manifest.get("managed-by").cloned().unwrap_or(Value::Null),
-            "roles": manifest.get("roles").cloned().unwrap_or_else(|| json!([])),
-            "ips": [],
-            "networks": [],
-            "identity": manifest.get("identity").cloned().unwrap_or(Value::Null),
-        });
-        let networks = fallback_networks_from_entry(&entry);
-        let ips = networks
-            .iter()
-            .filter_map(|network| network["ip"].as_str().map(str::to_string))
-            .collect::<Vec<_>>();
-        entry["networks"] = json!(networks);
-        entry["ips"] = json!(ips);
-        vms.insert(id, entry);
+        // Nested project/vm bundles: vms/{project}/{vm}/vm.json
+        let children = match fs::read_dir(&path) {
+            Ok(children) => children,
+            Err(error) => {
+                return Err(Failure::new(
+                    EXIT_VM_DISK,
+                    format!("read {}: {error}", path.display()),
+                ));
+            }
+        };
+        for child in children {
+            let child = child.map_err(|error| {
+                Failure::new(EXIT_VM_DISK, format!("read {}: {error}", path.display()))
+            })?;
+            let child_path = child.path();
+            if !child_path.is_dir() {
+                continue;
+            }
+            let nested_manifest = child_path.join("vm.json");
+            if !nested_manifest.is_file() {
+                continue;
+            }
+            let child_name = child.file_name().to_string_lossy().to_string();
+            let id = format!("{top_name}/{child_name}");
+            insert_bundle_entry(&mut vms, &id, &child_path, &nested_manifest)?;
+        }
     }
     Ok(vms)
+}
+
+fn insert_bundle_entry(
+    vms: &mut BTreeMap<String, Value>,
+    fallback_id: &str,
+    path: &Path,
+    manifest_path: &Path,
+) -> Result<(), Failure> {
+    let manifest = read_manifest_file(manifest_path)?;
+    let id = manifest["vm_id"]
+        .as_str()
+        .unwrap_or(fallback_id)
+        .to_string();
+    let mut entry = json!({
+        "id": id,
+        "state": "stopped",
+        "pid": Value::Null,
+        "bundle": path,
+        "managed-by": manifest.get("managed-by").cloned().unwrap_or(Value::Null),
+        "roles": manifest.get("roles").cloned().unwrap_or_else(|| json!([])),
+        "ips": [],
+        "networks": [],
+        "identity": manifest.get("identity").cloned().unwrap_or(Value::Null),
+    });
+    let networks = fallback_networks_from_entry(&entry);
+    let ips = networks
+        .iter()
+        .filter_map(|network| network["ip"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    entry["networks"] = json!(networks);
+    entry["ips"] = json!(ips);
+    vms.insert(id, entry);
+    Ok(())
 }
 
 fn bundle_path(id: &str) -> PathBuf {
@@ -2318,6 +2496,78 @@ fn list_vm_mounts(id: &str, socket_path: &Path) -> Result<Value, Failure> {
     }))
 }
 
+fn modify_vm(
+    id: &str,
+    cpus: Option<u32>,
+    memory_mib: Option<u64>,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let bundle = bundle_path(id);
+    let mut manifest = read_manifest(&bundle)?;
+    let root = manifest
+        .as_object_mut()
+        .ok_or_else(|| Failure::new(EXIT_VM_DISK, "VM manifest is not an object"))?;
+    let resources = root
+        .entry("resources".to_string())
+        .or_insert_with(|| json!({ "cpus": 2, "memory_mib": 1024 }));
+    let resources_obj = resources.as_object_mut().ok_or_else(|| {
+        Failure::new(EXIT_VM_DISK, "VM manifest resources is not an object")
+    })?;
+    if let Some(cpus) = cpus {
+        resources_obj.insert("cpus".to_string(), json!(cpus));
+    }
+    if let Some(memory_mib) = memory_mib {
+        resources_obj.insert("memory_mib".to_string(), json!(memory_mib));
+    }
+    let cpus_value = resources_obj
+        .get("cpus")
+        .and_then(Value::as_u64)
+        .unwrap_or(2);
+    let memory_value = resources_obj
+        .get("memory_mib")
+        .and_then(Value::as_u64)
+        .unwrap_or(1024);
+    let pretty = serde_json::to_string_pretty(&manifest).map_err(|error| {
+        Failure::new(EXIT_VM_DISK, format!("cannot serialize VM manifest: {error}"))
+    })?;
+    let path = bundle.join("vm.json");
+    fs::write(&path, format!("{pretty}\n")).map_err(|error| {
+        Failure::new(
+            EXIT_VM_DISK,
+            format!("cannot write {}: {error}", path.display()),
+        )
+    })?;
+
+    let restart_required = helper_is_running(id, socket_path)?;
+    let message = if restart_required {
+        "resources updated (restart required)"
+    } else {
+        "resources updated (applied on next start)"
+    };
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.modify",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": message,
+            "vm_id": id,
+            "live": false,
+            "restart_required": restart_required,
+        },
+        "vm": {
+            "id": id,
+            "bundle": bundle,
+            "resources": {
+                "cpus": cpus_value,
+                "memory_mib": memory_value,
+            },
+        },
+        "live": false,
+        "restart_required": restart_required,
+    }))
+}
+
 fn read_manifest(bundle: &Path) -> Result<Value, Failure> {
     let manifest = bundle.join("vm.json");
     if !manifest.is_file() {
@@ -2468,7 +2718,7 @@ fn print_human(command: &str, envelope: &Value) {
             }
         }
         "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" | "vm.mount"
-        | "vm.unmount" => {
+        | "vm.unmount" | "vm.modify" => {
             println!(
                 "{}",
                 envelope["summary"]["message"].as_str().unwrap_or(command)
@@ -2658,6 +2908,26 @@ mod tests {
         .unwrap();
     }
 
+    fn write_bundle_with_resources(state: &Path, id: &str, cpus: u32, memory_mib: u64) {
+        let bundle = state.join("vms").join(id);
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("vm.json"),
+            serde_json::to_string_pretty(&json!({
+                "apiVersion": "vzctl.dev/vm-bundle/v1",
+                "managed-by": "vzctl",
+                "vm_id": id,
+                "roles": [],
+                "resources": {
+                    "cpus": cpus,
+                    "memory_mib": memory_mib,
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn parse_lifecycle_commands() {
         let list = parse(
@@ -2696,6 +2966,77 @@ mod tests {
                 force: true
             }
         );
+
+        let modify = parse(
+            [
+                "modify".into(),
+                "web".into(),
+                "--cpus".into(),
+                "4".into(),
+                "--memory".into(),
+                "2G".into(),
+                "--format".into(),
+                "json".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            modify.operation,
+            Operation::Modify {
+                id: "web".into(),
+                cpus: Some(4),
+                memory_mib: Some(2048),
+            }
+        );
+        assert_eq!(modify.format, Format::Json);
+    }
+
+    #[test]
+    fn parse_modify_requires_cpus_or_memory() {
+        let err = parse(["modify".into(), "web".into()].into_iter(), false).unwrap_err();
+        assert_eq!(err.code, EXIT_USAGE);
+    }
+
+    #[test]
+    fn modify_patches_manifest_resources() {
+        let _guard = env_lock().lock().unwrap();
+        let state = temp_state();
+        write_bundle_with_resources(&state, "web", 2, 1024);
+        std::env::set_var("VZCTL_STATE_DIR", &state);
+        let socket = state.join("vz.sock");
+        let envelope = modify_vm("web", Some(4), Some(2048), &socket).unwrap();
+        assert_eq!(envelope["command"], "vm.modify");
+        assert_eq!(envelope["status"], "ok");
+        assert_eq!(envelope["vm"]["resources"]["cpus"], 4);
+        assert_eq!(envelope["vm"]["resources"]["memory_mib"], 2048);
+        assert_eq!(envelope["restart_required"], false);
+        assert_eq!(envelope["live"], false);
+
+        let manifest: Value = serde_json::from_str(
+            &fs::read_to_string(state.join("vms/web/vm.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["resources"]["cpus"], 4);
+        assert_eq!(manifest["resources"]["memory_mib"], 2048);
+
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/golden/vm-modify.json")).unwrap();
+        assert_eq!(envelope["apiVersion"], expected["apiVersion"]);
+        assert_eq!(envelope["command"], expected["command"]);
+        assert_eq!(envelope["status"], expected["status"]);
+        assert_eq!(envelope["exit_code"], expected["exit_code"]);
+        assert_eq!(
+            envelope["vm"]["resources"],
+            expected["vm"]["resources"]
+        );
+        assert_eq!(envelope["live"], expected["live"]);
+        assert_eq!(
+            envelope["restart_required"],
+            expected["restart_required"]
+        );
+        std::env::remove_var("VZCTL_STATE_DIR");
     }
 
     #[test]
@@ -2812,6 +3153,16 @@ mod tests {
                         "result": [],
                         "id": 1,
                     }),
+                    "vm.purge" => json!({
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "vm_id": "web",
+                            "purged": true,
+                            "detached_networks": ["lan"],
+                            "ports_removed": 0,
+                        },
+                        "id": 1,
+                    }),
                     "net.list" => json!({
                         "jsonrpc": "2.0",
                         "result": {
@@ -2841,13 +3192,7 @@ mod tests {
             respond(&mut stream);
             let (mut stream, _) = listener.accept().unwrap();
             respond(&mut stream);
-            // delete: stop, wait list, net.list, net.detach
-            let (mut stream, _) = listener.accept().unwrap();
-            respond(&mut stream);
-            let (mut stream, _) = listener.accept().unwrap();
-            respond(&mut stream);
-            let (mut stream, _) = listener.accept().unwrap();
-            respond(&mut stream);
+            // delete: vm.purge
             let (mut stream, _) = listener.accept().unwrap();
             respond(&mut stream);
         });
@@ -2863,7 +3208,57 @@ mod tests {
         let deleted = delete_vm("web", false, &socket).unwrap();
         assert_eq!(deleted["vm"]["deleted"], true);
         assert_eq!(deleted["vm"]["detached_networks"], json!(["lan"]));
+        assert_eq!(deleted["vm"]["purged_runtime"], true);
         assert!(!state.join("vms/web").exists());
+        std::env::remove_var("VZCTL_STATE_DIR");
+        server.join().unwrap();
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn force_delete_cleans_orphan_without_bundle() {
+        let _guard = env_lock().lock().unwrap();
+        let state = temp_state();
+        let socket = state.join("vz.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let respond = |stream: &mut std::os::unix::net::UnixStream| {
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                let method = request["method"].as_str().unwrap();
+                let body = match method {
+                    "vm.purge" => json!({
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "vm_id": "mos",
+                            "purged": true,
+                            "detached_networks": ["lan"],
+                            "ports_removed": 1,
+                        },
+                        "id": 1,
+                    }),
+                    other => panic!("unexpected method {other}"),
+                };
+                writeln!(stream, "{body}").unwrap();
+            };
+            let (mut stream, _) = listener.accept().unwrap();
+            respond(&mut stream);
+        });
+
+        std::env::set_var("VZCTL_STATE_DIR", &state);
+        assert!(!state.join("vms/mos").exists());
+        let missing = delete_vm("mos", false, &socket).unwrap_err();
+        assert_eq!(missing.code, EXIT_INVALID);
+
+        let deleted = delete_vm("mos", true, &socket).unwrap();
+        assert_eq!(deleted["vm"]["deleted"], true);
+        assert_eq!(deleted["vm"]["purged_bundle"], false);
+        assert_eq!(deleted["vm"]["purged_runtime"], true);
+        assert_eq!(deleted["vm"]["detached_networks"], json!(["lan"]));
+        assert_eq!(deleted["vm"]["ports_removed"], 1);
         std::env::remove_var("VZCTL_STATE_DIR");
         server.join().unwrap();
         fs::remove_dir_all(&state).unwrap();

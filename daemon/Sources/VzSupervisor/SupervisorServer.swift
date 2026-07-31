@@ -287,16 +287,73 @@ final class SupervisorServer: @unchecked Sendable {
                 let vmID = try requiredReconcileString("vm_id", from: params)
                 let record = stateLock.withLock { helpers[vmID] }
                 if let record, record.state == "starting" || record.state == "running" {
-                    guard Darwin.kill(pid_t(record.pid), SIGTERM) == 0 || errno == ESRCH else {
-                        throw SupervisorError.system("stop helper \(vmID)", errno)
+                    let killResult = Darwin.kill(pid_t(record.pid), SIGTERM)
+                    let killErrno = errno
+                    guard killResult == 0 || killErrno == ESRCH else {
+                        throw SupervisorError.system("stop helper \(vmID)", killErrno)
+                    }
+                    // ESRCH / already-dead: terminationHandler may never run — drop stale records now.
+                    if killErrno == ESRCH || !helperProcessIsRunning(vmID) {
+                        stateLock.withLock {
+                            helperProcesses.removeValue(forKey: vmID)
+                            helpers.removeValue(forKey: vmID)
+                        }
                     }
                 } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
                           process.isRunning
                 {
                     process.terminate()
+                } else {
+                    // No live helper — clear any leftover bookkeeping so vm.list drops the id.
+                    stateLock.withLock {
+                        helperProcesses.removeValue(forKey: vmID)
+                        helpers.removeValue(forKey: vmID)
+                    }
                 }
                 return JSONRPCResponse(
                     result: .object(["vm_id": .string(vmID), "state": .string("stopped")]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
+        case "vm.purge":
+            do {
+                let params = try objectParams(request.params, context: "vm.purge")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                // Stop + clear helper bookkeeping even if the process is already gone.
+                let record = stateLock.withLock { helpers[vmID] }
+                if let record, record.state == "starting" || record.state == "running" {
+                    _ = Darwin.kill(pid_t(record.pid), SIGTERM)
+                } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
+                          process.isRunning
+                {
+                    process.terminate()
+                }
+                stateLock.withLock {
+                    helperProcesses.removeValue(forKey: vmID)
+                    helpers.removeValue(forKey: vmID)
+                }
+
+                let detached = try networkRegistry.detachAll(vmID: vmID, vmIsStopped: true)
+                portProxy.purge(vmID: vmID)
+                let portsRemoved = try database.deletePortForwards(vmID: vmID)
+                reloadDNS(reason: "vm.purge")
+                emit(
+                    type: "vm.purged",
+                    data: [
+                        "vm_id": .string(vmID),
+                        "detached_networks": .array(detached.map(JSONValue.string)),
+                        "ports_removed": .number(Double(portsRemoved)),
+                    ]
+                )
+                return JSONRPCResponse(
+                    result: .object([
+                        "vm_id": .string(vmID),
+                        "purged": .bool(true),
+                        "detached_networks": .array(detached.map(JSONValue.string)),
+                        "ports_removed": .number(Double(portsRemoved)),
+                    ]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -585,7 +642,7 @@ final class SupervisorServer: @unchecked Sendable {
                         )
                     }
                 }
-                let activeBindings = try gatewayIngressProxy.ensure(bindings)
+                let activeBindings = gatewayIngressProxy.ensure(bindings)
 
                 let status = try embeddedProcesses.ensure(
                     EmbeddedProcessManager.Spec(
@@ -1082,6 +1139,12 @@ final class SupervisorServer: @unchecked Sendable {
 
         var byte: UInt8 = 0
         while Darwin.read(client, &byte, 1) > 0 {}
+    }
+
+    private func helperProcessIsRunning(_ vmID: String) -> Bool {
+        stateLock.withLock {
+            helperProcesses[vmID]?.isRunning == true
+        }
     }
 
     private func requireRunningHelper(vmID: String) throws {

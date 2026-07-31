@@ -1,0 +1,22 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "vm.modify",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "resources updated (applied on next start)",
+    "vm_id": "web",
+    "live": false,
+    "restart_required": false
+  },
+  "vm": {
+    "id": "web",
+    "bundle": "/state/vms/web",
+    "resources": {
+      "cpus": 4,
+      "memory_mib": 2048
+    }
+  },
+  "live": false,
+  "restart_required": false
+}

@@ -287,7 +287,17 @@ impl Check {
     }
 }
 
+fn ignore_sigpipe() {
+    // Rust's default stdout writer panics on EPIPE; UI streaming closes pipes on kill.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
 fn main() -> ExitCode {
+    // Piped stdout (UI/supervisor) must not abort the process on EPIPE.
+    ignore_sigpipe();
+
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("help") | Some("-h") | Some("--help") => {
@@ -380,6 +390,7 @@ Commands:
   vm start <id> [--format human|json]
   vm stop <id> [--wait true|false] [--format human|json]
   vm delete <id> [--force] [--format human|json]
+  vm modify <id> [--cpus N] [--memory <SIZE>] [--format human|json]
   vm inspect <id> [--format human|json]
   vm logs <id> [-f|--follow] [--tail N] [--format human|json]
   vm exec <id> [-it] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
@@ -1438,7 +1449,7 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
         None | Some("help") | Some("-h") | Some("--help") => {
             eprintln!(
-                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts ..."
+                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify ..."
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -1687,7 +1698,7 @@ fn parse_vm_create_options(
     if !valid_vm_id(&id) {
         return Err(VmCreateFailure::new(
             EXIT_INVALID_INPUT,
-            "vm id must be 1-63 ASCII characters: alphanumeric, '.', '_' or '-'",
+            "vm id must be a flat label (1-63) or project/vm (segments alphanumeric/._-, total ≤127)",
         ));
     }
     let from =
@@ -1697,6 +1708,9 @@ fn parse_vm_create_options(
     if roles.iter().any(|role| role == "docker") && project.is_none() {
         project = Some("default".to_string());
     }
+    let id = resolve_create_vm_id(&id, project.as_deref()).map_err(|message| {
+        VmCreateFailure::new(EXIT_INVALID_INPUT, message)
+    })?;
 
     Ok(VmCreateOptions {
         id,
@@ -1752,13 +1766,63 @@ pub(crate) fn parse_memory_mib(value: &str) -> Result<u64, String> {
     }
 }
 
-fn valid_vm_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 63
-        && id
+fn valid_vm_id_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= 63
+        && segment
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && segment.as_bytes()[0].is_ascii_alphanumeric()
+}
+
+pub(crate) fn valid_vm_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 127 {
+        return false;
+    }
+    match id.split_once('/') {
+        None => valid_vm_id_segment(id),
+        Some((project, vm)) => {
+            !project.contains('/')
+                && !vm.contains('/')
+                && valid_vm_id_segment(project)
+                && valid_vm_id_segment(vm)
+        }
+    }
+}
+
+pub(crate) fn runtime_vm_id(project: &str, name: &str) -> String {
+    format!("{project}/{name}")
+}
+
+pub(crate) fn vm_id_basename(id: &str) -> &str {
+    id.rsplit_once('/').map(|(_, name)| name).unwrap_or(id)
+}
+
+pub(crate) fn resolve_create_vm_id(id: &str, project: Option<&str>) -> Result<String, String> {
+    let Some(project) = project.filter(|value| !value.is_empty()) else {
+        return Ok(id.to_string());
+    };
+    if !valid_vm_id_segment(project) {
+        return Err(format!("invalid --project name: {project}"));
+    }
+    match id.split_once('/') {
+        None => {
+            let namespaced = runtime_vm_id(project, id);
+            if !valid_vm_id(&namespaced) {
+                return Err(format!("namespaced vm id is invalid: {namespaced}"));
+            }
+            Ok(namespaced)
+        }
+        Some((prefix, _)) => {
+            if prefix == project {
+                Ok(id.to_string())
+            } else {
+                Err(format!(
+                    "vm id {id} does not match --project {project} (expected {project}/…)"
+                ))
+            }
+        }
+    }
 }
 
 fn create_vm_bundle(
@@ -1826,19 +1890,16 @@ fn create_vm_bundle_in_dirs(
         )
     })?;
     let bundle_path = vms_directory.join(&options.id);
-    fs::create_dir(&bundle_path).map_err(|error| {
-        let message = if error.kind() == io::ErrorKind::AlreadyExists {
-            format!("VM bundle already exists: {}", bundle_path.display())
-        } else {
-            format!("cannot create VM bundle {}: {error}", bundle_path.display())
-        };
+    if bundle_path.exists() {
+        return Err(VmCreateFailure::new(
+            EXIT_INVALID_INPUT,
+            format!("VM bundle already exists: {}", bundle_path.display()),
+        ));
+    }
+    fs::create_dir_all(&bundle_path).map_err(|error| {
         VmCreateFailure::new(
-            if error.kind() == io::ErrorKind::AlreadyExists {
-                EXIT_INVALID_INPUT
-            } else {
-                EXIT_VM_DISK_PREP_FAILED
-            },
-            message,
+            EXIT_VM_DISK_PREP_FAILED,
+            format!("cannot create VM bundle {}: {error}", bundle_path.display()),
         )
     })?;
 
@@ -2188,7 +2249,7 @@ fn new_vm_identity(vm_id: &str) -> Result<VmIdentity, VmCreateFailure> {
 }
 
 fn cloud_init_fqdn(vm_id: &str) -> String {
-    let normalized = vm_id
+    let normalized = vm_id_basename(vm_id)
         .to_ascii_lowercase()
         .replace('_', "-")
         .split('.')
@@ -2344,6 +2405,8 @@ fn prepare_cloud_init_seed(
         file
     })];
     append_virtiofs_bind_files(&mut write_files);
+    append_router_apply_files(&mut write_files);
+    append_agent_privilege_files(&mut write_files);
     if let Ok(ca_files) = crate::certs::nocloud_ca_write_files(&state_dir()) {
         for file in ca_files {
             let path = file["path"].as_str().unwrap_or_default();
@@ -2592,6 +2655,98 @@ fn append_virtiofs_bind_files(write_files: &mut Vec<serde_yaml::Value>) {
             serde_yaml::Value::String(
                 "vzctl-agent ALL=(root) NOPASSWD: /usr/local/lib/vzctl/virtiofs-bind\n".into(),
             ),
+        );
+        file
+    }));
+}
+
+fn append_router_apply_files(write_files: &mut Vec<serde_yaml::Value>) {
+    let script = include_str!("../../../guest-agent/scripts/router-apply");
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/usr/local/lib/vzctl/router-apply".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0755".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(script.to_string()),
+        );
+        file
+    }));
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/sudoers.d/vzctl-router".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0440".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(
+                "vzctl-agent ALL=(root) NOPASSWD: /usr/local/lib/vzctl/router-apply\n".into(),
+            ),
+        );
+        file
+    }));
+}
+
+/// Passwordless sudo for `vzctl-agent` plus a unit refresh so clones pick up
+/// NoNewPrivileges=no without rebaking the sealed base.
+fn append_agent_privilege_files(write_files: &mut Vec<serde_yaml::Value>) {
+    let unit = include_str!("../../../guest-agent/systemd/vzctl-agent.service");
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/sudoers.d/vzctl-agent".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0440".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("vzctl-agent ALL=(ALL) NOPASSWD:ALL\n".into()),
+        );
+        file
+    }));
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/systemd/system/vzctl-agent.service".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0644".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(unit.to_string()),
         );
         file
     }));
@@ -4197,6 +4352,89 @@ mod tests {
     }
 
     #[test]
+    fn valid_vm_id_accepts_flat_and_project_slash_forms() {
+        assert!(valid_vm_id("web"));
+        assert!(valid_vm_id("edge-dmz/web"));
+        assert!(!valid_vm_id("../web"));
+        assert!(!valid_vm_id("a/b/c"));
+        assert!(!valid_vm_id("/web"));
+        assert!(!valid_vm_id("edge-dmz/"));
+        assert!(!valid_vm_id(""));
+    }
+
+    #[test]
+    fn resolve_create_vm_id_namespaces_with_project() {
+        assert_eq!(
+            resolve_create_vm_id("web", None).unwrap(),
+            "web".to_string()
+        );
+        assert_eq!(
+            resolve_create_vm_id("web", Some("edge-dmz")).unwrap(),
+            "edge-dmz/web".to_string()
+        );
+        assert_eq!(
+            resolve_create_vm_id("edge-dmz/web", Some("edge-dmz")).unwrap(),
+            "edge-dmz/web".to_string()
+        );
+        assert!(resolve_create_vm_id("other/web", Some("edge-dmz")).is_err());
+    }
+
+    #[test]
+    fn vm_create_with_project_prefixes_flat_id() {
+        let args = [
+            "web",
+            "--from",
+            "ubuntu-base",
+            "--data-disk",
+            "4",
+            "--project",
+            "edge-dmz",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        let options = parse_vm_create_options(args).unwrap();
+        assert_eq!(options.id, "edge-dmz/web");
+        assert_eq!(options.project.as_deref(), Some("edge-dmz"));
+    }
+
+    #[test]
+    fn vm_create_rejects_project_prefix_mismatch() {
+        let args = [
+            "lab/web",
+            "--from",
+            "ubuntu-base",
+            "--data-disk",
+            "4",
+            "--project",
+            "edge-dmz",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(args).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+    }
+
+    #[test]
+    fn docker_role_defaults_project_and_namespaces_id() {
+        let args = [
+            "web",
+            "--from",
+            "ubuntu-base",
+            "--data-disk",
+            "4",
+            "--role",
+            "docker",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        let options = parse_vm_create_options(args).unwrap();
+        assert_eq!(options.project.as_deref(), Some("default"));
+        assert_eq!(options.id, "default/web");
+    }
+
+    #[test]
     fn vm_create_accepts_root_password_flag() {
         let args = [
             "web",
@@ -4420,9 +4658,51 @@ mod tests {
     #[test]
     fn identity_helpers_produce_cloud_init_safe_values() {
         assert_eq!(cloud_init_fqdn("Web_01.Example"), "web-01.example");
+        assert_eq!(cloud_init_fqdn("edge-dmz/Web_01"), "web-01");
         assert_eq!(cloud_init_fqdn("..."), "vm");
+        assert_eq!(vm_id_basename("edge-dmz/web"), "web");
+        assert_eq!(vm_id_basename("web"), "web");
         assert_eq!(base64url_unpadded(&[0xfb, 0xff, 0xef]), "-__v");
         assert_eq!(base64url_unpadded(&[0xff]), "_w");
+    }
+
+    #[test]
+    fn namespaced_vm_create_uses_nested_bundle_path() {
+        let directory = test_directory("vm-namespaced-bundle");
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+        let result = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "edge-dmz/web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
+                roles: Vec::new(),
+                requested_network: None,
+                network: None,
+                root_password: None,
+                cloud_init: None,
+                project: Some("edge-dmz".to_string()),
+                mounts: Vec::new(),
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+        assert_eq!(result.id, "edge-dmz/web");
+        assert_eq!(
+            result.bundle_path,
+            vms_directory.join("edge-dmz").join("web")
+        );
+        assert!(result.bundle_path.join("vm.json").is_file());
+        assert_eq!(result.identity.hostname, "web");
+        assert_eq!(result.identity.fqdn, "web");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -4675,6 +4955,9 @@ mod tests {
         assert!(user_data.contains("iptables -P FORWARD DROP"));
         assert!(user_data.contains("/usr/local/lib/vzctl/virtiofs-bind"));
         assert!(user_data.contains("/etc/sudoers.d/vzctl-virtiofs"));
+        assert!(user_data.contains("/etc/sudoers.d/vzctl-agent"));
+        assert!(user_data.contains("vzctl-agent ALL=(ALL) NOPASSWD:ALL"));
+        assert!(user_data.contains("NoNewPrivileges=no"));
         let network_config = &backend.seeds()[0].1;
         assert!(network_config.contains("10.70.0.10/24"));
         assert!(network_config.contains("via: 10.70.0.0"));

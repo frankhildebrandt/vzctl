@@ -192,14 +192,24 @@ Customize-Backend (lokal oder Builder-Appliance) `12` und die
 commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
-### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--root-password <secret>] --format json`
+### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--project P] [--root-password <secret>] --format json`
 
 Payloads: `vm`, `network`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
 kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue
 cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
 `cidata.iso` und ein privater Agent-Token. `vm.resources` enthält `cpus` und
 `memory_mib` (Defaults `2` / `1024`); `--cpus` und `--memory` (bare MiB oder
-`512M`/`2G`/`2Gi`) überschreiben sie und landen in `vm.json`. Mit
+`512M`/`2G`/`2Gi`) überschreiben sie und landen in `vm.json`.
+
+VM-IDs sind entweder flach (`web`, 1–63 Zeichen) oder namespaced
+(`{project}/{vm}`, Gesamtlänge ≤127, genau ein `/`). Mit `--project P` und
+flacher ID wird die Runtime-ID zu `P/<id>` (bereits passendes `P/<id>` bleibt;
+anderes Prefix ist ungültig). Ohne `--project` bleibt die ID unverändert.
+Stack-Apply (`plan|up|apply`) speichert Config-Keys kurz (`spec.vms.web`),
+nutzt aber Runtime-IDs `{project}/{vm}` für Bundle, RPC und Attachments.
+DNS-Labels nutzen den Basename (`web` aus `edge-dmz/web`); Zone weiter über
+`project`. Bestehende flache Stack-VMs brauchen Recreate (`down`/`delete` +
+`apply` bzw. `--force`). Mit
 `--root-password` setzt cloud-init
 `disable_root: false`, `ssh_pwauth: true` und `chpasswd` für `root` (Klartext in
 der geschützten NoCloud-ISO, Mode `0600`); das Passwort erscheint nicht im
@@ -227,11 +237,12 @@ vzctl vm list [--format human|json]
 vzctl vm start <id> [--format human|json]
 vzctl vm stop <id> [--wait true|false] [--format human|json]
 vzctl vm delete <id> [--force] [--format human|json]
+vzctl vm modify <id> [--cpus N] [--memory <SIZE>] [--format human|json]
 vzctl ps [--format human|json]
 ```
 
-Kanonische Commands sind `vm.list`, `vm.start`, `vm.stop`, `vm.delete` und
-`ps`. `vm.list` und `ps` mergen lokale Bundles unter `$VZCTL_STATE_DIR/vms/*/vm.json`
+Kanonische Commands sind `vm.list`, `vm.start`, `vm.stop`, `vm.delete`,
+`vm.modify` und `ps`. `vm.list` und `ps` mergen lokale Bundles unter `$VZCTL_STATE_DIR/vms/*/vm.json`
 mit dem Supervisor-RPC `vm.list` (Runtime-State/PID) und `net.list`
 (Attachments → `ips[]` / `networks[{name,ip}]`). Fehlen Attachments, greift der
 Fallback auf `vm.json` `identity.nics[].address` (außer `dhcp`). Ohne
@@ -242,12 +253,28 @@ Envelope liefert `status=warn`, Exit `0`.
 `bundle` auf. `vm.stop` ruft `vm.stop` auf und wartet standardmäßig bis der
 Helper nicht mehr `starting`/`running` ist (`--wait false` überspringt das
 Warten). `vm.delete` stoppt, detacht Netz-Attachments der VM, und löscht nur
-Bundles mit `managed-by=vzctl`. `--force` toleriert Supervisor-/Stop-/Detach-
-Fehler und löscht danach das Bundle.
+Bundles mit `managed-by=vzctl`. Primär ruft es Supervisor-`vm.purge` auf
+(Helper-Bookkeeping, SQLite-`network_attachments`/`port_forwards`, DNS-Reload).
+`--force` toleriert Supervisor-/Stop-/Detach-Fehler und löscht danach das
+Bundle; fehlt das Bundle (Orphan nur noch in `vm.list`/DB), räumt `--force`
+Runtime/DB trotzdem auf und liefert `purged_bundle: false` sowie
+`purged_runtime: true` wenn `vm.purge` greift.
 
-Usage liefert `2`, ungültige IDs oder fehlende/unmanaged Bundles `3`,
+Usage liefert `2`, ungültige IDs oder fehlende/unmanaged Bundles `3`
+(ohne `--force` bei fehlendem Bundle),
 Socket-/Protokollfehler bei start/stop `10`, Bundle-Purge-Fehler `16`,
 Detach-Konflikte `17` und Timeout/Lifecycle-Fehler `24`.
+
+### `vzctl vm modify <id> [--cpus N] [--memory <SIZE>] [--format human|json]`
+
+Kanonischer Command ist `vm.modify`. Patcht `resources.{cpus,memory_mib}` in
+`$VZCTL_STATE_DIR/vms/<id>/vm.json`. Mindestens eines von `--cpus` oder
+`--memory` ist Pflicht; Größenparsing entspricht `vm create` (bare MiB oder
+`512M`/`2G`/`2Gi`). Es gibt keinen Hotplug: Änderungen greifen erst beim
+nächsten Helper-Start. Läuft die VM, liefert das Envelope
+`restart_required: true` und `live: false` ohne Auto-Restart. Payload enthält
+`vm.resources`. Usage ohne Flags liefert `2`, ungültige IDs/Werte `3`,
+fehlendes/ungültiges Manifest `16`.
 
 ### `vzctl vm inspect|logs|exec|transfer|attach|services|ps`
 

@@ -1,9 +1,12 @@
 .DS_Store
 .cursor/
 .vzctl/
+
+# Tauri UI local/build artifacts (sources, lockfiles, icons stay tracked)
 apps/vzctl-ui/node_modules/
 apps/vzctl-ui/dist/
 apps/vzctl-ui/src-tauri/target/
+apps/vzctl-ui/src-tauri/gen/
 
 # Embedded Caddy/Dex binaries from `make vendor` (keep README only)
 daemon/Vendor/**

@@ -119,10 +119,10 @@ sign-helper: build-daemon ## Helper für lokale Entwicklung ad-hoc signieren
 ui-install: ## Tauri-UI npm-Dependencies installieren
 	cd apps/vzctl-ui && $(NPM) install
 
-ui-dev: ## Tauri-UI im Dev-Modus starten (braucht vzctl auf PATH)
+ui-dev: ui-install ## Tauri-UI im Dev-Modus starten (braucht vzctl auf PATH)
 	cd apps/vzctl-ui && $(NPM) run tauri:dev
 
-ui-build: ## Tauri-UI bauen
+ui-build: ui-install ## Tauri-UI bauen
 	cd apps/vzctl-ui && $(NPM) run tauri:build
 
 clean: ## Rust- und Swift-Build-Artefakte entfernen

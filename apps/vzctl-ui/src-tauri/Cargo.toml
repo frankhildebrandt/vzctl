@@ -6,6 +6,9 @@ authors = ["vzctl"]
 edition = "2021"
 publish = false
 
+# Standalone package — not part of the repo Cargo workspace.
+[workspace]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

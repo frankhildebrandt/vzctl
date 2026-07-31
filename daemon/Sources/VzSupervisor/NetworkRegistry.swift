@@ -1,4 +1,5 @@
 import CoreFoundation
+import Dispatch
 import Foundation
 import VzDaemonKit
 import vmnet
@@ -33,14 +34,30 @@ protocol NetworkRuntimeBackend: Sendable {
     func reserve(_ network: NetworkRecord) throws -> any NetworkRuntimeHandle
 }
 
+/// Holds the process-local vmnet reservation plus a host-side interface.
+///
+/// G0: `.0` is only bindable after `vmnet_interface_start_with_network`
+/// (bridge inet appears). Without that, DNS/ingress fail with EADDRNOTAVAIL.
 final class NativeVmnetHandle: NetworkRuntimeHandle, @unchecked Sendable {
     let network: vmnet_network_ref
+    private let interface: interface_ref?
 
-    init(network: vmnet_network_ref) {
+    init(network: vmnet_network_ref, interface: interface_ref?) {
         self.network = network
+        self.interface = interface
     }
 
     deinit {
+        if let interface {
+            let queue = DispatchQueue(label: "vzctl.vmnet.stop")
+            let sem = DispatchSemaphore(value: 0)
+            let status = vmnet_stop_interface(interface, queue) { _ in
+                sem.signal()
+            }
+            if status == .VMNET_SUCCESS {
+                _ = sem.wait(timeout: .now() + .seconds(5))
+            }
+        }
         // vmnet_network_ref is an opaque CF_RETURNS_RETAINED C handle; Swift ARC
         // does not release it automatically.
         releaseOpaqueCF(network)
@@ -86,7 +103,50 @@ struct NativeVmnetBackend: NetworkRuntimeBackend {
                     + "after an unclean exit this CIDR may remain orphaned until reboot"
             )
         }
-        return NativeVmnetHandle(network: network)
+        do {
+            let interface = try Self.startHostInterface(network: network, name: record.name)
+            return NativeVmnetHandle(network: network, interface: interface)
+        } catch {
+            releaseOpaqueCF(network)
+            throw error
+        }
+    }
+
+    /// Activates the host bridge so gateway `.0` appears and is bindable.
+    private static func startHostInterface(
+        network: vmnet_network_ref,
+        name: String
+    ) throws -> interface_ref {
+        let desc = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_bool(desc, vmnet_allocate_mac_address_key, true)
+
+        let queue = DispatchQueue(label: "vzctl.vmnet.\(name)")
+        let sem = DispatchSemaphore(value: 0)
+        var completionStatus: vmnet_return_t = .VMNET_FAILURE
+
+        guard let iface = vmnet_interface_start_with_network(network, desc, queue, { status, _ in
+            completionStatus = status
+            sem.signal()
+        }) else {
+            throw NetworkRegistryError.runtime(
+                "vmnet interface start for \(name) returned nil"
+            )
+        }
+
+        let wait = sem.wait(timeout: .now() + .seconds(15))
+        guard wait == .success else {
+            _ = vmnet_stop_interface(iface, queue) { _ in }
+            throw NetworkRegistryError.runtime(
+                "vmnet interface start for \(name) timed out"
+            )
+        }
+        guard completionStatus == .VMNET_SUCCESS else {
+            _ = vmnet_stop_interface(iface, queue) { _ in }
+            throw NetworkRegistryError.runtime(
+                "vmnet interface start for \(name) failed (\(completionStatus.rawValue))"
+            )
+        }
+        return iface
     }
 }
 
@@ -202,9 +262,7 @@ final class NetworkRegistry: @unchecked Sendable {
             )
             do {
                 let current = try database.attachments().filter { $0.vmID == vmID }
-                if let same = current.first(where: { $0.networkName == networkName }),
-                   same.labels[Self.automaticLabel] == "true"
-                {
+                if current.contains(where: { $0.networkName == networkName }) {
                     try database.updateAttachment(record)
                 } else {
                     try database.insertAttachment(record)
@@ -416,6 +474,26 @@ final class NetworkRegistry: @unchecked Sendable {
                     "attachment not found: \(vmID) on \(networkName)"
                 )
             }
+        }
+    }
+
+    /// Detaches every network attachment for a VM. Caller must ensure the VM is stopped
+    /// (or helper state already cleared for orphan purge).
+    @discardableResult
+    func detachAll(vmID: String, vmIsStopped: Bool) throws -> [String] {
+        try lock.withLock {
+            try requireRunning()
+            guard vmIsStopped else {
+                throw NetworkRegistryError.conflict(
+                    "VM \(vmID) must be stopped before changing network attachments"
+                )
+            }
+            let names = try database.attachments()
+                .filter { $0.vmID == vmID }
+                .map(\.networkName)
+            let removed = try database.deleteAttachments(vmID: vmID)
+            _ = removed
+            return names.sorted()
         }
     }
 

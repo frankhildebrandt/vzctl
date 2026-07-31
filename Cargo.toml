@@ -1,3 +1,4 @@
 [workspace]
 resolver = "2"
 members = ["crates/vzctl"]
+exclude = ["apps/vzctl-ui/src-tauri"]

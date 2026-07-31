@@ -18,7 +18,7 @@ Set `VZCTL_BIN` if `vzctl` is not on `PATH`.
 ## Views
 
 - Open Environment (folder with `hypernetwork.config.yaml`)
-- Diff / Up / Apply / Down
+- Diff / Up / **Apply** / Down (Apply mit Bestätigung + `--force`)
 - DNS / OIDC / CA status bundle
 
 See Epic [#47](https://github.com/frankhildebrandt/vzctl/issues/47).

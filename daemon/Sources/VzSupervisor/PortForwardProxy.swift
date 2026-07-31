@@ -75,6 +75,17 @@ final class PortForwardProxy: @unchecked Sendable {
         }
     }
 
+    func purge(vmID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let keys = listeners.compactMap { key, listener -> String? in
+            listener.record.vmID == vmID ? key : nil
+        }
+        for key in keys {
+            listeners.removeValue(forKey: key)?.close()
+        }
+    }
+
     func shutdown() {
         lock.lock()
         defer { lock.unlock() }

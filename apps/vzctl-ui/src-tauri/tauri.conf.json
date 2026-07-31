@@ -13,9 +13,19 @@
     "windows": [
       {
         "title": "vzctl",
-        "width": 960,
-        "height": 720,
-        "resizable": true
+        "width": 1100,
+        "height": 740,
+        "minWidth": 640,
+        "minHeight": 420,
+        "resizable": true,
+        "decorations": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "acceptFirstMouse": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 18
+        }
       }
     ],
     "security": {
@@ -25,6 +35,12 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": []
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/henry.w@example.net",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

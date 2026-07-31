@@ -1,6 +1,17 @@
 import Foundation
 import VzDaemonKit
 
+enum EmbeddedProcessError: Error, CustomStringConvertible {
+    case exited(String, String)
+
+    var description: String {
+        switch self {
+        case let .exited(name, hint):
+            return "\(name) exited: \(hint)"
+        }
+    }
+}
+
 /// Manages an embedded child process (Caddy / Dex) under Application Support.
 final class EmbeddedProcessManager: @unchecked Sendable {
     struct Spec: Equatable, Sendable {
@@ -44,6 +55,23 @@ final class EmbeddedProcessManager: @unchecked Sendable {
         process.standardOutput = logHandle
         process.standardError = logHandle
         try process.run()
+        // Config/parse errors often exit within milliseconds; surface them instead of
+        // reporting a healthy child that is already dead.
+        Thread.sleep(forTimeInterval: 0.35)
+        if !process.isRunning {
+            let hint: String
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: logPath)),
+               let text = String(data: data, encoding: .utf8),
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                let tail = text.split(separator: "\n").suffix(8).joined(separator: "\n")
+                hint = tail
+            } else {
+                hint = "exit \(process.terminationStatus)"
+            }
+            try? FileManager.default.removeItem(atPath: spec.pidFile)
+            throw EmbeddedProcessError.exited(spec.name, hint)
+        }
         processes[spec.name] = process
         specs[spec.name] = spec
         try "\(process.processIdentifier)\n".write(

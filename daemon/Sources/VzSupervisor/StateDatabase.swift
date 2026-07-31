@@ -266,6 +266,16 @@ final class StateDatabase {
         }
     }
 
+    /// Deletes every attachment row for a VM (orphan / force-purge cleanup).
+    @discardableResult
+    func deleteAttachments(vmID: String) throws -> Int {
+        try withStatement("DELETE FROM network_attachments WHERE vm_id = ?;") { statement in
+            try bind(vmID, at: 1, to: statement)
+            try stepDone(statement)
+            return Int(sqlite3_changes(handle))
+        }
+    }
+
     func attachments() throws -> [NetworkAttachmentRecord] {
         try withStatement(
             """
@@ -375,6 +385,16 @@ final class StateDatabase {
         }
     }
 
+    /// Deletes every port-forward row for a VM (orphan / force-purge cleanup).
+    @discardableResult
+    func deletePortForwards(vmID: String) throws -> Int {
+        try withStatement("DELETE FROM port_forwards WHERE vm_id = ?;") { statement in
+            try bind(vmID, at: 1, to: statement)
+            try stepDone(statement)
+            return Int(sqlite3_changes(handle))
+        }
+    }
+
     func portForwards(project: String? = nil, stack: String? = nil) throws -> [PortForwardRecord] {
         var sql =
             """
@@ -443,9 +463,7 @@ final class StateDatabase {
             do {
                 if let current = try incompleteJournal(stackID: stackID) {
                     if let currentLease = try lease(stackID: stackID),
-                       currentLease.holder != holder,
-                       (!resume && currentLease.expiresAt > Date())
-                           || holderIsAlive(currentLease.holder)
+                       leaseBlocks(currentLease, for: holder)
                     {
                         throw ReconcileDatabaseError.leaseHeld(currentLease)
                     }
@@ -464,8 +482,7 @@ final class StateDatabase {
                     return try journal(id: current.id)!
                 }
                 if let currentLease = try lease(stackID: stackID),
-                   currentLease.holder != holder,
-                   currentLease.expiresAt > Date()
+                   leaseBlocks(currentLease, for: holder)
                 {
                     throw ReconcileDatabaseError.leaseHeld(currentLease)
                 }
@@ -582,8 +599,7 @@ final class StateDatabase {
                 throw ReconcileDatabaseError.noIncomplete
             }
             if let currentLease = try lease(stackID: stackID),
-               currentLease.holder != holder,
-               holderIsAlive(currentLease.holder)
+               leaseBlocks(currentLease, for: holder)
             {
                 throw ReconcileDatabaseError.leaseHeld(currentLease)
             }
@@ -676,7 +692,8 @@ final class StateDatabase {
     }
 
     private func upsertLease(stackID: String, holder: String) throws {
-        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+        // Long steps (image pull/bake) can exceed a short TTL without checkpoints.
+        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(300))
         try withStatement(
             """
             INSERT INTO locks (stack_id, holder, expires_at) VALUES (?, ?, ?)
@@ -688,6 +705,14 @@ final class StateDatabase {
             try bind(expires, at: 3, to: statement)
             try stepDone(statement)
         }
+    }
+
+    /// A foreign lease blocks only while it is unexpired and its holder PID is alive.
+    /// Expired leases are stealable even if a hung process is still around (ADR 0003).
+    private func leaseBlocks(_ lease: LeaseRecord, for holder: String) -> Bool {
+        guard lease.holder != holder else { return false }
+        guard lease.expiresAt > Date() else { return false }
+        return holderIsAlive(lease.holder)
     }
 
     private func deleteLease(stackID: String, holder: String?) throws {
