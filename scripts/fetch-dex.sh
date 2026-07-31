@@ -22,10 +22,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 echo "cloning dex v${VERSION}"
 git clone --depth 1 --branch "v${VERSION}" https://github.com/dexidp/dex.git "$TMP/dex"
-echo "building ./cmd/dex"
+echo "building ./cmd/dex (CGO required for sqlite3 storage)"
 (
   cd "$TMP/dex"
-  CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$DEST_DIR/dex" ./cmd/dex
+  # Dex sqlite3 storage needs modernc/mattn sqlite via CGO. Pure-Go builds
+  # fail at runtime with "binary compiled without CGO support".
+  CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o "$DEST_DIR/dex" ./cmd/dex
 )
 if [ ! -x "$DEST_DIR/dex" ]; then
   echo "dex binary missing after build" >&2
