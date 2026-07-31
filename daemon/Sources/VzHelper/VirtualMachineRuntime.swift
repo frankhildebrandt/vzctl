@@ -137,6 +137,8 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     func applyShare(_ next: [VirtioFSMountSpec]) async throws {
         try VirtioFSShare.ensureHostDirectories(next)
         let share = try VirtioFSShare.makeShare(mounts: next, bundleURL: bundleURL)
+        // VZDirectoryShare is not Sendable; confine use to the VM serial queue.
+        nonisolated(unsafe) let shareToApply = share
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 guard
@@ -149,7 +151,7 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
                     )
                     return
                 }
-                device.share = share
+                device.share = shareToApply
                 mountsLock.withLock { mounts = next }
                 continuation.resume()
             }

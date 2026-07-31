@@ -466,6 +466,7 @@ pub(crate) fn validate_path(path: &Path) -> Result<Environment, Vec<ValidationIs
     validate_source_with_base(&source, base.as_deref())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_source(source: &str) -> Result<Environment, Vec<ValidationIssue>> {
     validate_source_with_base(source, None)
 }

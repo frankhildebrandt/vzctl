@@ -4,8 +4,10 @@
 apps/vzctl-ui/node_modules/
 apps/vzctl-ui/dist/
 apps/vzctl-ui/src-tauri/target/
-daemon/Vendor/caddy/caddy
-daemon/Vendor/dex/dex
+
+# Embedded Caddy/Dex binaries from `make vendor` (keep README only)
+daemon/Vendor/**
+!daemon/Vendor/README.md
 
 .tmp-builder-appliance/
 *.local.yaml

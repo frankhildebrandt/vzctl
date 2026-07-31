@@ -2597,6 +2597,7 @@ fn append_virtiofs_bind_files(write_files: &mut Vec<serde_yaml::Value>) {
     }));
 }
 
+#[cfg(test)]
 fn cloud_init_root_password_snippet(password: &str) -> String {
     let quoted = serde_yaml::to_string(password)
         .unwrap_or_else(|_| format!("\"{password}\""))

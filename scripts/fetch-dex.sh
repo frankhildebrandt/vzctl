@@ -1,35 +1,40 @@
 #!/usr/bin/env bash
-# Fetch a pinned Dex binary into daemon/Vendor/dex/.
+# Build a pinned Dex binary into daemon/Vendor/dex/ (+ Application Support bin/).
+#
+# Dex tags as v2.x but go.mod still says `module github.com/dexidp/dex` (no /v2),
+# so `go install …@v2.x` fails. We clone the tag and `go build` locally instead.
+# Prebuilt GitHub release assets are no longer published.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${DEX_VERSION:-2.42.0}"
+VERSION="${DEX_VERSION:-2.45.1}"
 DEST_DIR="$ROOT/daemon/Vendor/dex"
 mkdir -p "$DEST_DIR"
-ARCH="$(uname -m)"
-case "$ARCH" in
-  arm64|aarch64) DEX_ARCH="arm64" ;;
-  x86_64) DEX_ARCH="amd64" ;;
-  *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
-esac
-URL="https://github.com/dexidp/dex/releases/download/v${VERSION}/dex_${VERSION}_darwin_${DEX_ARCH}.tar.gz"
+if ! command -v go >/dev/null 2>&1; then
+  echo "go is required to build dex" >&2
+  exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required to build dex" >&2
+  exit 1
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-if ! curl -fsSL "$URL" -o "$TMP/dex.tgz"; then
-  # Fallback: go install into Vendor (requires Go).
-  echo "release tarball unavailable; building with go install" >&2
-  GOBIN="$DEST_DIR" go install "github.com/dexidp/dex/cmd/dex@v${VERSION}"
-  echo "$VERSION" > "$DEST_DIR/VERSION"
-  RUNTIME_BIN="${HOME}/Library/Application Support/vzctl/bin"
-  mkdir -p "$RUNTIME_BIN"
-  install -m 755 "$DEST_DIR/dex" "$RUNTIME_BIN/dex"
-  echo "installed $DEST_DIR/dex ($VERSION)"
-  exit 0
+echo "cloning dex v${VERSION}"
+git clone --depth 1 --branch "v${VERSION}" https://github.com/dexidp/dex.git "$TMP/dex"
+echo "building ./cmd/dex"
+(
+  cd "$TMP/dex"
+  CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$DEST_DIR/dex" ./cmd/dex
+)
+if [ ! -x "$DEST_DIR/dex" ]; then
+  echo "dex binary missing after build" >&2
+  exit 1
 fi
-tar -xzf "$TMP/dex.tgz" -C "$TMP"
-BIN="$(find "$TMP" -type f -name dex | head -1)"
-install -m 755 "$BIN" "$DEST_DIR/dex"
 echo "$VERSION" > "$DEST_DIR/VERSION"
 RUNTIME_BIN="${HOME}/Library/Application Support/vzctl/bin"
 mkdir -p "$RUNTIME_BIN"
 install -m 755 "$DEST_DIR/dex" "$RUNTIME_BIN/dex"
 echo "installed $DEST_DIR/dex ($VERSION)"
+echo "copied to $RUNTIME_BIN/dex"
+"$DEST_DIR/dex" version 2>/dev/null || true
