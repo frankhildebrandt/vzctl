@@ -1,0 +1,26 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "ps",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "1 VM(s)",
+    "vms": 1,
+    "running": 1,
+    "warnings": 0
+  },
+  "vms": [
+    {
+      "id": "web",
+      "state": "running",
+      "pid": 4242,
+      "bundle": "/state/vms/web",
+      "managed-by": "vzctl",
+      "roles": [],
+      "ips": ["10.70.0.10"],
+      "networks": [{ "name": "lan", "ip": "10.70.0.10" }],
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "warnings": []
+}

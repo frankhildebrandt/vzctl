@@ -10,6 +10,8 @@ P0 agent slice implements:
 - concurrent in-flight requests plus `cancel`, process-group termination and
   helper/agent deadlines;
 - argv-only execution with 256 KiB stdin/stdout/stderr caps and truncation;
+- interactive `exec` with `tty: true` (capability `exec_tty`) upgrades the
+  vsock connection to length-prefixed mux frames over a Linux PTY;
 - active non-loopback address reporting that rejects reserved IPv4 `.0`;
 - `time_hint` measurement and thresholded `CLOCK_REALTIME` stepping.
 
@@ -41,9 +43,11 @@ threshold with e.g. `--time-hint-threshold 1500ms`.
 ## Runtime
 
 The image pipeline creates the system user `vzctl-agent`, installs the binary
-at `/usr/local/sbin/vzctl-agent` and enables
-`vzctl-agent.service`. The service waits for `cloud-final.service`, then reads
-`/run/vzctl/agent.token` and listens on AF_VSOCK port `21950`.
+at `/usr/local/sbin/vzctl-agent` and enables `vzctl-agent.service` plus
+`vzctl-agent.path`. The service starts after `cloud-config.service` (NoCloud
+`write_files` for the token), gated by `ConditionFileNotEmpty` on
+`/var/lib/vzctl/agent.token`, and listens on AF_VSOCK port `21950`. The path unit
+retriggers start if the token appears after the first boot attempt.
 
 The per-VM NoCloud seed must write an unpadded base64url token containing at
 least 256 random bits. The file owner is `vzctl-agent:vzctl-agent`, mode `0600`.

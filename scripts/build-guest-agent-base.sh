@@ -58,6 +58,7 @@ printf '%s  %s\n' "$EXPECTED_SHA256" "$SOURCE_IMAGE" | sha256sum --check -
 mkdir -p "$STAGING_DIR"
 install -m 0755 "$AGENT_BINARY" "$STAGING_DIR/vzctl-agent"
 install -m 0644 "$AGENT_ROOT/systemd/vzctl-agent.service" "$STAGING_DIR/vzctl-agent.service"
+install -m 0644 "$AGENT_ROOT/systemd/vzctl-agent.path" "$STAGING_DIR/vzctl-agent.path"
 install -m 0644 "$AGENT_ROOT/systemd/vzctl-agent-tmpfiles.conf" "$STAGING_DIR/vzctl-agent-tmpfiles.conf"
 printf '{"agent_version":"%s","protocol":1,"vsock_port":21950}\n' "$AGENT_VERSION" \
   > "$STAGING_DIR/image-metadata.json"
@@ -67,11 +68,12 @@ virt-customize -a "$CUSTOM_IMAGE" \
   --mkdir /usr/lib/vzctl-agent \
   --copy-in "$STAGING_DIR/vzctl-agent:/usr/local/sbin" \
   --copy-in "$STAGING_DIR/vzctl-agent.service:/etc/systemd/system" \
+  --copy-in "$STAGING_DIR/vzctl-agent.path:/etc/systemd/system" \
   --copy-in "$STAGING_DIR/vzctl-agent-tmpfiles.conf:/usr/lib/tmpfiles.d" \
   --copy-in "$STAGING_DIR/image-metadata.json:/usr/lib/vzctl-agent" \
   --run-command 'id -u vzctl-agent >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vzctl-agent' \
-  --run-command 'chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json' \
-  --run-command 'systemctl enable vzctl-agent.service' \
+  --run-command 'chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /etc/systemd/system/vzctl-agent.path /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json' \
+  --run-command 'systemctl enable vzctl-agent.service vzctl-agent.path' \
   --run-command 'cloud-init clean --logs --machine-id' \
   --run-command 'truncate -s 0 /etc/machine-id' \
   --run-command 'rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed' \

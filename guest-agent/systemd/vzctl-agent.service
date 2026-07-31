@@ -1,17 +1,20 @@
 [Unit]
 Description=vzctl virtio-vsock guest agent
 Documentation=https://github.com/frankhildebrandt/vzctl/blob/main/docs/specs/guest-agent-v1.md
-Wants=cloud-final.service
-After=cloud-final.service
+# Token comes from cloud-init write_files (cloud-config), not cloud-final.
+# After=cloud-final + WantedBy=multi-user creates an ordering cycle and
+# systemd deletes the start job.
+After=cloud-config.service
+Wants=cloud-config.service
 ConditionPathIsReadWrite=/run
-ConditionPathIsRegular=/run/vzctl/agent.token
+ConditionFileNotEmpty=/var/lib/vzctl/agent.token
 
 [Service]
 Type=simple
 User=vzctl-agent
 Group=vzctl-agent
 UMask=0077
-ExecStart=/usr/local/sbin/vzctl-agent --port 21950 --token-file /run/vzctl/agent.token
+ExecStart=/usr/local/sbin/vzctl-agent --port 21950 --token-file /var/lib/vzctl/agent.token
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=yes

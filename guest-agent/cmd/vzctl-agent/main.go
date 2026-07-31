@@ -27,7 +27,7 @@ import (
 const (
 	protocolVersion          = 1
 	defaultPort              = 21950
-	defaultToken             = "/run/vzctl/agent.token"
+	defaultToken             = "/var/lib/vzctl/agent.token"
 	maxFrameSize             = 1_048_576
 	maxIDBytes               = 128
 	authFailureWait          = 250 * time.Millisecond
@@ -47,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "report_ip", "health", "time_hint"}
+var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -93,6 +93,9 @@ type execParams struct {
 	Env       map[string]string `json:"env,omitempty"`
 	StdinB64  *string           `json:"stdin_b64,omitempty"`
 	TimeoutMS *int64            `json:"timeout_ms,omitempty"`
+	TTY       bool              `json:"tty,omitempty"`
+	Cols      *int              `json:"cols,omitempty"`
+	Rows      *int              `json:"rows,omitempty"`
 }
 
 type cappedBuffer struct {
@@ -278,6 +281,44 @@ func (s *server) serveConn(conn net.Conn) error {
 			continue
 		}
 
+		if req.Method == "exec" {
+			var peek execParams
+			if err := decodeParams(req.Params, &peek); err == nil && peek.TTY {
+				inflightMu.Lock()
+				if _, exists := inflight[req.ID]; exists {
+					inflightMu.Unlock()
+					if err := writer.write(errorResponse(req.ID, "proto", "request id is already in flight", nil)); err != nil {
+						return err
+					}
+					continue
+				}
+				requestContext, cancelRequest := context.WithCancel(connectionContext)
+				inflight[req.ID] = cancelRequest
+				inflightMu.Unlock()
+				response, session := prepareTTYExec(requestContext, req)
+				if err := writer.write(response); err != nil {
+					cancelRequest()
+					inflightMu.Lock()
+					delete(inflight, req.ID)
+					inflightMu.Unlock()
+					return err
+				}
+				if session == nil {
+					cancelRequest()
+					inflightMu.Lock()
+					delete(inflight, req.ID)
+					inflightMu.Unlock()
+					continue
+				}
+				err := runTTYSession(conn, writer, session)
+				cancelRequest()
+				inflightMu.Lock()
+				delete(inflight, req.ID)
+				inflightMu.Unlock()
+				return err
+			}
+		}
+
 		inflightMu.Lock()
 		if _, exists := inflight[req.ID]; exists {
 			inflightMu.Unlock()
@@ -306,6 +347,12 @@ func (w *responseWriter) write(response response) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return writeResponse(w.conn, response)
+}
+
+func (w *responseWriter) writeMux(frameType byte, payload []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return writeMuxFrame(w.conn, frameType, payload)
 }
 
 func (s *server) handleHello(conn net.Conn, req request) (bool, bool) {
@@ -471,6 +518,9 @@ func handleExec(parent context.Context, req request) response {
 	if err := decodeParams(req.Params, &params); err != nil {
 		return errorResponse(req.ID, "proto", "invalid exec parameters", nil)
 	}
+	if params.TTY {
+		return errorResponse(req.ID, "proto", "tty exec must be handled on the connection", nil)
+	}
 	timeout, stdin, validationError := validateExecParams(params)
 	if validationError != nil {
 		return errorResponse(req.ID, "proto", validationError.Error(), nil)
@@ -518,6 +568,170 @@ func handleExec(parent context.Context, req request) response {
 			"reason": "cancelled",
 		})
 	}
+}
+
+type ttySession struct {
+	command *exec.Cmd
+	ptm     *os.File
+	pts     *os.File
+}
+
+func prepareTTYExec(parent context.Context, req request) (response, *ttySession) {
+	var params execParams
+	if err := decodeParams(req.Params, &params); err != nil {
+		return errorResponse(req.ID, "proto", "invalid exec parameters", nil), nil
+	}
+	if !params.TTY {
+		return errorResponse(req.ID, "proto", "tty is required", nil), nil
+	}
+	if params.StdinB64 != nil {
+		return errorResponse(req.ID, "proto", "stdin_b64 is invalid with tty", nil), nil
+	}
+	if _, _, err := validateExecParams(params); err != nil {
+		return errorResponse(req.ID, "proto", err.Error(), nil), nil
+	}
+	cols := uint16(80)
+	rows := uint16(24)
+	if params.Cols != nil {
+		if *params.Cols <= 0 || *params.Cols > 65535 {
+			return errorResponse(req.ID, "proto", "cols must be between 1 and 65535", nil), nil
+		}
+		cols = uint16(*params.Cols)
+	}
+	if params.Rows != nil {
+		if *params.Rows <= 0 || *params.Rows > 65535 {
+			return errorResponse(req.ID, "proto", "rows must be between 1 and 65535", nil), nil
+		}
+		rows = uint16(*params.Rows)
+	}
+	if parent.Err() != nil {
+		return errorResponse(req.ID, "timeout", "request cancelled or deadline exceeded", map[string]any{
+			"reason": "cancelled",
+		}), nil
+	}
+
+	ptm, pts, err := openPTY()
+	if err != nil {
+		return errorResponse(req.ID, "unsupported", "tty exec is unavailable", map[string]any{
+			"message": err.Error(),
+		}), nil
+	}
+	if err := setPTYSize(ptm, cols, rows); err != nil {
+		_ = ptm.Close()
+		_ = pts.Close()
+		return errorResponse(req.ID, "internal", "cannot set pty size", nil), nil
+	}
+
+	command := exec.Command(params.Cmd[0], params.Cmd[1:]...)
+	command.Dir = params.Cwd
+	command.Env = sanitizedEnvironment(params.Env)
+	command.Stdin = pts
+	command.Stdout = pts
+	command.Stderr = pts
+	// Ctty must be the child's FD number (stdin=0), not the parent's pts.Fd().
+	command.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+	if err := command.Start(); err != nil {
+		_ = ptm.Close()
+		_ = pts.Close()
+		return execFailure(req.ID, nil, nil, &cappedBuffer{limit: maxExecStream}, &cappedBuffer{limit: maxExecStream}, err.Error()), nil
+	}
+	_ = pts.Close()
+	return successResponse(req.ID, map[string]any{"upgraded": true}), &ttySession{
+		command: command,
+		ptm:     ptm,
+		pts:     pts,
+	}
+}
+
+func runTTYSession(conn net.Conn, writer *responseWriter, session *ttySession) error {
+	defer func() {
+		_ = session.ptm.Close()
+		if session.command.Process != nil {
+			_ = syscall.Kill(-session.command.Process.Pid, syscall.SIGHUP)
+			_ = syscall.Kill(-session.command.Process.Pid, syscall.SIGKILL)
+			_, _ = session.command.Process.Wait()
+		}
+	}()
+
+	done := make(chan struct{})
+	var exitOnce sync.Once
+	var exitStatus int32
+	waitErr := make(chan error, 1)
+	go func() {
+		waitErr <- session.command.Wait()
+	}()
+
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := session.ptm.Read(buf)
+			if n > 0 {
+				if writeErr := writer.writeMux(muxStdout, buf[:n]); writeErr != nil {
+					exitOnce.Do(func() { close(done) })
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		err := <-waitErr
+		status := int32(0)
+		if err != nil {
+			if exit, _ := processStatus(session.command.ProcessState); exit != nil {
+				status = int32(*exit)
+			} else {
+				status = 1
+			}
+		}
+		exitOnce.Do(func() {
+			exitStatus = status
+			close(done)
+		})
+	}()
+
+	go func() {
+		for {
+			frameType, payload, err := readMuxFrame(conn)
+			if err != nil {
+				exitOnce.Do(func() { close(done) })
+				return
+			}
+			switch frameType {
+			case muxStdin:
+				if _, err := session.ptm.Write(payload); err != nil {
+					exitOnce.Do(func() { close(done) })
+					return
+				}
+			case muxStdinEOF:
+				// Keep PTY open until process exits; ignore further stdin.
+			case muxResize:
+				if len(payload) != 4 {
+					exitOnce.Do(func() { close(done) })
+					return
+				}
+				cols := binary.LittleEndian.Uint16(payload[0:2])
+				rows := binary.LittleEndian.Uint16(payload[2:4])
+				_ = setPTYSize(session.ptm, cols, rows)
+			default:
+				exitOnce.Do(func() { close(done) })
+				return
+			}
+		}
+	}()
+
+	<-done
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, uint32(exitStatus))
+	_ = writer.writeMux(muxExit, payload)
+	return nil
 }
 
 func validateExecParams(params execParams) (time.Duration, []byte, error) {

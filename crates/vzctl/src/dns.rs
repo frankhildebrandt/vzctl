@@ -1,9 +1,10 @@
-use serde_json::json;
+use serde_json::{json, Value};
 use serde_yaml::Value as YamlValue;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,6 +14,7 @@ const DEFAULT_CONFIG: &str = "hypernetwork.config.yaml";
 const DEFAULT_DNS_PORT: u16 = 15353;
 const EXIT_USAGE: u8 = 2;
 const EXIT_INVALID: u8 = 3;
+const EXIT_SUPERVISOR: u8 = 10;
 pub(crate) const EXIT_RESOLVER: u8 = 19;
 pub(crate) const EXIT_DNS_QUERY: u8 = 20;
 const MANAGED_MARKER: &str = "# managed-by: vzctl";
@@ -31,6 +33,7 @@ enum Action {
     Install,
     Uninstall,
     Query,
+    Status,
 }
 
 impl Action {
@@ -39,6 +42,7 @@ impl Action {
             Self::Install => "dns.install-resolver",
             Self::Uninstall => "dns.uninstall-resolver",
             Self::Query => "dns.query",
+            Self::Status => "dns.status",
         }
     }
 }
@@ -119,13 +123,13 @@ impl Failure {
     }
 }
 
-pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
+pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
     let args = args.collect::<Vec<_>>();
     let requested_format = requested_format(&args);
-    let command_hint = if args.first().is_some_and(|argument| argument == "query") {
-        "dns.query"
-    } else {
-        "dns"
+    let command_hint = match args.first().map(String::as_str) {
+        Some("query") => "dns.query",
+        Some("status") => "dns.status",
+        _ => "dns",
     };
     let options = match parse(args.into_iter()) {
         Ok(options) => options,
@@ -136,6 +140,9 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     };
     if options.action == Action::Query {
         return query_command(&options);
+    }
+    if options.action == Action::Status {
+        return status_command(&options, socket_path);
     }
     let scope = match resolve_scope(&options) {
         Ok(scope) => scope,
@@ -157,7 +164,7 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     let result = match options.action {
         Action::Install => install(&resolver_dir, &scope, port),
         Action::Uninstall => uninstall(&resolver_dir, &scope),
-        Action::Query => unreachable!("query returned before resolver handling"),
+        Action::Query | Action::Status => unreachable!("handled above"),
     };
     match result {
         Ok((path, change)) => {
@@ -176,6 +183,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
         Some("install-resolver") => Action::Install,
         Some("uninstall-resolver") => Action::Uninstall,
         Some("query") => Action::Query,
+        Some("status") => Action::Status,
         _ => return Err(Failure::new(EXIT_USAGE, usage())),
     };
     let mut project = None;
@@ -188,10 +196,10 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--project" => {
-                if action == Action::Query {
+                if matches!(action, Action::Query | Action::Status) {
                     return Err(Failure::new(
                         EXIT_USAGE,
-                        "--project is not valid for dns query",
+                        "--project is not valid for this dns command",
                     ));
                 }
                 let value = next_value(&mut args, "--project requires a project")?;
@@ -200,10 +208,10 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                 }
             }
             "--config" => {
-                if action == Action::Query {
+                if matches!(action, Action::Query | Action::Status) {
                     return Err(Failure::new(
                         EXIT_USAGE,
-                        "--config is not valid for dns query",
+                        "--config is not valid for this dns command",
                     ));
                 }
                 let value = next_value(&mut args, "--config requires a path")?;
@@ -455,6 +463,116 @@ fn query_command(options: &Options) -> ExitCode {
             ExitCode::from(failure.code)
         }
     }
+}
+
+fn status_command(options: &Options, socket_path: &Path) -> ExitCode {
+    match dns_status(socket_path) {
+        Ok(dns) => {
+            let ok = dns["ok"].as_bool().unwrap_or(false);
+            let exit_code = if ok { 0 } else { EXIT_SUPERVISOR };
+            let listeners = dns["listeners"]
+                .as_array()
+                .map(|values| values.len())
+                .unwrap_or(0);
+            let records = dns["records"].as_u64().unwrap_or(0);
+            let message = if ok {
+                format!("dns ok: {listeners} listener(s), {records} record(s)")
+            } else {
+                format!(
+                    "dns not ok: {}",
+                    dns["last_error"]
+                        .as_str()
+                        .unwrap_or("listeners or zone unhealthy")
+                )
+            };
+            let envelope = json!({
+                "apiVersion": API_VERSION,
+                "command": "dns.status",
+                "status": if ok { "ok" } else { "fail" },
+                "exit_code": exit_code,
+                "summary": {
+                    "message": message,
+                    "ok": ok,
+                },
+                "dns": dns,
+            });
+            match options.format {
+                Format::Json => println!("{envelope}"),
+                Format::Human => {
+                    println!("{message}");
+                    if let Some(listeners) = dns["listeners"].as_array() {
+                        for listener in listeners {
+                            if let Some(value) = listener.as_str() {
+                                println!("  listener: {value}");
+                            }
+                        }
+                    }
+                    if let Some(error) = dns["last_error"].as_str() {
+                        eprintln!("  last_error: {error}");
+                    }
+                }
+            }
+            ExitCode::from(exit_code)
+        }
+        Err(failure) => {
+            emit_failure(options.format, "dns.status", &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn dns_status(socket_path: &Path) -> Result<Value, Failure> {
+    rpc(socket_path, "dns.status", json!({}))
+}
+
+fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
+    let mut stream = UnixStream::connect(socket_path).map_err(|error| {
+        Failure::new(
+            EXIT_SUPERVISOR,
+            format!("supervisor socket {}: {error}", socket_path.display()),
+        )
+    })?;
+    let timeout = Some(Duration::from_secs(5));
+    stream
+        .set_read_timeout(timeout)
+        .and_then(|_| stream.set_write_timeout(timeout))
+        .map_err(|error| {
+            Failure::new(EXIT_SUPERVISOR, format!("supervisor timeout setup: {error}"))
+        })?;
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": 1,
+    });
+    writeln!(stream, "{request}").map_err(|error| {
+        Failure::new(EXIT_SUPERVISOR, format!("supervisor request: {error}"))
+    })?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .map_err(|error| {
+            Failure::new(EXIT_SUPERVISOR, format!("supervisor response: {error}"))
+        })?;
+    let response: Value = serde_json::from_str(&line).map_err(|error| {
+        Failure::new(
+            EXIT_SUPERVISOR,
+            format!("invalid supervisor response: {error}"),
+        )
+    })?;
+    if let Some(error) = response.get("error") {
+        return Err(Failure::new(
+            EXIT_SUPERVISOR,
+            error["message"]
+                .as_str()
+                .unwrap_or("supervisor rpc error")
+                .to_string(),
+        ));
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| Failure::new(EXIT_SUPERVISOR, "supervisor response has no result"))
 }
 
 fn execute_query(
@@ -1115,7 +1233,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]"
+    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]"
 }
 
 #[cfg(test)]
@@ -1270,6 +1388,36 @@ mod tests {
         assert_eq!(options.query_type, QueryType::Aaaa);
         assert_eq!(options.server, "[::1]:15353");
         assert_eq!(options.format, Format::Json);
+    }
+
+    #[test]
+    fn status_options_and_rpc() {
+        let options = parse(["status", "--format", "json"].into_iter().map(str::to_string))
+            .unwrap();
+        assert_eq!(options.action, Action::Status);
+        assert_eq!(options.format, Format::Json);
+
+        let dir = temp_dir("status-rpc");
+        let socket = dir.join("vz.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert!(request.contains("dns.status"), "{request}");
+            writeln!(
+                stream,
+                r#"{{"jsonrpc":"2.0","result":{{"ok":true,"listeners":["127.0.0.1:15353"],"records":2,"zones":1,"ttl":15,"upstream":"system","last_error":null}},"id":1}}"#
+            )
+            .unwrap();
+        });
+        let dns = dns_status(&socket).unwrap();
+        server.join().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(dns["ok"], true);
+        assert_eq!(dns["records"], 2);
     }
 
     #[test]

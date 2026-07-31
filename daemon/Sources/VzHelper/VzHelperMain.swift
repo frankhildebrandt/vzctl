@@ -235,18 +235,34 @@ enum VzHelperMain {
             let created = try VirtualMachineRuntime(options: options)
             runtime = created
             try await created.start()
+            try created.startConsoleServer(
+                stateDirectory: stateDirectory,
+                vmID: options.vmID
+            )
+            defer { created.stopConsoleServer() }
             let control = timeSyncToken.map { token in
                 HelperControlServer(
                     vmID: options.vmID,
-                    stateDirectory: stateDirectory
-                ) { operation, plan in
-                    try await RouterGuestConfigurator.run(
-                        operation,
-                        plan,
-                        runtime: created,
-                        token: token
-                    )
-                }
+                    stateDirectory: stateDirectory,
+                    routeHandler: { operation, plan in
+                        try await RouterGuestConfigurator.run(
+                            operation,
+                            plan,
+                            runtime: created,
+                            token: token
+                        )
+                    },
+                    agentHandler: { method, params in
+                        try await HelperAgentProxy.run(
+                            method: method,
+                            params: params,
+                            runtime: created,
+                            token: token,
+                            stateDirectory: stateDirectory,
+                            vmID: options.vmID
+                        )
+                    }
+                )
             }
             try control?.start()
             defer { control?.stop() }

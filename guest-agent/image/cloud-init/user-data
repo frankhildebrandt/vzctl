@@ -13,7 +13,7 @@ ssh_genkeytypes:
 ssh_authorized_keys:
   - __SSH_PUBLIC_KEY__
 write_files:
-  - path: /run/vzctl/agent.token
+  - path: /var/lib/vzctl/agent.token
     owner: vzctl-agent:vzctl-agent
     permissions: "0600"
     content: |

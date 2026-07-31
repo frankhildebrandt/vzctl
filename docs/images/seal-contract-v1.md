@@ -39,6 +39,7 @@ Vor und nach der Bereinigung müssen diese Artefakte existieren:
 
 - `/usr/local/sbin/vzctl-agent` und ausführbar;
 - `/etc/systemd/system/vzctl-agent.service`;
+- `/etc/systemd/system/vzctl-agent.path`;
 - aktivierter Link unter `multi-user.target.wants`;
 - `/usr/lib/vzctl-agent/image-metadata.json`.
 

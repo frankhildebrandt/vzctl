@@ -164,7 +164,7 @@ a `rotate_token` method are not part of v1.
 |---|---|---|---|
 | `ping` | optional `nonce` string | `pong: true`, optional echoed `nonce` | 1 s / 5 s |
 | `version` | `{}` | `agent_version`, `v`, `capabilities` | 1 s / 5 s |
-| `exec` | `cmd`, optional `cwd`, `env`, `stdin_b64`, `timeout_ms` | `exit`, `stdout`, `stderr`, `truncated` | 30 s / 600 s |
+| `exec` | `cmd`, optional `cwd`, `env`, `stdin_b64`, `timeout_ms`, `tty`, `cols`, `rows` | one-shot: `exit`/`stdout`/`stderr`/`truncated`; tty: `upgraded: true` then mux | 30 s / 600 s (one-shot); tty until exit/disconnect |
 | `report_ip` | `{}` | `interfaces` array | 2 s / 10 s |
 | `health` | `{}` | `status`, `uptime_ms`, `checks` | 2 s / 10 s |
 | `time_hint` | `host_unix_ms`, `reason` | `observed_guest_unix_ms`, `offset_ms`, `action` | 2 s / 5 s |
@@ -219,6 +219,54 @@ returns `exec_failed`; its details contain `exit` (integer or `null`), optional
 Stdout and stderr are captured separately and capped at 256 KiB each. Once a
 stream reaches its cap the agent continues draining it, discards excess bytes
 and sets `truncated: true`, preventing a child-process pipe deadlock.
+
+### `exec` with `tty: true` (capability `exec_tty`)
+
+Interactive sessions negotiate a connection upgrade. The helper must open a
+**fresh** vsock connection, complete `hello`, then send `exec` with:
+
+- `tty: true` (required);
+- `cmd`, optional `cwd` / `env` as in one-shot `exec`;
+- optional `cols` / `rows` (positive integers; default 80×24);
+- **no** `stdin_b64` (invalid with `tty`).
+
+Agents advertise capability `exec_tty`. Without it, `tty: true` returns
+`unsupported`.
+
+Success response:
+
+```json
+{
+  "v": 1,
+  "id": "exec-tty-1",
+  "ok": true,
+  "result": { "upgraded": true }
+}
+```
+
+After this response the connection carries **only** mux frames (no further
+JSON-RPC). Closing the connection ends the session: the agent sends `SIGHUP`
+to the PTY process group and reaps the child.
+
+Mux frame (little-endian), max payload `1,048,576` bytes:
+
+```text
++--------+------------------+----------------------+
+| type   | length: u32 LE   | payload              |
+| 1 byte | 4 bytes          | length bytes         |
++--------+------------------+----------------------+
+```
+
+| type | name | direction | payload |
+|---|---|---|---|
+| `0x01` | stdin | helper → agent | raw bytes |
+| `0x02` | stdout | agent → helper | raw PTY master bytes |
+| `0x04` | resize | helper → agent | `u16 cols`, `u16 rows` (LE) |
+| `0x05` | exit | agent → helper | `i32` exit status (LE); then EOF |
+| `0x06` | stdin_eof | helper → agent | empty |
+
+Unknown types are a `proto` failure and close the connection. One-shot `exec`
+without `tty` is unchanged.
 
 ### `report_ip`
 

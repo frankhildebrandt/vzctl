@@ -44,13 +44,13 @@ Git.
 Before `vzctl image seal`, verify:
 
 - `/usr/local/sbin/vzctl-agent` is a static ARM64 Linux binary;
-- `vzctl-agent.service` is enabled and runs as `vzctl-agent`;
+- `vzctl-agent.service` and `vzctl-agent.path` are enabled; the service runs as `vzctl-agent`;
 - the service bounding/ambient capability set contains only `CAP_SYS_TIME`;
 - `/usr/lib/vzctl-agent/image-metadata.json` records agent version, protocol
   `1` and vsock port `21950`;
 - `/etc/machine-id` is empty; dbus machine ID, SSH host keys and cloud-init
   instance state are absent;
-- `/run/vzctl/agent.token` is absent from the base.
+- `/var/lib/vzctl/agent.token` is absent from the base.
 
 The implemented `image seal` command preserves the binary, enabled unit and
 metadata while cleaning clone identity and making the base read-only. See the
@@ -71,7 +71,7 @@ The seed may contain only:
 
 - hostname/instance identity;
 - SSH public keys;
-- `/run/vzctl/agent.token` with owner `vzctl-agent:vzctl-agent`, mode `0600`;
+- `/var/lib/vzctl/agent.token` with owner `vzctl-agent:vzctl-agent`, mode `0600`;
 - network config.
 
 After booting a fresh clone with a virtio-vsock device:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Start vzctl-agent when agent token is present
+Documentation=https://github.com/frankhildebrandt/vzctl/blob/main/docs/specs/guest-agent-v1.md
+
+[Path]
+PathExists=/var/lib/vzctl/agent.token
+MakeDirectory=false
+
+[Install]
+WantedBy=multi-user.target

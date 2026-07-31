@@ -17,6 +17,8 @@ struct RunOptions: Sendable {
     let dataDiskURL: URL?
     let cidataURL: URL?
     let macAddress: String?
+    let cpuCount: Int
+    let memorySize: UInt64
     let agentTokenURL: URL
     let timeHintReason: AgentTimeHintReason?
     let mock: Bool
@@ -90,6 +92,7 @@ enum HelperArguments {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? (FileManager.default.fileExists(atPath: defaultCidata.path) ? defaultCidata : nil)
         let macAddress = try values["--mac-address"] ?? manifestMACAddress(bundleURL: bundleURL)
+        let resources = try resolveResources(values: values, bundleURL: bundleURL)
         let agentTokenURL = values["--agent-token"].map {
             URL(fileURLWithPath: $0).standardizedFileURL
         } ?? bundleURL.appendingPathComponent("agent.token")
@@ -113,6 +116,8 @@ enum HelperArguments {
             dataDiskURL: dataDiskURL,
             cidataURL: cidataURL,
             macAddress: macAddress,
+            cpuCount: resources.cpuCount,
+            memorySize: resources.memorySize,
             agentTokenURL: agentTokenURL,
             timeHintReason: timeHintReason,
             mock: values["--mock"] != nil,
@@ -123,7 +128,8 @@ enum HelperArguments {
     private static func parseValues(_ arguments: [String]) throws -> [String: String] {
         let valueFlags = Set([
             "--vm-id", "--bundle", "--supervisor-sock", "--disk", "--data-disk", "--cidata",
-            "--mac-address", "--agent-token", "--executable", "--time-hint",
+            "--mac-address", "--cpus", "--memory-mib", "--agent-token", "--executable",
+            "--time-hint",
         ])
         let booleanFlags = Set(["--mock"])
         var values: [String: String] = [:]
@@ -144,6 +150,36 @@ enum HelperArguments {
             }
         }
         return values
+    }
+
+    private static func resolveResources(
+        values: [String: String],
+        bundleURL: URL
+    ) throws -> (cpuCount: Int, memorySize: UInt64) {
+        let defaults = (cpuCount: 2, memorySize: UInt64(1024 * 1024 * 1024))
+        let manifest = try manifestResources(bundleURL: bundleURL) ?? defaults
+        let cpuCount: Int
+        if let raw = values["--cpus"] {
+            guard let parsed = Int(raw), parsed > 0 else {
+                throw HelperError.usage("--cpus must be a positive integer")
+            }
+            cpuCount = parsed
+        } else {
+            cpuCount = manifest.cpuCount
+        }
+        let memorySize: UInt64
+        if let raw = values["--memory-mib"] {
+            guard let mib = UInt64(raw), mib > 0 else {
+                throw HelperError.usage("--memory-mib must be a positive integer")
+            }
+            guard mib <= UInt64.max / (1024 * 1024) else {
+                throw HelperError.usage("--memory-mib is too large")
+            }
+            memorySize = mib * 1024 * 1024
+        } else {
+            memorySize = manifest.memorySize
+        }
+        return (cpuCount, memorySize)
     }
 
     private static func manifestMACAddress(bundleURL: URL) throws -> String? {
@@ -167,6 +203,47 @@ enum HelperArguments {
             throw error
         } catch {
             throw HelperError.invalid("cannot read VM identity from \(manifestURL.path): \(error)")
+        }
+    }
+
+    static func manifestResources(bundleURL: URL) throws -> (cpuCount: Int, memorySize: UInt64)? {
+        let manifestURL = bundleURL.appendingPathComponent("vm.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: manifestURL)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            guard let resources = root["resources"] as? [String: Any] else {
+                return nil
+            }
+            let cpuCount: Int
+            if let value = resources["cpus"] as? Int {
+                cpuCount = value
+            } else if let value = resources["cpus"] as? NSNumber {
+                cpuCount = value.intValue
+            } else {
+                cpuCount = 2
+            }
+            let memoryMib: UInt64
+            if let value = resources["memory_mib"] as? Int, value > 0 {
+                memoryMib = UInt64(value)
+            } else if let value = resources["memory_mib"] as? NSNumber, value.intValue > 0 {
+                memoryMib = value.uint64Value
+            } else {
+                memoryMib = 1024
+            }
+            guard cpuCount > 0 else {
+                throw HelperError.invalid("VM manifest resources.cpus must be > 0")
+            }
+            guard memoryMib <= UInt64.max / (1024 * 1024) else {
+                throw HelperError.invalid("VM manifest resources.memory_mib is too large")
+            }
+            return (cpuCount, memoryMib * 1024 * 1024)
+        } catch let error as HelperError {
+            throw error
+        } catch {
+            throw HelperError.invalid("cannot read VM resources from \(manifestURL.path): \(error)")
         }
     }
 }

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <vzctl-builder.raw> [vz-helper-path]" >&2
+  echo "usage: $0 <vzctl-builder.raw> [vz-helper-path] [vz-supervisor-path]" >&2
   exit 2
 fi
 
@@ -15,11 +15,18 @@ if [[ -z "$HELPER" || ! -x "$HELPER" ]]; then
   echo "vz-helper not found; set VZCTL_HELPER_PATH" >&2
   exit 12
 fi
+SUPERVISOR=${3:-"${VZCTL_SUPERVISOR_PATH:-vz-supervisor}"}
+command -v "$SUPERVISOR" >/dev/null || SUPERVISOR=$(command -v vz-supervisor || true)
+if [[ -z "$SUPERVISOR" || ! -x "$SUPERVISOR" ]]; then
+  echo "vz-supervisor not found; set VZCTL_SUPERVISOR_PATH" >&2
+  exit 12
+fi
 test -f "$APPLIANCE"
 
 SMOKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vzctl-builder-smoke.XXXXXX")
 cleanup() {
   if [[ -n "${HELPER_PID:-}" ]]; then kill "$HELPER_PID" 2>/dev/null || true; wait "$HELPER_PID" 2>/dev/null || true; fi
+  if [[ -n "${SUPERVISOR_PID:-}" ]]; then kill "$SUPERVISOR_PID" 2>/dev/null || true; wait "$SUPERVISOR_PID" 2>/dev/null || true; fi
   rm -rf "$SMOKE_ROOT"
 }
 trap cleanup EXIT INT TERM
@@ -65,12 +72,19 @@ if [[ -n "$TARGET_DEV" ]]; then
 runcmd:
   - |
     set -e
-    virt-customize --version
-    virt-customize -a /dev/vdb --format raw --run-command 'test -e /smoke-before'
-    virt-customize -a /dev/vdb --format raw --run-command 'touch /smoke-after && sync'
-    virt-customize -a /dev/vdb --format raw --run-command 'test -e /smoke-after'
+    mkdir -p /mnt/target
+    ROOT=\$(blkid -o device -t LABEL=cloudimg-rootfs /dev/vdb* 2>/dev/null | head -1 || true)
+    if [ -z "\$ROOT" ]; then
+      ROOT=\$(lsblk -nb -o NAME,SIZE,FSTYPE,TYPE -p /dev/vdb 2>/dev/null | awk '\$4=="part" && \$3!="" && \$3!="vfat" {print \$2" "\$1}' | sort -n | tail -1 | awk '{print \$2}')
+    fi
+    if [ -z "\$ROOT" ]; then ROOT=/dev/vdb1; fi
+    mount "\$ROOT" /mnt/target
+    test -e /mnt/target/smoke-before
+    touch /mnt/target/smoke-after && sync
+    test -e /mnt/target/smoke-after
+    umount /mnt/target
     sync
-    printf 'VZCTL_BUILDER_RESULT {"ok":true,"op":"smoke","exit":0}\\n'
+    printf 'VZCTL_BUILDER_RESULT {"ok":true,"op":"smoke","exit":0}\\n' > /dev/hvc0
     poweroff
 EOF
 else
@@ -79,9 +93,9 @@ else
 runcmd:
   - |
     set -e
-    virt-customize --version
+    test -b /dev/vda
     sync
-    printf 'VZCTL_BUILDER_RESULT {"ok":true,"op":"smoke-version","exit":0}\n'
+    printf 'VZCTL_BUILDER_RESULT {"ok":true,"op":"smoke-version","exit":0}\n' > /dev/hvc0
     poweroff
 EOF
 fi
@@ -90,8 +104,24 @@ hdiutil makehybrid -iso -joliet -default-volume-name cidata \
   -o "$BUNDLE/cidata.iso" "$SMOKE_ROOT/seed" >/dev/null
 
 export VZCTL_STATE_DIR="$SMOKE_ROOT/state"
+"$SUPERVISOR" serve >"$SMOKE_ROOT/supervisor.out" 2>"$SMOKE_ROOT/supervisor.err" &
+SUPERVISOR_PID=$!
+for _ in $(seq 1 100); do
+  [[ -S "$VZCTL_STATE_DIR/vz.sock" ]] && break
+  if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+    echo "supervisor exited early" >&2
+    cat "$SMOKE_ROOT/supervisor.err" >&2 || true
+    exit 12
+  fi
+  sleep 0.1
+done
+if [[ ! -S "$VZCTL_STATE_DIR/vz.sock" ]]; then
+  echo "supervisor socket did not become ready" >&2
+  exit 12
+fi
+
 "$HELPER" run --vm-id "builder-smoke-$$" --bundle "$BUNDLE" \
-  --supervisor-sock "$SMOKE_ROOT/missing.sock" \
+  --supervisor-sock "$VZCTL_STATE_DIR/vz.sock" \
   >"$SMOKE_ROOT/helper.out" 2>"$SMOKE_ROOT/helper.err" &
 HELPER_PID=$!
 
@@ -102,7 +132,7 @@ for _ in $(seq 1 30); do
     [[ -n "$SERIAL" && -f "$SERIAL" ]] && break
   fi
   # Fallback: Logs directory
-  CAND=$(ls "$HOME/Library/Logs/vzctl/"*builder-smoke*.serial.log 2>/dev/null | tail -1 || true)
+  CAND=$(ls -t "$HOME/Library/Logs/vzctl/builder-smoke-$$-"*.serial.log 2>/dev/null | head -1 || true)
   if [[ -n "$CAND" ]]; then SERIAL=$CAND; break; fi
   sleep 1
 done

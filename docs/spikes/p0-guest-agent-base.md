@@ -12,7 +12,8 @@
   stabil mit `unsupported`; #15/#16 haben diese Capabilities anschließend
   implementiert.
 - systemd startet den Agent als dedizierten unprivilegierten User nach
-  `cloud-final.service`, sobald das NoCloud-Token mit Mode `0600` vorliegt.
+  `cloud-config.service` (Token via NoCloud `write_files`, Mode `0600`),
+  plus Path-Unit falls das Token später erscheint.
 - Die Offline-Pipeline installiert Binary und Unit vor dem Seal, schreibt
   Versionsmetadaten und entfernt clone-spezifische Identität.
 - Das NoCloud-Beispiel enthält keinen Download, kein Paket und keinen

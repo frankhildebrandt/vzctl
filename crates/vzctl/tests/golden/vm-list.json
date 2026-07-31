@@ -1,0 +1,36 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "vm.list",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "2 VM(s)",
+    "vms": 2,
+    "running": 1,
+    "warnings": 0
+  },
+  "vms": [
+    {
+      "id": "db",
+      "state": "stopped",
+      "pid": null,
+      "bundle": "/state/vms/db",
+      "managed-by": "vzctl",
+      "roles": ["router"],
+      "ips": [],
+      "networks": []
+    },
+    {
+      "id": "web",
+      "state": "running",
+      "pid": 4242,
+      "bundle": "/state/vms/web",
+      "managed-by": "vzctl",
+      "roles": [],
+      "ips": ["10.70.0.10"],
+      "networks": [{ "name": "lan", "ip": "10.70.0.10" }],
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "warnings": []
+}

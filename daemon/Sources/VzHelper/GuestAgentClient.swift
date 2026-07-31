@@ -165,6 +165,59 @@ final class GuestAgentClient: @unchecked Sendable {
         return AgentExecResult(exit: exit, stdout: stdout, stderr: stderr, truncated: truncated)
     }
 
+    /// Negotiates an interactive PTY upgrade. After success, only mux frames
+    /// may be used on this connection (`writeMux` / `readMux`).
+    func upgradeTTYExec(
+        argv: [String],
+        cwd: String? = nil,
+        environment: [String: String] = [:],
+        cols: Int = 80,
+        rows: Int = 24,
+        timeout: TimeInterval = 10
+    ) throws {
+        var params: [String: Any] = [
+            "cmd": argv,
+            "tty": true,
+            "cols": cols,
+            "rows": rows,
+        ]
+        if let cwd { params["cwd"] = cwd }
+        if !environment.isEmpty { params["env"] = environment }
+        let result = try request(
+            method: "exec",
+            params: params,
+            timeout: timeout,
+            allowCancel: false
+        )
+        guard result["upgraded"] as? Bool == true else {
+            throw GuestAgentError.protocolViolation("tty exec did not upgrade")
+        }
+    }
+
+    func writeMux(type: GuestAgentMuxType, payload: Data = Data()) throws {
+        let frame = try GuestAgentMux.encode(type: type, payload: payload)
+        try writeAll(frame, deadline: Date().addingTimeInterval(30))
+    }
+
+    func readMux(timeout: TimeInterval = 30) throws -> (GuestAgentMuxType, Data) {
+        let deadline = Date().addingTimeInterval(timeout)
+        let header = try readExactly(5, deadline: deadline)
+        let typeRaw = header[header.startIndex]
+        guard let type = GuestAgentMuxType(rawValue: typeRaw) else {
+            throw GuestAgentError.protocolViolation("unknown mux frame type")
+        }
+        let length = header.subdata(in: 1..<5).withUnsafeBytes {
+            UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))
+        }
+        guard length <= GuestAgentMux.maxFrame else {
+            throw GuestAgentError.protocolViolation("mux frame exceeds 1 MiB")
+        }
+        let payload = length == 0
+            ? Data()
+            : try readExactly(Int(length), deadline: deadline)
+        return (type, payload)
+    }
+
     func reportIP(timeout: TimeInterval = 2) throws -> [AgentInterface] {
         let result = try request(method: "report_ip", params: [:], timeout: timeout)
         guard let rawInterfaces = result["interfaces"] as? [[String: Any]] else {

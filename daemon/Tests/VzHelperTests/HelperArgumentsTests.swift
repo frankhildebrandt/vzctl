@@ -39,6 +39,86 @@ import Testing
     #expect(options.dataDiskURL?.lastPathComponent == "dataDisk.raw")
     #expect(options.cidataURL == nil)
     #expect(options.macAddress == "02:12:34:56:78:9a")
+    #expect(options.cpuCount == 2)
+    #expect(options.memorySize == 1024 * 1024 * 1024)
+}
+
+@Test func helperReadsResourcesFromManifest() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vzctl-helper-resources-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    FileManager.default.createFile(
+        atPath: directory.appendingPathComponent("disk.raw").path,
+        contents: Data()
+    )
+    try """
+    {
+      "identity": {
+        "nics": [{"index": 0, "mac": "02:12:34:56:78:9a", "address": "dhcp"}]
+      },
+      "resources": {
+        "cpus": 4,
+        "memory_mib": 2048
+      }
+    }
+    """.write(
+        to: directory.appendingPathComponent("vm.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let parsed = try HelperArguments.manifestResources(bundleURL: directory)
+    #expect(parsed?.cpuCount == 4)
+    #expect(parsed?.memorySize == 2048 * 1024 * 1024)
+
+    let command = try HelperArguments.parse(
+        ["run", "--vm-id", "web", "--bundle", directory.path, "--mock"],
+        environment: ["VZCTL_STATE_DIR": directory.path]
+    )
+    guard case let .run(options) = command else {
+        Issue.record("expected run command")
+        return
+    }
+    #expect(options.cpuCount == 4)
+    #expect(options.memorySize == 2048 * 1024 * 1024)
+}
+
+@Test func helperAcceptsExplicitCpuAndMemoryOverrides() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vzctl-helper-resource-flags-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    FileManager.default.createFile(
+        atPath: directory.appendingPathComponent("disk.raw").path,
+        contents: Data()
+    )
+    try """
+    {
+      "identity": {
+        "nics": [{"index": 0, "mac": "02:12:34:56:78:9a", "address": "dhcp"}]
+      },
+      "resources": { "cpus": 8, "memory_mib": 4096 }
+    }
+    """.write(
+        to: directory.appendingPathComponent("vm.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let command = try HelperArguments.parse(
+        [
+            "run", "--vm-id", "web", "--bundle", directory.path,
+            "--cpus", "3", "--memory-mib", "1536", "--mock",
+        ],
+        environment: ["VZCTL_STATE_DIR": directory.path]
+    )
+    guard case let .run(options) = command else {
+        Issue.record("expected run command")
+        return
+    }
+    #expect(options.cpuCount == 3)
+    #expect(options.memorySize == 1536 * 1024 * 1024)
 }
 
 @Test func helperAcceptsExplicitDataDiskPath() throws {

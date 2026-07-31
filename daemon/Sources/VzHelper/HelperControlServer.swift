@@ -5,7 +5,8 @@ import VzDaemonKit
 
 final class HelperControlServer: @unchecked Sendable {
     let socketPath: String
-    private let handler: @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
+    private let routeHandler: @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
+    private let agentHandler: @Sendable (String, JSONValue?) async throws -> JSONValue
     private let lock = NSLock()
     private var listener: Int32 = -1
     private var ownsSocket = false
@@ -13,13 +14,15 @@ final class HelperControlServer: @unchecked Sendable {
     init(
         vmID: String,
         stateDirectory: URL,
-        handler: @escaping @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue
+        routeHandler: @escaping @Sendable (RouterOperation, RouterPlan) async throws -> JSONValue,
+        agentHandler: @escaping @Sendable (String, JSONValue?) async throws -> JSONValue
     ) {
         socketPath = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
             .appendingPathComponent("\(StateFileName.component(vmID)).sock")
             .path
-        self.handler = handler
+        self.routeHandler = routeHandler
+        self.agentHandler = agentHandler
     }
 
     func start() throws {
@@ -100,26 +103,57 @@ final class HelperControlServer: @unchecked Sendable {
         let response: JSONRPCResponse
         do {
             let request = try JSONRPCFraming.decode(JSONRPCRequest.self, from: data)
-            guard request.method.hasPrefix("route."),
-                  let operation = RouterOperation(
-                      rawValue: String(request.method.dropFirst("route.".count))
-                  )
-            else {
-                response = JSONRPCResponse(
-                    error: JSONRPCError(code: -32601, message: "Method not found"),
-                    id: request.id ?? .null
-                )
-                write(response, to: fd)
-                return
-            }
-            let plan = try Self.plan(from: request.params)
             let box = AsyncResultBox()
-            Task {
-                do {
-                    box.finish(.success(try await handler(operation, plan)))
-                } catch {
-                    box.finish(.failure(error))
+            if request.method.hasPrefix("route.") {
+                guard let operation = RouterOperation(
+                    rawValue: String(request.method.dropFirst("route.".count))
+                ) else {
+                    write(
+                        JSONRPCResponse(
+                            error: JSONRPCError(code: -32601, message: "Method not found"),
+                            id: request.id ?? .null
+                        ),
+                        to: fd
+                    )
+                    return
                 }
+                let plan = try Self.plan(from: request.params)
+                Task {
+                    do {
+                        box.finish(.success(try await routeHandler(operation, plan)))
+                    } catch {
+                        box.finish(.failure(error))
+                    }
+                }
+            } else if request.method.hasPrefix("agent.") {
+                guard HelperAgentProxy.methods.contains(request.method) else {
+                    write(
+                        JSONRPCResponse(
+                            error: JSONRPCError(code: -32601, message: "Method not found"),
+                            id: request.id ?? .null
+                        ),
+                        to: fd
+                    )
+                    return
+                }
+                Task {
+                    do {
+                        box.finish(
+                            .success(try await agentHandler(request.method, request.params))
+                        )
+                    } catch {
+                        box.finish(.failure(error))
+                    }
+                }
+            } else {
+                write(
+                    JSONRPCResponse(
+                        error: JSONRPCError(code: -32601, message: "Method not found"),
+                        id: request.id ?? .null
+                    ),
+                    to: fd
+                )
+                return
             }
             switch box.wait() {
             case let .success(result):
@@ -129,7 +163,7 @@ final class HelperControlServer: @unchecked Sendable {
                 )
             case let .failure(error):
                 response = JSONRPCResponse(
-                    error: JSONRPCError(code: -32019, message: String(describing: error)),
+                    error: Self.rpcError(from: error),
                     id: request.id ?? .null
                 )
             }
@@ -140,6 +174,19 @@ final class HelperControlServer: @unchecked Sendable {
             )
         }
         write(response, to: fd)
+    }
+
+    private static func rpcError(from error: Error) -> JSONRPCError {
+        if let routeError = error as? RouteApplyError {
+            return JSONRPCError(code: routeError.rpcCode, message: routeError.description)
+        }
+        if let guestError = error as? GuestAgentError {
+            return JSONRPCError(code: -32019, message: guestError.description)
+        }
+        if let helperError = error as? HelperError, case let .invalid(message) = helperError {
+            return JSONRPCError(code: -32602, message: message)
+        }
+        return JSONRPCError(code: -32019, message: String(describing: error))
     }
 
     private static func plan(from value: JSONValue?) throws -> RouterPlan {

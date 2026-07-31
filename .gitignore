@@ -1,6 +1,7 @@
 .DS_Store
 .cursor/
 .vzctl/
+.tmp-builder-appliance/
 *.local.yaml
 secrets/
 .env

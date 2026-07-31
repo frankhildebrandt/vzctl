@@ -16,7 +16,9 @@ done
 AGENT="$(virt-ls -l -a "$IMAGE_PATH" /usr/local/sbin/vzctl-agent)"
 BINARY_TYPE="$(virt-cat -a "$IMAGE_PATH" /usr/local/sbin/vzctl-agent | file -)"
 UNIT="$(virt-cat -a "$IMAGE_PATH" /etc/systemd/system/vzctl-agent.service)"
+PATH_UNIT="$(virt-cat -a "$IMAGE_PATH" /etc/systemd/system/vzctl-agent.path)"
 ENABLED="$(virt-cat -a "$IMAGE_PATH" /etc/systemd/system/multi-user.target.wants/vzctl-agent.service)"
+ENABLED_PATH="$(virt-cat -a "$IMAGE_PATH" /etc/systemd/system/multi-user.target.wants/vzctl-agent.path)"
 METADATA="$(virt-cat -a "$IMAGE_PATH" /usr/lib/vzctl-agent/image-metadata.json)"
 MACHINE_ID="$(virt-cat -a "$IMAGE_PATH" /etc/machine-id)"
 
@@ -29,11 +31,20 @@ grep -q 'Restart=on-failure' <<<"$UNIT"
 grep -q '^CapabilityBoundingSet=CAP_SYS_TIME$' <<<"$UNIT"
 grep -q '^AmbientCapabilities=CAP_SYS_TIME$' <<<"$UNIT"
 grep -q '^ProtectClock=no$' <<<"$UNIT"
+grep -q '^After=cloud-config.service$' <<<"$UNIT"
+grep -q '^ConditionFileNotEmpty=/var/lib/vzctl/agent.token$' <<<"$UNIT"
+grep -qv 'cloud-final.service' <<<"$UNIT"
+grep -q '^PathExists=/var/lib/vzctl/agent.token$' <<<"$PATH_UNIT"
 test "$ENABLED" = "$UNIT"
+test "$ENABLED_PATH" = "$PATH_UNIT"
 grep -Eq '"agent_version":"[^"]+"' <<<"$METADATA"
 grep -q '"protocol":1' <<<"$METADATA"
 grep -q '"vsock_port":21950' <<<"$METADATA"
 test -z "$MACHINE_ID"
+if virt-ls -a "$IMAGE_PATH" /var/lib/vzctl/agent.token >/dev/null 2>&1; then
+  echo "base must not contain /var/lib/vzctl/agent.token" >&2
+  exit 1
+fi
 if virt-ls -a "$IMAGE_PATH" /run/vzctl/agent.token >/dev/null 2>&1; then
   echo "base must not contain /run/vzctl/agent.token" >&2
   exit 1

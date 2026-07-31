@@ -13,7 +13,11 @@
     "id": "web",
     "bundle": "/state/vms/web",
     "managed-by": "vzctl",
-    "roles": []
+    "roles": [],
+    "resources": {
+      "cpus": 2,
+      "memory_mib": 1024
+    }
   },
   "network": {
     "name": "lan",

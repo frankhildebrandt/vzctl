@@ -16,8 +16,14 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     private let virtualMachine: VZVirtualMachine
     private let eventStream: AsyncStream<VirtualMachineEvent>
     private let eventContinuation: AsyncStream<VirtualMachineEvent>.Continuation
+    private let consoleLock = NSLock()
     private var serialInputWriter: FileHandle?
-    private var serialOutput: FileHandle?
+    private var serialOutputRead: FileHandle?
+    private var serialLogWriter: FileHandle?
+    private var consoleListener: Int32 = -1
+    private var consoleOwnsSocket = false
+    private var consoleSocketPath: String?
+    private var consoleClients: [Int32] = []
 
     init(options: RunOptions) throws {
         let logsDirectory = try StatePaths.logsDirectory()
@@ -41,9 +47,16 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         let resources = try Self.makeConfiguration(options: options, serialLogURL: serialLogURL)
         virtualMachine = VZVirtualMachine(configuration: resources.configuration, queue: queue)
         serialInputWriter = resources.serialInputWriter
-        serialOutput = resources.serialOutput
+        serialOutputRead = resources.serialOutputRead
+        serialLogWriter = resources.serialLogWriter
         super.init()
         virtualMachine.delegate = self
+        startSerialTee()
+    }
+
+    deinit {
+        stopConsoleServer()
+        serialOutputRead?.readabilityHandler = nil
     }
 
     func start() async throws {
@@ -55,6 +68,7 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     }
 
     func stop() async {
+        stopConsoleServer()
         let requested = await withCheckedContinuation { continuation in
             queue.async { [self] in
                 guard virtualMachine.canRequestStop else {
@@ -111,6 +125,87 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         }.value
     }
 
+    func writeToGuest(_ data: Data) {
+        guard !data.isEmpty else { return }
+        serialInputWriter?.write(data)
+    }
+
+    func startConsoleServer(stateDirectory: URL, vmID: String) throws {
+        let helpersDirectory = stateDirectory.appendingPathComponent("helpers", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: helpersDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let path = helpersDirectory
+            .appendingPathComponent("\(StateFileName.component(vmID)).console.sock")
+            .path
+        stopConsoleServer()
+        if FileManager.default.fileExists(atPath: path) {
+            guard Darwin.unlink(path) == 0 else {
+                throw HelperError.system("unlink stale console socket", errno)
+            }
+        }
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw HelperError.system("console socket", errno) }
+        var address = sockaddr_un()
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            Darwin.close(fd)
+            throw HelperError.invalid("console socket path is too long")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            throw HelperError.system("bind console socket", code)
+        }
+        guard chmod(path, 0o600) == 0, Darwin.listen(fd, 4) == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            Darwin.unlink(path)
+            throw HelperError.system("listen console socket", code)
+        }
+        consoleLock.withLock {
+            consoleListener = fd
+            consoleOwnsSocket = true
+            consoleSocketPath = path
+        }
+        DispatchQueue.global().async { [weak self] in self?.consoleAcceptLoop(fd) }
+    }
+
+    func stopConsoleServer() {
+        let state = consoleLock.withLock { () -> (Int32, Bool, String?, [Int32]) in
+            let state = (consoleListener, consoleOwnsSocket, consoleSocketPath, consoleClients)
+            consoleListener = -1
+            consoleOwnsSocket = false
+            consoleSocketPath = nil
+            consoleClients = []
+            return state
+        }
+        if state.0 >= 0 {
+            Darwin.shutdown(state.0, SHUT_RDWR)
+            Darwin.close(state.0)
+        }
+        for client in state.3 {
+            Darwin.shutdown(client, SHUT_RDWR)
+            Darwin.close(client)
+        }
+        if state.1, let path = state.2 {
+            Darwin.unlink(path)
+        }
+    }
+
     func guestDidStop(_ virtualMachine: VZVirtualMachine) {
         eventContinuation.yield(.stopped)
         eventContinuation.finish()
@@ -119,6 +214,92 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         eventContinuation.yield(.failed(String(describing: error)))
         eventContinuation.finish()
+    }
+
+    private func startSerialTee() {
+        serialOutputRead?.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            self?.fanOutSerialOutput(data)
+        }
+    }
+
+    private func fanOutSerialOutput(_ data: Data) {
+        guard !data.isEmpty else { return }
+        serialLogWriter?.write(data)
+        let failed = consoleLock.withLock { () -> [Int32] in
+            var failed: [Int32] = []
+            for fd in consoleClients {
+                if !Self.writeAll(data, to: fd) {
+                    failed.append(fd)
+                }
+            }
+            if !failed.isEmpty {
+                consoleClients.removeAll { failed.contains($0) }
+            }
+            return failed
+        }
+        for fd in failed {
+            Darwin.shutdown(fd, SHUT_RDWR)
+        }
+    }
+
+    private func consoleAcceptLoop(_ fd: Int32) {
+        while consoleLock.withLock({ consoleListener == fd }) {
+            let client = Darwin.accept(fd, nil, nil)
+            if client < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            guard peerUID(client) == geteuid() else {
+                Darwin.close(client)
+                continue
+            }
+            consoleLock.withLock { consoleClients.append(client) }
+            DispatchQueue.global().async { [weak self] in
+                self?.consoleClientLoop(client)
+            }
+        }
+    }
+
+    private func consoleClientLoop(_ fd: Int32) {
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = buffer.withUnsafeMutableBufferPointer { raw in
+                Darwin.read(fd, raw.baseAddress, raw.count)
+            }
+            if count <= 0 { break }
+            writeToGuest(Data(buffer[0..<count]))
+        }
+        consoleLock.withLock {
+            consoleClients.removeAll { $0 == fd }
+        }
+        Darwin.close(fd)
+    }
+
+    private func peerUID(_ fd: Int32) -> uid_t? {
+        var credentials = xucred()
+        var length = socklen_t(MemoryLayout<xucred>.size)
+        let result = withUnsafeMutablePointer(to: &credentials) {
+            getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, $0, &length)
+        }
+        return result == 0 ? credentials.cr_uid : nil
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) -> Bool {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return true }
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                if count <= 0 { return false }
+                offset += count
+            }
+            return true
+        }
     }
 
     private static func makeConfiguration(
@@ -134,8 +315,22 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         )
 
         let configuration = VZVirtualMachineConfiguration()
-        configuration.cpuCount = 2
-        configuration.memorySize = 1 * 1024 * 1024 * 1024
+        let minCPUs = VZVirtualMachineConfiguration.minimumAllowedCPUCount
+        let maxCPUs = VZVirtualMachineConfiguration.maximumAllowedCPUCount
+        guard options.cpuCount >= minCPUs, options.cpuCount <= maxCPUs else {
+            throw HelperError.invalid(
+                "cpuCount \(options.cpuCount) outside allowed range \(minCPUs)...\(maxCPUs)"
+            )
+        }
+        let minMemory = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        let maxMemory = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        guard options.memorySize >= minMemory, options.memorySize <= maxMemory else {
+            throw HelperError.invalid(
+                "memorySize \(options.memorySize) outside allowed range \(minMemory)...\(maxMemory)"
+            )
+        }
+        configuration.cpuCount = options.cpuCount
+        configuration.memorySize = options.memorySize
         configuration.platform = VZGenericPlatformConfiguration()
 
         let bootLoader = VZEFIBootLoader()
@@ -189,25 +384,33 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
-        var descriptors: [Int32] = [0, 0]
-        guard pipe(&descriptors) == 0 else {
-            throw HelperError.system("serial pipe", errno)
+        var inputDescriptors: [Int32] = [0, 0]
+        guard pipe(&inputDescriptors) == 0 else {
+            throw HelperError.system("serial input pipe", errno)
         }
-        let serialInput = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
-        let serialInputWriter = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        let serialInput = FileHandle(fileDescriptor: inputDescriptors[0], closeOnDealloc: true)
+        let serialInputWriter = FileHandle(fileDescriptor: inputDescriptors[1], closeOnDealloc: true)
+
+        var outputDescriptors: [Int32] = [0, 0]
+        guard pipe(&outputDescriptors) == 0 else {
+            throw HelperError.system("serial output pipe", errno)
+        }
+        let serialOutputRead = FileHandle(fileDescriptor: outputDescriptors[0], closeOnDealloc: true)
+        let serialOutputWrite = FileHandle(fileDescriptor: outputDescriptors[1], closeOnDealloc: true)
+
         FileManager.default.createFile(atPath: serialLogURL.path, contents: nil)
         guard chmod(serialLogURL.path, 0o600) == 0 else {
             throw HelperError.system("chmod serial log", errno)
         }
-        let serialOutput = try FileHandle(forWritingTo: serialLogURL)
-        try serialOutput.seekToEnd()
+        let serialLogWriter = try FileHandle(forWritingTo: serialLogURL)
+        try serialLogWriter.seekToEnd()
 
         let console = VZVirtioConsoleDeviceConfiguration()
         let port = VZVirtioConsolePortConfiguration()
         port.isConsole = true
         port.attachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: serialInput,
-            fileHandleForWriting: serialOutput
+            fileHandleForWriting: serialOutputWrite
         )
         console.ports[0] = port
         configuration.consoleDevices = [console]
@@ -216,7 +419,8 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         return ConfigurationResources(
             configuration: configuration,
             serialInputWriter: serialInputWriter,
-            serialOutput: serialOutput
+            serialOutputRead: serialOutputRead,
+            serialLogWriter: serialLogWriter
         )
     }
 }
@@ -279,5 +483,6 @@ private final class SocketConnectionWaiter: @unchecked Sendable {
 private struct ConfigurationResources {
     let configuration: VZVirtualMachineConfiguration
     let serialInputWriter: FileHandle
-    let serialOutput: FileHandle
+    let serialOutputRead: FileHandle
+    let serialLogWriter: FileHandle
 }

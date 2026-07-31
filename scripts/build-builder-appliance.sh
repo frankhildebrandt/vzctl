@@ -16,8 +16,10 @@ CHECKSUM_URL="${CHECKSUM_URL:-https://cloud.debian.org/images/cloud/trixie/lates
 SOURCE_IMAGE="$WORK_DIR/$IMAGE_NAME"
 CUSTOM_IMAGE="$WORK_DIR/vzctl-builder.qcow2"
 BUILDER_VERSION="${BUILDER_VERSION:-1}"
+BUILDER_DNS="${BUILDER_DNS:-1.1.1.1}"
+BUILDER_DISK_SIZE="${BUILDER_DISK_SIZE:-12G}"
 
-for tool in curl sha256sum qemu-img virt-customize; do
+for tool in curl sha256sum qemu-img virt-customize virt-resize; do
   command -v "$tool" >/dev/null || {
     echo "missing required tool: $tool (run on ARM64 Linux)" >&2
     exit 1
@@ -39,9 +41,14 @@ if [[ ! "$EXPECTED" =~ ^[0-9a-fA-F]{128}$ ]]; then
 fi
 printf '%s  %s\n' "$EXPECTED" "$SOURCE_IMAGE" | sha512sum --check -
 
-cp "$SOURCE_IMAGE" "$CUSTOM_IMAGE"
+rm -f "$CUSTOM_IMAGE"
+qemu-img create -f qcow2 "$CUSTOM_IMAGE" "$BUILDER_DISK_SIZE"
+virt-resize --expand /dev/sda1 "$SOURCE_IMAGE" "$CUSTOM_IMAGE"
 virt-customize -a "$CUSTOM_IMAGE" \
+  --delete /etc/resolv.conf \
+  --write "/etc/resolv.conf:nameserver $BUILDER_DNS" \
   --install libguestfs-tools,qemu-utils,cloud-init \
+  --delete /etc/resolv.conf \
   --run-command 'cloud-init clean --logs --machine-id' \
   --run-command 'truncate -s 0 /etc/machine-id' \
   --run-command 'rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed' \

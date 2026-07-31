@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+# OpenRC unit for vzctl-agent (Alpine and other non-systemd guests).
+description="vzctl virtio-vsock guest agent"
+command="/usr/local/sbin/vzctl-agent"
+command_args="--port 21950 --token-file /var/lib/vzctl/agent.token"
+command_user="vzctl-agent:vzctl-agent"
+command_background="yes"
+pidfile="/run/vzctl-agent.pid"
+
+depend() {
+	need localmount
+	after cloud-init cloud-init-local
+}
+
+start_pre() {
+	# Token is written by per-VM cloud-init; wait briefly on first boot.
+	ebegin "Waiting for vzctl agent token"
+	i=0
+	while [ "$i" -lt 60 ]; do
+		if [ -s /var/lib/vzctl/agent.token ]; then
+			eend 0
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	eend 1 "missing /var/lib/vzctl/agent.token"
+	return 1
+}

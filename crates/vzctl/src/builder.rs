@@ -199,8 +199,16 @@ pub struct BuilderResult {
 }
 
 pub fn parse_builder_result_line(line: &str) -> Option<BuilderResult> {
-    let payload = line.trim().strip_prefix(BUILDER_RESULT_PREFIX)?;
-    let value: Value = serde_json::from_str(payload).ok()?;
+    // Serial logs may prepend a getty login prompt on the same line.
+    let trimmed = line.trim();
+    let payload = match trimmed.strip_prefix(BUILDER_RESULT_PREFIX) {
+        Some(payload) => payload,
+        None => {
+            let idx = trimmed.find(BUILDER_RESULT_PREFIX)?;
+            &trimmed[idx + BUILDER_RESULT_PREFIX.len()..]
+        }
+    };
+    let value: Value = serde_json::from_str(payload.trim()).ok()?;
     Some(BuilderResult {
         ok: value.get("ok").and_then(Value::as_bool).unwrap_or(false),
         exit: value
@@ -240,66 +248,128 @@ pub struct SealRunbook {
 }
 
 pub fn seal_runbook() -> SealRunbook {
-    let mut commands = Vec::new();
+    let mut body = String::from("set -e; ");
+    body.push_str(&mount_target_script());
+    body.push_str("; ");
     for check in crate::IMAGE_PRESERVATION_CHECKS {
-        commands.push(format!(
-            "virt-customize -a /dev/vdb --format raw --run-command {check:?} || {{ printf 'VZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"precheck\",\"exit\":14,\"message\":\"preservation failed\"}}\\n'; sync; poweroff; exit 1; }}"
+        let msg = format!("preservation failed: {check}");
+        body.push_str(&format!(
+            "chroot /mnt/target /bin/sh -c {check:?} || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"precheck\",\"exit\":14,\"message\":{msg:?}}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}; "
         ));
     }
     for cleanup in crate::IMAGE_CLEANUP_COMMANDS {
-        commands.push(format!(
-            "virt-customize -a /dev/vdb --format raw --run-command {cleanup:?} || {{ printf 'VZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"customize\",\"exit\":13,\"message\":\"cleanup failed\"}}\\n'; sync; poweroff; exit 1; }}"
+        let msg = format!("cleanup failed: {cleanup}");
+        body.push_str(&format!(
+            "chroot /mnt/target /bin/sh -c {cleanup:?} || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"customize\",\"exit\":13,\"message\":{msg:?}}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}; "
         ));
     }
     for check in crate::IMAGE_PRESERVATION_CHECKS {
-        commands.push(format!(
-            "virt-customize -a /dev/vdb --format raw --run-command {check:?} || {{ printf 'VZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"postcheck\",\"exit\":14,\"message\":\"preservation failed\"}}\\n'; sync; poweroff; exit 1; }}"
+        let msg = format!("preservation failed: {check}");
+        body.push_str(&format!(
+            "chroot /mnt/target /bin/sh -c {check:?} || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"postcheck\",\"exit\":14,\"message\":{msg:?}}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}; "
         ));
     }
     for check in crate::IMAGE_CLONE_SAFE_CHECKS {
-        commands.push(format!(
-            "virt-customize -a /dev/vdb --format raw --run-command {check:?} || {{ printf 'VZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"clone-safe\",\"exit\":14,\"message\":\"clone-safe failed\"}}\\n'; sync; poweroff; exit 1; }}"
+        body.push_str(&format!(
+            "chroot /mnt/target /bin/sh -c {check:?} || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"clone-safe\",\"exit\":14,\"message\":\"clone-safe failed\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}; "
         ));
     }
-    commands.push(
-        "printf 'VZCTL_BUILDER_RESULT {\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"seal\"}\\n'"
-            .to_string(),
+    body.push_str(&unmount_target_script());
+    body.push_str("; ");
+    body.push_str(
+        "printf '\\nVZCTL_BUILDER_RESULT {\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"seal\"}\\n' > /dev/hvc0; sync; poweroff",
     );
-    commands.push("sync".to_string());
-    commands.push("poweroff".to_string());
+
+    // Single runcmd so a failed step cannot be followed by a spurious ok marker.
     SealRunbook {
         op: "seal",
-        commands,
+        commands: vec![format!(
+            "( {body} ) || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"seal\",\"exit\":13,\"message\":\"seal failed\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}"
+        )],
     }
 }
 
 pub fn bake_runbook(staging_mount_hint: &str) -> SealRunbook {
-    // Staging files are placed on cidata and copied into a host-visible path via
-    // a second approach: we inject via virt-customize --copy-in from a directory
-    // on the appliance root that cloud-init writes from user-data write_files.
+    // Staging files land on cidata via cloud-init write_files, then are copied
+    // into the mounted target root. Nested virt-customize/qemu is avoided
+    // because Apple Virtualization does not support nested KVM reliably.
     let _ = staging_mount_hint;
-    let commands = vec![
-        "test -f /var/lib/vzctl-builder/staging/vzctl-agent".to_string(),
-        "virt-customize -a /dev/vdb --format raw \
-            --mkdir /usr/lib/vzctl-agent \
-            --copy-in /var/lib/vzctl-builder/staging/vzctl-agent:/usr/local/sbin \
-            --copy-in /var/lib/vzctl-builder/staging/vzctl-agent.service:/etc/systemd/system \
-            --copy-in /var/lib/vzctl-builder/staging/vzctl-agent-tmpfiles.conf:/usr/lib/tmpfiles.d \
-            --copy-in /var/lib/vzctl-builder/staging/image-metadata.json:/usr/lib/vzctl-agent \
-            --run-command 'id -u vzctl-agent >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vzctl-agent' \
-            --run-command 'chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json' \
-            --run-command 'systemctl enable vzctl-agent.service' \
-            || { printf 'VZCTL_BUILDER_RESULT {\"ok\":false,\"phase\":\"bake\",\"exit\":13,\"message\":\"bake failed\"}\\n'; sync; poweroff; exit 1; }"
-            .replace('\n', " "),
-        "printf 'VZCTL_BUILDER_RESULT {\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"bake\"}\\n'"
-            .to_string(),
-        "sync".to_string(),
-        "poweroff".to_string(),
-    ];
+    let bake = format!(
+        "set -e; \
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS >/dev/hvc0 || true; \
+test -f /var/lib/vzctl-builder/staging/vzctl-agent; \
+{mount}; \
+mkdir -p /mnt/target/usr/lib/vzctl-agent /mnt/target/usr/local/sbin /mnt/target/etc/systemd/system /mnt/target/usr/lib/tmpfiles.d /mnt/target/etc/init.d /mnt/target/var/lib/vzctl; \
+cp /var/lib/vzctl-builder/staging/vzctl-agent /mnt/target/usr/local/sbin/vzctl-agent; \
+cp /var/lib/vzctl-builder/staging/image-metadata.json /mnt/target/usr/lib/vzctl-agent/image-metadata.json; \
+chmod 0755 /mnt/target/usr/local/sbin/vzctl-agent; \
+chmod 0644 /mnt/target/usr/lib/vzctl-agent/image-metadata.json; \
+if ! chroot /mnt/target /bin/sh -c 'id -u vzctl-agent >/dev/null 2>&1'; then \
+  if chroot /mnt/target /bin/sh -c 'command -v useradd >/dev/null 2>&1'; then \
+    chroot /mnt/target /bin/sh -c 'useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vzctl-agent'; \
+  elif chroot /mnt/target /bin/sh -c 'command -v adduser >/dev/null 2>&1'; then \
+    chroot /mnt/target /bin/sh -c 'adduser -S -D -H -s /sbin/nologin vzctl-agent'; \
+  else \
+    printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"bake\",\"exit\":13,\"message\":\"cannot create vzctl-agent user\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; \
+  fi; \
+fi; \
+if [ -d /mnt/target/etc/init.d ] && [ -d /mnt/target/etc/runlevels/default ]; then \
+  cp /var/lib/vzctl-builder/staging/vzctl-agent.openrc /mnt/target/etc/init.d/vzctl-agent; \
+  chmod 0755 /mnt/target/etc/init.d/vzctl-agent; \
+  ln -sfn /etc/init.d/vzctl-agent /mnt/target/etc/runlevels/default/vzctl-agent; \
+  chroot /mnt/target /bin/sh -c 'command -v rc-update >/dev/null 2>&1 && rc-update add vzctl-agent default' || true; \
+elif [ -d /mnt/target/etc/systemd/system ] && chroot /mnt/target /bin/sh -c 'command -v systemctl >/dev/null 2>&1'; then \
+  cp /var/lib/vzctl-builder/staging/vzctl-agent.service /mnt/target/etc/systemd/system/vzctl-agent.service; \
+  cp /var/lib/vzctl-builder/staging/vzctl-agent.path /mnt/target/etc/systemd/system/vzctl-agent.path; \
+  cp /var/lib/vzctl-builder/staging/vzctl-agent-tmpfiles.conf /mnt/target/usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf; \
+  chmod 0644 /mnt/target/etc/systemd/system/vzctl-agent.service /mnt/target/etc/systemd/system/vzctl-agent.path /mnt/target/usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf; \
+  systemctl enable --root=/mnt/target vzctl-agent.service vzctl-agent.path; \
+else \
+  printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"bake\",\"exit\":13,\"message\":\"target has neither systemd nor OpenRC\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; \
+fi; \
+{unmount}; \
+printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"bake\"}}\\n' > /dev/hvc0; \
+sync; \
+poweroff",
+        mount = mount_target_script(),
+        unmount = unmount_target_script(),
+    );
+    // Flatten Rust string continuations to one shell line without leaving `\` tokens.
+    let bake = bake
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
     SealRunbook {
         op: "bake",
-        commands,
+        commands: vec![format!(
+            "( {bake} ) || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"bake\",\"exit\":13,\"message\":\"bake failed\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}"
+        )],
     }
+}
+
+fn resolve_target_root_script() -> &'static str {
+    // Target image is always attached as the data disk (/dev/vdb). Never use
+    // findfs across all disks — the builder appliance may share common labels
+    // (or alpine's first partition is a tiny EFI FAT, not the root).
+    // Keep this a single shell line (no \ continuations): mount scripts are
+    // flattened into one cloud-init runcmd.
+    // Alpine cloud images label the root as "/" ; Ubuntu uses cloudimg-rootfs.
+    r#"ROOT=""; for part in /dev/vdb[0-9]* /dev/vdbp[0-9]*; do [ -b "$part" ] || continue; label=$(blkid -o value -s LABEL "$part" 2>/dev/null || true); case "$label" in cloudimg-rootfs|ROOT|rootfs|/) ROOT=$part; break ;; esac; done; if [ -z "$ROOT" ]; then ROOT=$(lsblk -nrbo NAME,SIZE,FSTYPE,TYPE -p /dev/vdb 2>/dev/null | awk '$4=="part" && $3!="" && $3!="vfat" {print $2" "$1}' | sort -n | tail -1 | awk '{print $2}'); fi; if [ -z "$ROOT" ]; then ROOT=$(lsblk -nrpo NAME,FSTYPE,TYPE /dev/vdb 2>/dev/null | awk '$3=="part" && $2!="" && $2!="vfat" {print $1}' | tail -1); fi; if [ -z "$ROOT" ] || [ ! -b "$ROOT" ]; then printf '\nVZCTL_BUILDER_RESULT {"ok":false,"phase":"mount","exit":13,"message":"cannot resolve target root on /dev/vdb"}\n' > /dev/hvc0; sync; poweroff; exit 1; fi; printf 'target root %s\n' "$ROOT" > /dev/hvc0"#
+}
+
+fn mount_target_script() -> String {
+    format!(
+        "mkdir -p /mnt/target; {resolve}; mount \"$ROOT\" /mnt/target; mkdir -p /mnt/target/dev /mnt/target/proc /mnt/target/sys; mount --bind /dev /mnt/target/dev; mount -t proc proc /mnt/target/proc; mount -t sysfs sysfs /mnt/target/sys",
+        resolve = resolve_target_root_script()
+    )
+}
+
+fn unmount_target_script() -> String {
+    "umount /mnt/target/sys 2>/dev/null || true; umount /mnt/target/proc 2>/dev/null || true; umount /mnt/target/dev 2>/dev/null || true; umount /mnt/target || { printf '\\nVZCTL_BUILDER_RESULT {\"ok\":false,\"phase\":\"umount\",\"exit\":13,\"message\":\"umount failed\"}\\n' > /dev/hvc0; sync; poweroff; exit 1; }; sync"
+        .to_string()
 }
 
 pub struct BuilderRunOptions<'a> {
@@ -315,15 +385,10 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
     if options.progress {
         eprintln!("Starting builder VM…");
     }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let work = std::env::temp_dir().join(format!(
-        "vzctl-builder-{}-{}",
-        std::process::id(),
-        nonce
-    ));
+    // Keep work + vm_id short: macOS AF_UNIX sun_path is ~104 bytes, and the
+    // helper nests `{state}/helpers/{StateFileName(vm_id)}.console.sock`.
+    let token = builder_run_token();
+    let work = PathBuf::from(format!("/tmp/vzb-{token}"));
     let bundle = work.join("bundle");
     let state = work.join("state");
     let seed = work.join("seed");
@@ -344,7 +409,7 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
     create_cidata_iso(&seed, &cidata)?;
 
     let helper = helper_path()?;
-    let vm_id = format!("vzctl-builder-{nonce}");
+    let vm_id = format!("vzb-{token}");
     let mut child = Command::new(&helper)
         .args([
             "run",
@@ -367,7 +432,7 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
                 BuilderFailure::new(12, "builder cidata path is not UTF-8")
             })?,
             "--supervisor-sock",
-            state.join("missing.sock").to_str().unwrap_or("/tmp/vzctl-missing.sock"),
+            state.join("missing.sock").to_str().unwrap_or("/tmp/vzb-missing.sock"),
         ])
         .env("VZCTL_STATE_DIR", &state)
         .stdout(Stdio::piped())
@@ -482,11 +547,26 @@ fn wait_for_result(
                         return Ok(result);
                     }
                 }
+                let mut stderr_buf = String::new();
+                if let Some(stderr) = child.stderr.as_mut() {
+                    let _ = stderr.read_to_string(&mut stderr_buf);
+                }
+                let stderr_tail = stderr_buf.trim();
+                let serial_note = serial_path
+                    .as_ref()
+                    .map(|path| format!(" serial={}", path.display()))
+                    .unwrap_or_default();
                 return Err(BuilderFailure::new(
                     13,
-                    format!(
-                        "builder helper exited ({status}) without VZCTL_BUILDER_RESULT marker"
-                    ),
+                    if stderr_tail.is_empty() {
+                        format!(
+                            "builder helper exited ({status}) without VZCTL_BUILDER_RESULT marker{serial_note}"
+                        )
+                    } else {
+                        format!(
+                            "builder helper exited ({status}) without VZCTL_BUILDER_RESULT marker{serial_note}: {stderr_tail}"
+                        )
+                    },
                 ));
             }
             Ok(None) => {}
@@ -516,19 +596,33 @@ fn parse_serial_path(stdout: &str) -> Option<PathBuf> {
 fn find_serial_log(vm_id: &str) -> Option<PathBuf> {
     let logs = dirs_logs();
     let entries = fs::read_dir(logs).ok()?;
-    let mut best: Option<PathBuf> = None;
+    let needle = sanitize_component(vm_id);
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.contains("vzctl-builder") && name.ends_with(".serial.log") {
-            // Prefer files mentioning a sanitized form of vm_id prefix.
-            let path = entry.path();
-            if name.contains(&sanitize_component(vm_id)) || best.is_none() {
-                best = Some(path);
-            }
+        if !name.ends_with(".serial.log") || !name.contains(&needle) {
+            continue;
+        }
+        let path = entry.path();
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().map_or(true, |(stamp, _)| modified >= *stamp) {
+            best = Some((modified, path));
         }
     }
-    best
+    best.map(|(_, path)| path)
+}
+
+fn builder_run_token() -> String {
+    let mixed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ ((std::process::id() as u64) << 17);
+    format!("{:08x}", mixed as u32)
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -617,7 +711,9 @@ fn write_seed(
         for name in [
             "vzctl-agent",
             "vzctl-agent.service",
+            "vzctl-agent.path",
             "vzctl-agent-tmpfiles.conf",
+            "vzctl-agent.openrc",
             "image-metadata.json",
         ] {
             let path = staging.join(name);
@@ -835,8 +931,103 @@ mod tests {
     }
 
     #[test]
+    fn parses_builder_result_after_login_prompt() {
+        let result = parse_builder_result_line(
+            "vzctl-builder login: VZCTL_BUILDER_RESULT {\"ok\":false,\"phase\":\"bake\",\"exit\":13,\"message\":\"bake failed\"}",
+        )
+        .unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.exit, 13);
+        assert_eq!(result.phase.as_deref(), Some("bake"));
+    }
+
+    #[test]
     fn rejects_malformed_builder_result() {
         assert!(parse_builder_result_line("VZCTL_BUILDER_RESULT not-json").is_none());
         assert!(parse_builder_result_line("other line").is_none());
+    }
+
+    #[test]
+    fn runbooks_write_results_to_serial_console() {
+        for runbook in [bake_runbook("/mnt/staging"), seal_runbook()] {
+            for command in runbook
+                .commands
+                .iter()
+                .filter(|command| command.contains(BUILDER_RESULT_PREFIX))
+            {
+                assert!(
+                    command.contains("> /dev/hvc0"),
+                    "result marker is not written to the serial console: {command}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runbooks_are_valid_shell() {
+        for (name, runbook) in [
+            ("bake", bake_runbook("/mnt/staging")),
+            ("seal", seal_runbook()),
+        ] {
+            assert_eq!(runbook.commands.len(), 1, "{name}");
+            let script = &runbook.commands[0];
+            assert!(
+                !script.contains("\\ for"),
+                "{name} must not contain broken line continuations"
+            );
+            let status = std::process::Command::new("sh")
+                .args(["-n", "-c", script])
+                .status()
+                .expect("spawn sh");
+            assert!(status.success(), "{name} runbook failed sh -n: {script}");
+        }
+    }
+
+    #[test]
+    fn runbooks_mount_target_disk_directly() {
+        let bake = bake_runbook("/mnt/staging");
+        assert!(
+            bake.commands.iter().any(|c| c.contains("mount") && c.contains("/mnt/target")),
+            "bake runbook should mount the target root directly"
+        );
+        assert!(
+            bake.commands.iter().any(|c| c.contains("/dev/vdb")),
+            "bake must resolve root on the data disk /dev/vdb only"
+        );
+        assert!(
+            !bake.commands.iter().any(|c| c.contains("findfs")),
+            "bake must not use findfs across all disks"
+        );
+        assert!(
+            !bake.commands.iter().any(|c| c.contains("virt-customize")),
+            "bake runbook must not nest virt-customize under Apple VZ"
+        );
+        assert_eq!(
+            bake.commands.len(),
+            1,
+            "bake must be a single runcmd to avoid false-success markers"
+        );
+        let seal = seal_runbook();
+        assert!(
+            seal.commands.iter().any(|c| c.contains("mount") && c.contains("/mnt/target")),
+            "seal runbook should mount the target root directly"
+        );
+        assert!(
+            seal.commands.iter().any(|c| c.contains("/dev/vdb")),
+            "seal must resolve root on the data disk /dev/vdb only"
+        );
+        assert!(
+            !seal.commands.iter().any(|c| c.contains("virt-customize")),
+            "seal runbook must not nest virt-customize under Apple VZ"
+        );
+        assert_eq!(
+            seal.commands.len(),
+            1,
+            "seal must be a single runcmd to avoid false-success markers"
+        );
+        assert!(
+            bake.commands.iter().any(|c| c.contains("vzctl-agent.openrc")),
+            "bake must install OpenRC unit for Alpine"
+        );
     }
 }

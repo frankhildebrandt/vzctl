@@ -62,7 +62,7 @@ cat > "$seed/user-data" <<EOF
 hostname: vzctl-e2e
 manage_etc_hosts: true
 write_files:
-  - path: /run/vzctl/agent.token
+  - path: /var/lib/vzctl/agent.token
     owner: vzctl-agent:vzctl-agent
     permissions: "0600"
     content: |
