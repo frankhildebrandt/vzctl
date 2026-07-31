@@ -10,8 +10,9 @@ Referenz-Environment für einen isolierten DMZ-Stack mit zwei Netzen:
   TCP/5432 ins LAN sowie ICMP innerhalb der DMZ.
 
 Die Cloud-Init-Dateien enthalten keine Zugangsdaten. VM-Identität,
-SSH-Schlüssel, Agent-Token, statische Adressen und DNS werden pro Clone von
-`vzctl` erzeugt.
+SSH-Host-Keys, Agent-Token, statische Adressen und DNS werden pro Clone von
+`vzctl` erzeugt. Die Docker-VM bekommt zusätzlich einen managed SSH-User
+`vzctl` für den Host-Docker-Context.
 
 ## Prüfen und vergleichen
 
@@ -34,9 +35,14 @@ Nach Installation von `vzctl` und Supervisor:
 ```bash
 vzctl image pull ubuntu-latest
 vzctl up -C examples/edge-dmz
+vzctl docker -- ps
+vzctl port list
 vzctl down -C examples/edge-dmz
 ```
 
 `down` stoppt die VMs und behält verwaltete Ressourcen. Erst
-`down --purge` entfernt Stack-Ressourcen; das versiegelte Base-Image bleibt
-unverändert.
+`down --purge` entfernt Stack-Ressourcen inkl. Docker-Context und Port-Forwards;
+das versiegelte Base-Image bleibt unverändert.
+
+Siehe auch [docs/docker.md](../../docs/docker.md) und [docs/ports.md](../../docs/ports.md).
+

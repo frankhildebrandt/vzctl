@@ -15,10 +15,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod builder;
 mod config;
 mod dns;
+mod docker;
 mod image;
 mod network;
+mod port;
 mod reconciler;
 mod route;
+mod vm;
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
 const DEFAULT_DNS_PORT: u16 = 15353;
@@ -36,15 +39,16 @@ const EXIT_IMAGE_STATE_FAILED: u8 = 15;
 const EXIT_VM_DISK_PREP_FAILED: u8 = 16;
 pub(crate) const IMAGE_PRESERVATION_CHECKS: &[&str] = &[
     "test -x /usr/local/sbin/vzctl-agent && test -s /usr/local/sbin/vzctl-agent",
-    "test -s /etc/systemd/system/vzctl-agent.service",
     "test -s /usr/lib/vzctl-agent/image-metadata.json",
-    "test -L /etc/systemd/system/multi-user.target.wants/vzctl-agent.service",
+    // systemd (Ubuntu/Debian/…) or OpenRC (Alpine)
+    "(test -s /etc/systemd/system/vzctl-agent.service && test -s /etc/systemd/system/vzctl-agent.path && test -L /etc/systemd/system/multi-user.target.wants/vzctl-agent.service && test -L /etc/systemd/system/multi-user.target.wants/vzctl-agent.path) || (test -s /etc/init.d/vzctl-agent && test -L /etc/runlevels/default/vzctl-agent)",
 ];
 pub(crate) const IMAGE_CLEANUP_COMMANDS: &[&str] = &[
-    "cloud-init clean --logs --machine-id",
-    "truncate -s 0 /etc/machine-id",
-    "rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed",
-    "sync",
+    // Alpine's cloud-init may lack --machine-id; fall back gracefully.
+    "cloud-init clean --logs --machine-id 2>/dev/null || cloud-init clean --logs 2>/dev/null || true",
+    "truncate -s 0 /etc/machine-id 2>/dev/null || : > /etc/machine-id",
+    // Avoid shell globs (ash/nullglob differences); find is portable.
+    "rm -f /var/lib/dbus/machine-id /var/lib/systemd/random-seed; find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*' -delete 2>/dev/null || true",
 ];
 pub(crate) const IMAGE_CLONE_SAFE_CHECKS: &[&str] = &[
     "test ! -s /etc/machine-id",
@@ -92,14 +96,22 @@ struct ImageSealResult {
     already_sealed: bool,
 }
 
+const DEFAULT_VM_CPUS: u32 = 2;
+const DEFAULT_VM_MEMORY_MIB: u64 = 1024;
+
 #[derive(Debug, Eq, PartialEq)]
 struct VmCreateOptions {
     id: String,
     from: String,
     data_disk_gib: u64,
+    cpus: u32,
+    memory_mib: u64,
     roles: Vec<String>,
     requested_network: Option<String>,
     network: Option<network::VmNetworkSelection>,
+    root_password: Option<String>,
+    cloud_init: Option<PathBuf>,
+    project: Option<String>,
     format: OutputFormat,
 }
 
@@ -128,6 +140,8 @@ struct VmCreateResult {
     cidata_path: PathBuf,
     agent_token_path: PathBuf,
     data_disk_gib: u64,
+    cpus: u32,
+    memory_mib: u64,
     roles: Vec<String>,
     clone_mode: CloneMode,
     filesystem: String,
@@ -302,9 +316,12 @@ fn main() -> ExitCode {
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
         Some("route") => route::command(args, &supervisor_socket_path()),
-        Some("dns") => dns::command(args),
+        Some("dns") => dns::command(args, &supervisor_socket_path()),
+        Some("docker") => docker::command(args, &state_dir(), &supervisor_socket_path()),
+        Some("port") => port::command(args, &supervisor_socket_path()),
         Some("image") => image_command(args),
         Some("vm") => vm_command(args),
+        Some("ps") => vm::ps_command(args, &supervisor_socket_path()),
         Some(other) => {
             eprintln!("unknown command: {other}");
             ExitCode::from(EXIT_USAGE)
@@ -338,12 +355,27 @@ Commands:
   net default set <name> --cidr CIDR [--format human|json]
   route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
   route status [--router <vm-id>] [--format human|json]
+  dns status [--format human|json]
   dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
+  docker [--project P] [--] <docker-args...>
+  port list [--project P] [--stack S] [--format human|json]
   image pull <alias> [--format human|json]
   image bake <alias> [--format human|json]
   image seal <name|path> [--format human|json]
-  vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] [--role router] [--format human|json]
+  vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]
+  vm list [--format human|json]
+  vm start <id> [--format human|json]
+  vm stop <id> [--wait true|false] [--format human|json]
+  vm delete <id> [--force] [--format human|json]
+  vm inspect <id> [--format human|json]
+  vm logs <id> [-f|--follow] [--tail N] [--format human|json]
+  vm exec <id> [-it] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
+  vm transfer <id> <src> <dst> [--format human|json]
+  vm attach <id>
+  vm services <id> [start|stop|restart <unit>] [--format human|json]
+  vm ps <id> [--format human|json]
+  ps [--format human|json]
   help
 
 Stable exit codes:
@@ -360,12 +392,13 @@ Stable exit codes:
   15  image seal state/marker failed
   16  VM root/data disk preparation failed
   17  network operation failed
-  18  route operation failed
+  18  route or guest-agent operation failed
   19  resolver operation failed
   20  DNS query failed or returned a non-zero rcode
   21  image download/metadata network failure
   22  image checksum mismatch or invalid checksum metadata
-  23  image architecture unsupported"
+  23  image architecture unsupported
+  24  reconciler or VM lifecycle operation failed"
     );
 }
 
@@ -785,8 +818,18 @@ fn build_agent_staging(agent_version: &str) -> Result<PathBuf, SealFailure> {
     )
     .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
     fs::copy(
+        agent_root.join("systemd/vzctl-agent.path"),
+        staging.join("vzctl-agent.path"),
+    )
+    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
+    fs::copy(
         agent_root.join("systemd/vzctl-agent-tmpfiles.conf"),
         staging.join("vzctl-agent-tmpfiles.conf"),
+    )
+    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
+    fs::copy(
+        agent_root.join("openrc/vzctl-agent"),
+        staging.join("vzctl-agent.openrc"),
     )
     .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
     fs::write(
@@ -814,6 +857,11 @@ fn bake_with_virt_customize(target: &Path, staging: &Path) -> Result<(), SealFai
         ))
         .arg("--copy-in")
         .arg(format!(
+            "{}:/etc/systemd/system",
+            staging.join("vzctl-agent.path").display()
+        ))
+        .arg("--copy-in")
+        .arg(format!(
             "{}:/usr/lib/tmpfiles.d",
             staging.join("vzctl-agent-tmpfiles.conf").display()
         ))
@@ -825,9 +873,9 @@ fn bake_with_virt_customize(target: &Path, staging: &Path) -> Result<(), SealFai
         .arg("--run-command")
         .arg("id -u vzctl-agent >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vzctl-agent")
         .arg("--run-command")
-        .arg("chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json")
+        .arg("chmod 0755 /usr/local/sbin/vzctl-agent && chmod 0644 /etc/systemd/system/vzctl-agent.service /etc/systemd/system/vzctl-agent.path /usr/lib/tmpfiles.d/vzctl-agent-tmpfiles.conf /usr/lib/vzctl-agent/image-metadata.json")
         .arg("--run-command")
-        .arg("systemctl enable vzctl-agent.service")
+        .arg("systemctl enable vzctl-agent.service vzctl-agent.path")
         .output()
         .map_err(|error| {
             SealFailure::new(
@@ -1377,18 +1425,17 @@ fn emit_seal_failure(format: OutputFormat, failure: &SealFailure) {
 
 fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
-        Some("create") => vm_create_command(args.collect()),
-        Some(command) => {
-            eprintln!("unknown vm command: {command}");
-            ExitCode::from(EXIT_USAGE)
-        }
-        None => {
+        None | Some("help") | Some("-h") | Some("--help") => {
             eprintln!(
-                "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                 [--network <name>] [--role router] [--format human|json]"
+                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps ..."
             );
             ExitCode::from(EXIT_USAGE)
         }
+        Some("create") => vm_create_command(args.collect()),
+        Some(command) => vm::command(
+            std::iter::once(command.to_string()).chain(args),
+            &supervisor_socket_path(),
+        ),
     }
 }
 
@@ -1446,8 +1493,13 @@ fn parse_vm_create_options(
     let mut id = None;
     let mut from = None;
     let mut data_disk_gib = None;
+    let mut cpus = None;
+    let mut memory_mib = None;
     let mut roles = Vec::new();
     let mut requested_network = None;
+    let mut root_password = None;
+    let mut cloud_init = None;
+    let mut project = None;
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
 
@@ -1476,11 +1528,34 @@ fn parse_vm_create_options(
                 }
                 data_disk_gib = Some(size);
             }
+            "--cpus" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--cpus requires a positive integer")
+                })?;
+                let parsed = value.parse::<u32>().map_err(|_| {
+                    VmCreateFailure::new(EXIT_INVALID_INPUT, format!("invalid --cpus: {value}"))
+                })?;
+                if parsed == 0 {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        "--cpus must be greater than zero",
+                    ));
+                }
+                cpus = Some(parsed);
+            }
+            "--memory" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--memory requires a size")
+                })?;
+                memory_mib = Some(parse_memory_mib(&value).map_err(|message| {
+                    VmCreateFailure::new(EXIT_INVALID_INPUT, message)
+                })?);
+            }
             "--role" => {
                 let role = args.next().ok_or_else(|| {
                     VmCreateFailure::new(EXIT_USAGE, "--role requires a role name")
                 })?;
-                if role != "router" {
+                if role != "router" && role != "docker" {
                     return Err(VmCreateFailure::new(
                         EXIT_INVALID_INPUT,
                         format!("unsupported VM role: {role}"),
@@ -1490,10 +1565,40 @@ fn parse_vm_create_options(
                     roles.push(role);
                 }
             }
+            "--cloud-init" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--cloud-init requires a path")
+                })?;
+                cloud_init = Some(PathBuf::from(value));
+            }
+            "--project" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--project requires a project name")
+                })?;
+                if value.is_empty() {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        "--project must not be empty",
+                    ));
+                }
+                project = Some(value);
+            }
             "--network" => {
                 requested_network = Some(args.next().ok_or_else(|| {
                     VmCreateFailure::new(EXIT_USAGE, "--network requires a network name")
                 })?);
+            }
+            "--root-password" => {
+                let value = args.next().ok_or_else(|| {
+                    VmCreateFailure::new(EXIT_USAGE, "--root-password requires a password")
+                })?;
+                if value.is_empty() {
+                    return Err(VmCreateFailure::new(
+                        EXIT_INVALID_INPUT,
+                        "--root-password must not be empty",
+                    ));
+                }
+                root_password = Some(value);
             }
             "--format" => {
                 let value = args.next().ok_or_else(|| {
@@ -1514,7 +1619,8 @@ fn parse_vm_create_options(
                 return Err(VmCreateFailure::new(
                     EXIT_USAGE,
                     "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-                     [--network <name>] [--role router] [--format human|json]",
+                     [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] \
+                     [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]",
                 ))
             }
             _ if arg.starts_with('-') => {
@@ -1537,7 +1643,8 @@ fn parse_vm_create_options(
         VmCreateFailure::new(
             EXIT_USAGE,
             "usage: vzctl vm create <id> --from <sealed> --data-disk <GiB> \
-             [--network <name>] [--role router] [--format human|json]",
+             [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] \
+             [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]",
         )
     })?;
     if !valid_vm_id(&id) {
@@ -1550,16 +1657,61 @@ fn parse_vm_create_options(
         from.ok_or_else(|| VmCreateFailure::new(EXIT_USAGE, "vm create requires --from <sealed>"))?;
     let data_disk_gib = data_disk_gib
         .ok_or_else(|| VmCreateFailure::new(EXIT_USAGE, "vm create requires --data-disk <GiB>"))?;
+    if roles.iter().any(|role| role == "docker") && project.is_none() {
+        project = Some("default".to_string());
+    }
 
     Ok(VmCreateOptions {
         id,
         from,
         data_disk_gib,
+        cpus: cpus.unwrap_or(DEFAULT_VM_CPUS),
+        memory_mib: memory_mib.unwrap_or(DEFAULT_VM_MEMORY_MIB),
         roles,
         requested_network,
         network: None,
+        root_password,
+        cloud_init,
+        project,
         format,
     })
+}
+
+pub(crate) fn parse_memory_mib(value: &str) -> Result<u64, String> {
+    if value.is_empty() {
+        return Err("invalid --memory: empty".to_string());
+    }
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        let mib = value
+            .parse::<u64>()
+            .map_err(|_| format!("invalid --memory: {value}"))?;
+        if mib == 0 {
+            return Err("--memory must be greater than zero".to_string());
+        }
+        return Ok(mib);
+    }
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .ok_or_else(|| format!("invalid --memory: {value}"))?;
+    let number = value[..split]
+        .parse::<u64>()
+        .map_err(|_| format!("invalid --memory: {value}"))?;
+    if number == 0 {
+        return Err("--memory must be greater than zero".to_string());
+    }
+    let unit = value[split..].to_ascii_lowercase();
+    match unit.as_str() {
+        "m" | "mb" | "mi" | "mib" => Ok(number),
+        "g" | "gb" | "gi" | "gib" => number
+            .checked_mul(1024)
+            .ok_or_else(|| "--memory is too large".to_string()),
+        "t" | "tb" | "ti" | "tib" => number
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "--memory is too large".to_string()),
+        _ => Err(format!(
+            "--memory must use MiB/GiB/TiB or a bare MiB integer: {value}"
+        )),
+    }
 }
 
 fn valid_vm_id(id: &str) -> bool {
@@ -1738,6 +1890,9 @@ fn prepare_vm_disks(
         &identity,
         &options.roles,
         options.network.as_ref(),
+        options.root_password.as_deref(),
+        options.cloud_init.as_deref(),
+        options.project.as_deref(),
     )?;
 
     let result = VmCreateResult {
@@ -1749,6 +1904,8 @@ fn prepare_vm_disks(
         cidata_path,
         agent_token_path,
         data_disk_gib: options.data_disk_gib,
+        cpus: options.cpus,
+        memory_mib: options.memory_mib,
         roles: options.roles.clone(),
         clone_mode,
         filesystem,
@@ -1770,6 +1927,10 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
         "managed-by": "vzctl",
         "vm_id": result.id,
         "roles": result.roles,
+        "resources": {
+            "cpus": result.cpus,
+            "memory_mib": result.memory_mib,
+        },
         "base": {
             "path": result.source.source_path,
             "marker": result.source.marker_path,
@@ -1828,6 +1989,10 @@ fn print_vm_create_human(result: &VmCreateResult) {
     println!("created VM bundle {}", result.id);
     println!("  bundle: {}", result.bundle_path.display());
     println!(
+        "  resources: {} cpus, {} MiB memory",
+        result.cpus, result.memory_mib
+    );
+    println!(
         "  root: {} (clone: {})",
         result.root_disk_path.display(),
         result.clone_mode.as_str()
@@ -1882,6 +2047,10 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "bundle": result.bundle_path,
             "managed-by": "vzctl",
             "roles": result.roles,
+            "resources": {
+                "cpus": result.cpus,
+                "memory_mib": result.memory_mib,
+            },
         },
         "network": result.network.as_ref().map(|network| {
             json!({
@@ -1994,6 +2163,9 @@ fn prepare_cloud_init_seed(
     identity: &VmIdentity,
     roles: &[String],
     network: Option<&network::VmNetworkSelection>,
+    root_password: Option<&str>,
+    cloud_init: Option<&Path>,
+    project: Option<&str>,
 ) -> Result<(), VmCreateFailure> {
     let mut token_bytes = [0_u8; 32];
     File::open("/dev/urandom")
@@ -2032,16 +2204,225 @@ fn prepare_cloud_init_seed(
         identity.instance_id, identity.hostname
     );
     let network_config = render_cloud_init_network_config(identity, network);
-    let router_template = if roles.iter().any(|role| role == "router") {
-        "\n  - path: /etc/sysctl.d/90-vzctl-router.conf\n    owner: root:root\n    permissions: \"0644\"\n    content: |\n      net.ipv4.ip_forward=1\nruncmd:\n  - sysctl --system\n  - [sh, -c, 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true']\n"
-    } else {
-        ""
-    };
-    let user_data = format!(
-        "#cloud-config\npreserve_hostname: false\nhostname: {}\nfqdn: {}\nprefer_fqdn_over_hostname: true\nmanage_etc_hosts: true\nssh_deletekeys: true\nssh_genkeytypes:\n  - ed25519\n  - rsa\nwrite_files:\n  - path: /run/vzctl/agent.token\n    owner: vzctl-agent:vzctl-agent\n    permissions: \"0600\"\n    content: |\n      {}\n{}",
-        identity.hostname, identity.fqdn, token, router_template
-    );
 
+    let mut system = serde_yaml::Mapping::new();
+    system.insert(
+        serde_yaml::Value::String("preserve_hostname".into()),
+        serde_yaml::Value::Bool(false),
+    );
+    system.insert(
+        serde_yaml::Value::String("hostname".into()),
+        serde_yaml::Value::String(identity.hostname.clone()),
+    );
+    system.insert(
+        serde_yaml::Value::String("fqdn".into()),
+        serde_yaml::Value::String(identity.fqdn.clone()),
+    );
+    system.insert(
+        serde_yaml::Value::String("prefer_fqdn_over_hostname".into()),
+        serde_yaml::Value::Bool(true),
+    );
+    system.insert(
+        serde_yaml::Value::String("manage_etc_hosts".into()),
+        serde_yaml::Value::Bool(true),
+    );
+    system.insert(
+        serde_yaml::Value::String("ssh_deletekeys".into()),
+        serde_yaml::Value::Bool(true),
+    );
+    system.insert(
+        serde_yaml::Value::String("ssh_genkeytypes".into()),
+        serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("ed25519".into()),
+            serde_yaml::Value::String("rsa".into()),
+        ]),
+    );
+    if let Some(password) = root_password {
+        system.insert(
+            serde_yaml::Value::String("disable_root".into()),
+            serde_yaml::Value::Bool(false),
+        );
+        system.insert(
+            serde_yaml::Value::String("ssh_pwauth".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let mut user = serde_yaml::Mapping::new();
+        user.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("root".into()),
+        );
+        user.insert(
+            serde_yaml::Value::String("password".into()),
+            serde_yaml::Value::String(password.to_string()),
+        );
+        user.insert(
+            serde_yaml::Value::String("type".into()),
+            serde_yaml::Value::String("text".into()),
+        );
+        let mut chpasswd = serde_yaml::Mapping::new();
+        chpasswd.insert(
+            serde_yaml::Value::String("expire".into()),
+            serde_yaml::Value::Bool(false),
+        );
+        chpasswd.insert(
+            serde_yaml::Value::String("users".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(user)]),
+        );
+        system.insert(
+            serde_yaml::Value::String("chpasswd".into()),
+            serde_yaml::Value::Mapping(chpasswd),
+        );
+    }
+
+    let mut write_files = vec![serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/var/lib/vzctl/agent.token".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("vzctl-agent:vzctl-agent".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(format!("{token}\n")),
+        );
+        file
+    })];
+    let mut runcmd = Vec::new();
+
+    if roles.iter().any(|role| role == "router") {
+        write_files.push(serde_yaml::Value::Mapping({
+            let mut file = serde_yaml::Mapping::new();
+            file.insert(
+                serde_yaml::Value::String("path".into()),
+                serde_yaml::Value::String("/etc/sysctl.d/90-vzctl-router.conf".into()),
+            );
+            file.insert(
+                serde_yaml::Value::String("owner".into()),
+                serde_yaml::Value::String("root:root".into()),
+            );
+            file.insert(
+                serde_yaml::Value::String("permissions".into()),
+                serde_yaml::Value::String("0644".into()),
+            );
+            file.insert(
+                serde_yaml::Value::String("content".into()),
+                serde_yaml::Value::String("net.ipv4.ip_forward=1\n".into()),
+            );
+            file
+        }));
+        runcmd.push(serde_yaml::Value::String("sysctl --system".into()));
+        runcmd.push(serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("sh".into()),
+            serde_yaml::Value::String("-c".into()),
+            serde_yaml::Value::String(
+                "command -v iptables >/dev/null && iptables -P FORWARD DROP || true".into(),
+            ),
+        ]));
+    }
+
+    if roles.iter().any(|role| role == "docker") {
+        let project = project.unwrap_or("default");
+        let (_, pubkey) = docker::ensure_ssh_keypair(&state_dir(), project).map_err(|error| {
+            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
+        })?;
+        let include_engine = cloud_init.is_none();
+        let docker_cfg = docker::docker_role_cloud_config(&pubkey, include_engine);
+        let system_value = serde_yaml::Value::Mapping(system.clone());
+        let mut merged = docker::merge_cloud_config(system_value, Some(docker_cfg));
+        if let Some(path) = cloud_init {
+            let user = docker::load_user_cloud_init(path).map_err(|error| {
+                VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
+            })?;
+            merged = docker::merge_cloud_config(merged, Some(user));
+        }
+        if let serde_yaml::Value::Mapping(ref mut map) = merged {
+            let existing_files = map
+                .remove(serde_yaml::Value::String("write_files".into()))
+                .and_then(|value| match value {
+                    serde_yaml::Value::Sequence(items) => Some(items),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let mut combined = write_files.clone();
+            combined.extend(existing_files);
+            map.insert(
+                serde_yaml::Value::String("write_files".into()),
+                serde_yaml::Value::Sequence(combined),
+            );
+            let existing_runcmd = map
+                .remove(serde_yaml::Value::String("runcmd".into()))
+                .and_then(|value| match value {
+                    serde_yaml::Value::Sequence(items) => Some(items),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let mut combined_cmd = runcmd.clone();
+            combined_cmd.extend(existing_runcmd);
+            if !combined_cmd.is_empty() {
+                map.insert(
+                    serde_yaml::Value::String("runcmd".into()),
+                    serde_yaml::Value::Sequence(combined_cmd),
+                );
+            }
+        }
+        let user_data = docker::render_user_data(&merged).map_err(|error| {
+            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
+        })?;
+        return write_cloud_init_iso(
+            backend,
+            &seed_directory,
+            cidata_path,
+            &meta_data,
+            &network_config,
+            &user_data,
+        );
+    }
+
+    system.insert(
+        serde_yaml::Value::String("write_files".into()),
+        serde_yaml::Value::Sequence(write_files),
+    );
+    if !runcmd.is_empty() {
+        system.insert(
+            serde_yaml::Value::String("runcmd".into()),
+            serde_yaml::Value::Sequence(runcmd),
+        );
+    }
+    let mut merged = serde_yaml::Value::Mapping(system);
+    if let Some(path) = cloud_init {
+        let user = docker::load_user_cloud_init(path).map_err(|error| {
+            VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
+        })?;
+        merged = docker::merge_cloud_config(merged, Some(user));
+    }
+    let user_data = docker::render_user_data(&merged).map_err(|error| {
+        VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error)
+    })?;
+    write_cloud_init_iso(
+        backend,
+        &seed_directory,
+        cidata_path,
+        &meta_data,
+        &network_config,
+        &user_data,
+    )
+}
+
+fn write_cloud_init_iso(
+    backend: &dyn VmDiskBackend,
+    seed_directory: &Path,
+    cidata_path: &Path,
+    meta_data: &str,
+    network_config: &str,
+    user_data: &str,
+) -> Result<(), VmCreateFailure> {
     let seed_result = (|| {
         write_private_file(&seed_directory.join("meta-data"), meta_data.as_bytes())?;
         write_private_file(
@@ -2050,7 +2431,7 @@ fn prepare_cloud_init_seed(
         )?;
         write_private_file(&seed_directory.join("user-data"), user_data.as_bytes())?;
         backend
-            .create_cloud_init_iso(&seed_directory, cidata_path)
+            .create_cloud_init_iso(seed_directory, cidata_path)
             .map_err(|error| {
                 VmCreateFailure::new(
                     EXIT_VM_DISK_PREP_FAILED,
@@ -2070,7 +2451,7 @@ fn prepare_cloud_init_seed(
             )
         })
     })();
-    let cleanup_result = fs::remove_dir_all(&seed_directory);
+    let cleanup_result = fs::remove_dir_all(seed_directory);
     seed_result?;
     cleanup_result.map_err(|error| {
         VmCreateFailure::new(
@@ -2080,7 +2461,18 @@ fn prepare_cloud_init_seed(
                 seed_directory.display()
             ),
         )
-    })
+    })?;
+    Ok(())
+}
+
+fn cloud_init_root_password_snippet(password: &str) -> String {
+    let quoted = serde_yaml::to_string(password)
+        .unwrap_or_else(|_| format!("\"{password}\""))
+        .trim()
+        .to_string();
+    format!(
+        "disable_root: false\nssh_pwauth: true\nchpasswd:\n  expire: false\n  users:\n    - name: root\n      password: {quoted}\n      type: text\n"
+    )
 }
 
 fn render_cloud_init_network_config(
@@ -2677,6 +3069,17 @@ fn doctor(options: DoctorOptions) -> ExitCode {
     checks.push(check_vmnet_hint(macos_version));
     checks.push(check_image_backend(&images_dir));
     checks.push(check_supervisor());
+    let docker_check = docker::doctor_check(&state_dir);
+    checks.push(Check::new(
+        docker_check.id,
+        if docker_check.ok {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        docker_check.message,
+        docker_check.details,
+    ));
 
     let exit_code = if macos_version.unwrap_or(0) < 26 {
         EXIT_HOST_UNSUPPORTED
@@ -3521,11 +3924,15 @@ mod tests {
 
     #[test]
     fn image_cleanup_matches_guest_agent_base_pipeline() {
-        assert!(IMAGE_CLEANUP_COMMANDS.contains(&"cloud-init clean --logs --machine-id"));
-        assert!(IMAGE_CLEANUP_COMMANDS.contains(&"truncate -s 0 /etc/machine-id"));
         assert!(IMAGE_CLEANUP_COMMANDS
             .iter()
-            .any(|command| command.contains("/etc/ssh/ssh_host_*")));
+            .any(|command| command.contains("cloud-init clean --logs")));
+        assert!(IMAGE_CLEANUP_COMMANDS
+            .iter()
+            .any(|command| command.contains("truncate -s 0 /etc/machine-id")));
+        assert!(IMAGE_CLEANUP_COMMANDS
+            .iter()
+            .any(|command| command.contains("/etc/ssh") && command.contains("ssh_host_*")));
         assert!(IMAGE_CLEANUP_COMMANDS
             .iter()
             .any(|command| command.contains("/var/lib/systemd/random-seed")));
@@ -3535,6 +3942,9 @@ mod tests {
         assert!(IMAGE_PRESERVATION_CHECKS
             .iter()
             .any(|command| command.contains("vzctl-agent.service")));
+        assert!(IMAGE_PRESERVATION_CHECKS
+            .iter()
+            .any(|command| command.contains("/etc/init.d/vzctl-agent")));
         assert!(IMAGE_PRESERVATION_CHECKS
             .iter()
             .any(|command| command.contains("image-metadata.json")));
@@ -3622,9 +4032,14 @@ mod tests {
                 id: "web-1".to_string(),
                 from: "ubuntu-base".to_string(),
                 data_disk_gib: 64,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
                 roles: vec!["router".to_string()],
                 requested_network: Some("lan".to_string()),
                 network: None,
+                root_password: None,
+                cloud_init: None,
+                project: None,
                 format: OutputFormat::Json,
             }
         );
@@ -3646,6 +4061,171 @@ mod tests {
             parse_vm_create_options(zero_size).unwrap_err().code,
             EXIT_INVALID_INPUT
         );
+    }
+
+    #[test]
+    fn vm_create_accepts_root_password_flag() {
+        let args = [
+            "web",
+            "--from",
+            "ubuntu-base",
+            "--data-disk",
+            "4",
+            "--root-password",
+            "s3cret!",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        let options = parse_vm_create_options(args).unwrap();
+        assert_eq!(options.root_password.as_deref(), Some("s3cret!"));
+        let snippet = cloud_init_root_password_snippet("s3cret!");
+        assert!(snippet.contains("disable_root: false"));
+        assert!(snippet.contains("ssh_pwauth: true"));
+        assert!(snippet.contains("name: root"));
+        assert!(snippet.contains("type: text"));
+        assert!(snippet.contains("s3cret!"));
+    }
+
+    #[test]
+    fn vm_create_accepts_cpus_and_memory_flags() {
+        let args = [
+            "web",
+            "--from",
+            "ubuntu-base",
+            "--data-disk",
+            "4",
+            "--cpus",
+            "4",
+            "--memory",
+            "2Gi",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        let options = parse_vm_create_options(args).unwrap();
+        assert_eq!(options.cpus, 4);
+        assert_eq!(options.memory_mib, 2048);
+        assert_eq!(parse_memory_mib("2048").unwrap(), 2048);
+        assert_eq!(parse_memory_mib("2G").unwrap(), 2048);
+        assert_eq!(parse_memory_mib("2Gi").unwrap(), 2048);
+    }
+
+    #[test]
+    fn vm_create_rejects_invalid_cpus_and_memory() {
+        let zero_cpus = ["web", "--from", "base", "--data-disk", "1", "--cpus", "0"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(zero_cpus).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+        let bad_memory = ["web", "--from", "base", "--data-disk", "1", "--memory", "0"]
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(bad_memory).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+        let junk_memory = [
+            "web",
+            "--from",
+            "base",
+            "--data-disk",
+            "1",
+            "--memory",
+            "lots",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        assert_eq!(
+            parse_vm_create_options(junk_memory).unwrap_err().code,
+            EXIT_INVALID_INPUT
+        );
+    }
+
+    #[test]
+    fn vm_create_writes_resources_into_manifest() {
+        let directory = std::env::temp_dir().join(format!(
+            "vzctl-resources-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        fs::create_dir_all(&images_directory).unwrap();
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+        let result = create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                cpus: 4,
+                memory_mib: 2048,
+                roles: Vec::new(),
+                requested_network: None,
+                network: None,
+                root_password: None,
+                cloud_init: None,
+                project: None,
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(result.bundle_path.join("vm.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["resources"]["cpus"], json!(4));
+        assert_eq!(manifest["resources"]["memory_mib"], json!(2048));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vm_create_root_password_lands_in_user_data() {
+        let directory = std::env::temp_dir().join(format!(
+            "vzctl-rootpw-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let images_directory = directory.join("images");
+        let vms_directory = directory.join("vms");
+        fs::create_dir_all(&images_directory).unwrap();
+        let image = prepare_sealed_test_image(&directory, &images_directory);
+        let backend = RecordingVmDiskBackend::new("apfs");
+        create_vm_bundle_in_dirs(
+            &VmCreateOptions {
+                id: "web".to_string(),
+                from: image.to_string_lossy().to_string(),
+                data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
+                roles: Vec::new(),
+                requested_network: None,
+                network: None,
+                root_password: Some("pass:word".to_string()),
+                cloud_init: None,
+                project: None,
+                format: OutputFormat::Json,
+            },
+            &backend,
+            &images_directory,
+            &vms_directory,
+        )
+        .unwrap();
+        let user_data = &backend.seeds()[0].2;
+        assert!(user_data.contains("disable_root: false"));
+        assert!(user_data.contains("chpasswd:"));
+        assert!(user_data.contains("name: root"));
+        assert!(user_data.contains("pass:word") || user_data.contains("'pass:word'") || user_data.contains("\"pass:word\""));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -3755,9 +4335,14 @@ mod tests {
                     id: id.to_string(),
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
+                    cpus: DEFAULT_VM_CPUS,
+                    memory_mib: DEFAULT_VM_MEMORY_MIB,
                     roles: Vec::new(),
                     requested_network: None,
                     network: None,
+                    root_password: None,
+                    cloud_init: None,
+                    project: None,
                     format: OutputFormat::Json,
                 },
                 &backend,
@@ -3800,8 +4385,9 @@ mod tests {
             assert!(network_config.contains("macaddress: \"02:"));
             assert!(network_config.contains("dhcp4: true"));
             assert!(user_data.contains("ssh_deletekeys: true"));
-            assert!(user_data.contains("  - ed25519"));
-            assert!(user_data.contains("  - rsa"));
+            assert!(user_data.contains("ed25519"));
+            assert!(user_data.contains("rsa"));
+            assert!(user_data.contains("ssh_genkeytypes"));
         }
         assert_eq!(
             fs::metadata(&image).unwrap().permissions().mode() & 0o222,
@@ -3828,9 +4414,14 @@ mod tests {
                 id: "web".to_string(),
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                root_password: None,
+                cloud_init: None,
+                project: None,
                 format: OutputFormat::Human,
             },
             &backend,
@@ -3857,6 +4448,8 @@ mod tests {
                 id: "router".to_string(),
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
                 roles: vec!["router".to_string()],
                 requested_network: Some("lan".to_string()),
                 network: Some(network::VmNetworkSelection {
@@ -3870,6 +4463,9 @@ mod tests {
                     automatic: false,
                     created: true,
                 }),
+                root_password: None,
+                cloud_init: None,
+                project: None,
                 format: OutputFormat::Json,
             },
             &backend,
@@ -3909,9 +4505,14 @@ mod tests {
                 id: "web".to_string(),
                 from: image.to_string_lossy().to_string(),
                 data_disk_gib: 1,
+                cpus: DEFAULT_VM_CPUS,
+                memory_mib: DEFAULT_VM_MEMORY_MIB,
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                root_password: None,
+                cloud_init: None,
+                project: None,
                 format: OutputFormat::Json,
             },
             &backend,
@@ -3962,9 +4563,14 @@ mod tests {
                     id: id.to_string(),
                     from: image.to_string_lossy().to_string(),
                     data_disk_gib: 1,
+                    cpus: DEFAULT_VM_CPUS,
+                    memory_mib: DEFAULT_VM_MEMORY_MIB,
                     roles: Vec::new(),
                     requested_network: None,
                     network: None,
+                    root_password: None,
+                    cloud_init: None,
+                    project: None,
                     format: OutputFormat::Human,
                 },
                 &NativeVmDiskBackend,
@@ -4029,6 +4635,8 @@ mod tests {
             cidata_path: PathBuf::from("/state/vms/web/cidata.iso"),
             agent_token_path: PathBuf::from("/state/vms/web/agent.token"),
             data_disk_gib: 64,
+            cpus: DEFAULT_VM_CPUS,
+            memory_mib: DEFAULT_VM_MEMORY_MIB,
             roles: Vec::new(),
             clone_mode: CloneMode::Linked,
             filesystem: "apfs".to_string(),

@@ -34,10 +34,23 @@ Fehler enthalten einen JSON-Pfad und eine Art:
 - `spec.dns`, `images`, `networks`, `routes`, `policies`, `vms`
 - VM: `from`, `dataDisk`, mindestens ein `networks[]` mit `name` und `ip`
 
-`clone` ist optional und standardmäßig `linked`. `cloudInit`, `dependsOn`,
-`roles` sowie das v0.2-Vorbereitungsfeld `requires` sind optional.
-Unbekannte Felder werden abgewiesen. Das exportierte Schema ist JSON Schema
-Draft 7 und hat die ID
+`clone` is optional und standardmäßig `linked`. `cpus` (positive Ganzzahl) und
+`memory` (MiB als bare Integer oder Size wie `2Gi`/`2048MiB`) sind optional und
+steuern Helper-Resources beim Create (Defaults: 2 vCPUs / 1024 MiB). `cloudInit`,
+`dependsOn`, `roles` sowie das v0.2-Vorbereitungsfeld `requires` sind optional.
+
+`roles` akzeptiert nur `router` und `docker`. `cloudInit` ist ein relativer Pfad
+zur Stack-Config und wird beim Create mit dem System-NoCloud-Seed gemerged
+(System-Felder gewinnen bei Skalar-Konflikten; Listen werden angehängt).
+
+Host-Port-Forwards:
+
+- Stack: `spec.ports` — `"8080:web:80"` oder `"127.0.0.1:8080:web:80"`
+- VM: `spec.vms.*.ports` — `"8080:80"` oder `"127.0.0.1:8080:80"`
+
+Alpha bindet nur `127.0.0.1`; `0.0.0.0` und doppelte Host-`(bind,port)` sind
+Validate-Fehler. Unbekannte Felder werden abgewiesen. Das exportierte Schema ist
+JSON Schema Draft 7 und hat die ID
 `https://vzctl.dev/schemas/hypernetwork-v1.schema.json`.
 
 ## Semantische Regeln

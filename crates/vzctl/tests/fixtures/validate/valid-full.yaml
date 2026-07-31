@@ -33,6 +33,8 @@ spec:
       allow:
         - { to: lan, proto: tcp, ports: [5432] }
         - { to: dmz, proto: icmp }
+  ports:
+    - "2222:router:22"
   vms:
     router:
       from: ubuntu-base
@@ -48,9 +50,21 @@ spec:
       from: ubuntu-base
       clone: linked
       dataDisk: 40G
+      cpus: 2
+      memory: 2Gi
       networks:
         - { name: dmz, ip: 10.80.0.10 }
       cloudInit: cloud-init/web.yaml
       dependsOn: [router]
       roles: []
       requires: [guest-agent-v1]
+      ports: ["8080:80"]
+    docker:
+      from: ubuntu-base
+      clone: linked
+      dataDisk: 100G
+      networks:
+        - { name: dmz, ip: 10.80.0.50 }
+      cloudInit: cloud-init/docker.yaml
+      dependsOn: [router]
+      roles: [docker]

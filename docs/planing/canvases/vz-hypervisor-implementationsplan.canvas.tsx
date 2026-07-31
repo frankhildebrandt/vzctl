@@ -25,7 +25,7 @@ const PHASES = [
   { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity", done: true },
   { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
   { id: "P3", name: "Stacks", weeks: "5–7", goal: "#34 closed · #36/#37/#38/#52 ✅", done: true },
-  { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: false },
+  { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: true },
   { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
   { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
 ] as const;
@@ -39,7 +39,7 @@ const EPICS = [
   { n: 25, title: "Dual-DNS + Resolver", ms: "P2", done: true },
   { n: 30, title: "Net + Policies", ms: "P2", done: true },
   { n: 34, title: "Stack Reconciler", ms: "P3", done: true },
-  { n: 39, title: "Docker + Ports", ms: "P4", done: false },
+  { n: 39, title: "Docker + Ports", ms: "P4", done: true },
   { n: 43, title: "Ingress / CA / OIDC", ms: "v0.2", done: false },
   { n: 48, title: "DX Logs / Docs", ms: "P1", done: false },
 ] as const;
@@ -609,8 +609,10 @@ export default function VzHypervisorImplementationsplan() {
                 <Struck>Clones · Seal · Identity · Net/Policies · image pull</Struck>
                 <Struck>hypernetwork Schema + validate (#36)</Struck>
                 <Struck>Stacks up/down/apply + Journal/Resume (#37)</Struck>
+                <Struck>Docker SSH-Context + Ports basic (#39/#40/#41)</Struck>
+                <Struck>`vzctl vm logs` (#49)</Struck>
                 <Text size="small" tone="secondary">
-                  Offen: Docker SSH-Context + Ports basic + logs (#39/#49)
+                  v0.1.x residual: virtiofs (#42), Docker-Polish
                 </Text>
               </Stack>
             </CardBody>
@@ -756,19 +758,11 @@ spec:
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P3 Epic #34 closed · Next P4 Docker">
-          #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
-          per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
-          Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
-          Dual-DNS, macOS resolver install/cleanup und direkter dns query. #29:
-          Guest-NoCloud mit Bridge-.0 als einzigem DNS, on-link Default-Route
-          und Projekt-Search-Domain. #36: hypernetwork/v1 Schema, Serde und
-          Validate mit JSON-Pfaden. #52: ARM64 Image-Pull mit 14 Aliasen,
-          Digestprüfung und Raw-Normalisierung. #37: Plan/Diff/Up/Down/Apply
-          mit SQLite-Lease, Journal Resume/Abort und Apply-Events. #38:
-          edge-dmz Referenz-Env plus Validate/Plan/Diff-CI. Epic #34 DoD
-          vollständig; reclaim/<Code>doctor --fix-locks</Code> deferred.
-          Weiter: Epic #39 Docker Context + Ports.
+        <Callout tone="success" title="P4 Epic #39 closed · Next v0.1.x / v0.2">
+          #40/#41: Docker SSH-Context (`vzctl docker`), cloudInit-Merge,
+          DNS <Code>docker.svc</Code>, Userspace Port-Forwards
+          (`vzctl port list`) und Collision-Check. #42 virtiofs bleibt v0.1.x.
+          Weiter: virtiofs (#42), DX (#48 residual) oder Ingress/OIDC (#43).
         </Callout>
       </Stack>
 

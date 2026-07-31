@@ -27,8 +27,7 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P3 / Epic #34 closed** — Schema, Image-Pull, Reconciler und edge-dmz
-Referenz-Env + CI sind fertig (`vzctl ps` + `adopt` report-only im DoD;
-reclaim/`doctor --fix-locks` deferred).
+**P4 / Epic #39 complete** — Docker SSH-Context (`vzctl docker`), Port-Forwards
+(`vzctl port list`, Collision-Check), DNS `docker.svc.{project}.vz.test`.
 
-Weiter mit **P4 / Epic #39** Docker Context + Ports.
+Weiter mit **v0.1.x / #42** virtiofs oder **Epic #48** DX residual / **#43** v0.2.

@@ -33,6 +33,8 @@ spec:
       allow:
         - { to: lan, proto: tcp, ports: [5432] }
         - { to: dmz, proto: icmp }
+  ports:
+    - "8080:web:80"
   vms:
     router:
       from: ubuntu-base

@@ -7,6 +7,7 @@ license-file = "../../LICENSE"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 ctrlc = "3.4"
 ipnet = "2.12"
 jsonschema = { version = "0.18", default-features = false }

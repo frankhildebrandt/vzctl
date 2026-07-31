@@ -83,13 +83,13 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `15` | Image-Marker oder Read-only-State fehlgeschlagen | `image seal` |
 | `16` | VM-Root-/Data-Disk-Vorbereitung fehlgeschlagen | `vm create` |
 | `17` | Network-Operation fehlgeschlagen | Konflikt, nicht gefunden, vmnet-Rebuild |
-| `18` | Route-/Policy-Operation fehlgeschlagen | Guest-Agent oder nftables |
+| `18` | Route-/Policy- oder Guest-Agent-Operation fehlgeschlagen | Guest-Agent, nftables, `vm.exec` |
 | `19` | macOS-Resolver-Operation fehlgeschlagen | Rechte, Kollision, unsicherer Pfad |
 | `20` | DNS-Query fehlgeschlagen | Timeout, Protokollfehler oder DNS-RCODE ungleich `NOERROR` |
 | `21` | Image-Netzwerk-/Metadatenfehler | Download, Release-Metadaten |
 | `22` | Image-Checksum fehlgeschlagen | Upstream-/lokaler Digest-Mismatch |
 | `23` | Image-Architektur unsupported | `image pull` ist ARM64-only |
-| `24` | Reconciler-Step fehlgeschlagen | `up`, `apply`, `down` |
+| `24` | Reconciler- oder VM-Lifecycle-Operation fehlgeschlagen | `up`, `apply`, `down`, `vm start|stop|delete` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -124,8 +124,15 @@ startet gestoppte VMs, löscht aber nichts. `apply` korrigiert Drift; VM- und
 Netz-Recreates sowie Deletes sind `breaking` und benötigen interaktive
 Bestätigung oder `--force`. `down` stoppt in umgekehrter `dependsOn`-Reihenfolge.
 `down --purge` löscht ausschließlich Ressourcen mit `managed-by=vzctl` und
-passender Project-/Stack-Zuordnung. `adopt` ist in diesem Slice minimal und
-meldet ohne sichere Lockfile-Orphans einen unveränderten Plan.
+passender Project-/Stack-Zuordnung. `adopt` ist report-only (kein Lease, kein
+Journal, kein Mutate): sichere stale Helper-Locks unter
+`$VZCTL_STATE_DIR/helpers/<id>.lock` werden als `actions[]` mit
+`action=report`, `kind=helper-lock` gemeldet. Safe bedeutet: Lock-Datei
+existiert, `flock(LOCK_EX|LOCK_NB)` gelingt oder die gespeicherte PID ist tot,
+und die VM ist in `vm.list` nicht `starting`/`running`. Ohne sichere Orphans
+liefert `adopt` einen unveränderten Plan (`actions=[]`, `changed=false`).
+Reclaim/`doctor --fix-locks` bleiben späteren Slices vorbehalten.
+Exitcodes für `adopt`: `0`, `2`, `3`, `10`.
 
 Das JSON-Envelope enthält `stack_id`, optional `journal` und `actions[]` mit
 `action`, `kind`, `name`, `breaking` und `reason`. Ein unveränderter Plan bzw.
@@ -185,18 +192,24 @@ Customize-Backend (lokal oder Builder-Appliance) `12` und die
 commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
-### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--network <name>] --format json`
+### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--root-password <secret>] --format json`
 
 Payloads: `vm`, `network`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
 kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue
 cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
-`cidata.iso` und ein privater Agent-Token. Ohne `--network` wird das
+`cidata.iso` und ein privater Agent-Token. `vm.resources` enthält `cpus` und
+`memory_mib` (Defaults `2` / `1024`); `--cpus` und `--memory` (bare MiB oder
+`512M`/`2G`/`2Gi`) überschreiben sie und landen in `vm.json`. Mit
+`--root-password` setzt cloud-init
+`disable_root: false`, `ssh_pwauth: true` und `chpasswd` für `root` (Klartext in
+der geschützten NoCloud-ISO, Mode `0600`); das Passwort erscheint nicht im
+JSON-Envelope. Ohne `--network` wird das
 konfigurierte Default-Netz verwendet; `network` enthält Name, CIDR, IP,
 Prefix, Gateway/DNS `.0` und `automatic=true`. `--network` oder ein bestehendes
 explizites Attachment gewinnt. APFS liefert
 `disks.root.clone=linked`. Nicht-APFS fällt mit `status=warn`, Exit `0` und
-`clone=full` zurück. Usage liefert `2`, ungültige IDs/Größen/Formate `3`,
-inkonsistenter Seal-State `15` und Fehler bei `clonefile`, Vollkopie,
+`clone=full` zurück. Usage liefert `2`, ungültige IDs/Größen/Formate/leeres
+Passwort `3`, inkonsistenter Seal-State `15` und Fehler bei `clonefile`, Vollkopie,
 Sparse-Image, NoCloud-Seed oder Manifest `16`. Fehlende Default-Konfiguration,
 unbekannte Netze und IP-/Attachment-Konflikte liefern `17`.
 
@@ -206,6 +219,80 @@ APFS-Space-Smoke stehen in
 [`p1-linked-clone.md`](../spikes/p1-linked-clone.md).
 Der Identity-Vertrag und Live-Boot-Nachweis stehen in
 [`p1-identity-reset.md`](../spikes/p1-identity-reset.md).
+
+### `vzctl vm list|start|stop|delete` und `vzctl ps`
+
+```bash
+vzctl vm list [--format human|json]
+vzctl vm start <id> [--format human|json]
+vzctl vm stop <id> [--wait true|false] [--format human|json]
+vzctl vm delete <id> [--force] [--format human|json]
+vzctl ps [--format human|json]
+```
+
+Kanonische Commands sind `vm.list`, `vm.start`, `vm.stop`, `vm.delete` und
+`ps`. `vm.list` und `ps` mergen lokale Bundles unter `$VZCTL_STATE_DIR/vms/*/vm.json`
+mit dem Supervisor-RPC `vm.list` (Runtime-State/PID) und `net.list`
+(Attachments → `ips[]` / `networks[{name,ip}]`). Fehlen Attachments, greift der
+Fallback auf `vm.json` `identity.nics[].address` (außer `dhcp`). Ohne
+erreichbaren Supervisor bleiben Disk-Bundles sichtbar (`state=stopped`) und das
+Envelope liefert `status=warn`, Exit `0`.
+
+`vm.start` prüft das Bundle-Manifest und ruft `vm.start` mit `vm_id` und
+`bundle` auf. `vm.stop` ruft `vm.stop` auf und wartet standardmäßig bis der
+Helper nicht mehr `starting`/`running` ist (`--wait false` überspringt das
+Warten). `vm.delete` stoppt, detacht Netz-Attachments der VM, und löscht nur
+Bundles mit `managed-by=vzctl`. `--force` toleriert Supervisor-/Stop-/Detach-
+Fehler und löscht danach das Bundle.
+
+Usage liefert `2`, ungültige IDs oder fehlende/unmanaged Bundles `3`,
+Socket-/Protokollfehler bei start/stop `10`, Bundle-Purge-Fehler `16`,
+Detach-Konflikte `17` und Timeout/Lifecycle-Fehler `24`.
+
+### `vzctl vm inspect|logs|exec|transfer|attach|services|ps`
+
+```bash
+vzctl vm inspect <id> [--format human|json]
+vzctl vm logs <id> [-f|--follow] [--tail N] [--format human|json]
+vzctl vm exec <id> [-i|--interactive] [-t|--tty] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
+vzctl vm transfer <id> <src> <dst> [--format human|json]
+vzctl vm attach <id>
+vzctl vm services <id> [start|stop|restart <unit>] [--format human|json]
+vzctl vm ps <id> [--format human|json]
+```
+
+Kanonische Commands sind `vm.inspect`, `vm.logs`, `vm.exec`, `vm.transfer`,
+`vm.attach`, `vm.services` und `vm.ps` (Gast-Prozessliste; Host-Übersicht bleibt
+`vzctl ps`).
+
+`inspect` merged Bundle-Manifest, Runtime-`vm.list`, Attachments und optional
+Agent `health`/`version`/`report_ip`. Das Envelope enthält additiv
+`logs.serial` mit dem kanonischen Pfad
+`~/Library/Logs/vzctl/<StateFileName>.serial.log` (auch wenn die Datei noch
+fehlt). `vm.logs` liest diesen Serial-Log (Alpha: kein Agent-Tail). Default ist
+`--tail 200`. Zeilen mit offensichtlichen Secrets (`password`, `chpasswd`,
+`root_password`) werden als `[redacted]` ersetzt; `summary.redacted` zählt sie.
+`--follow`/`-f` streamt nach dem Tail weiter (nur `--format human`; mit JSON
+Exit `3`). Fehlendes Bundle liefert Exit `3`, fehlende Serial-Log-Datei Exit
+`10` („is the VM started?“).
+
+`exec` proxied über Supervisor `vm.exec`
+zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).
+`transfer` kopiert Dateien host↔guest (`<id>:<guest-path>` vs. Host-Pfad) über
+`exec` + base64/`tee` und ist auf 256 KiB begrenzt (darüber Exit `12`).
+`services` und `vm ps` sind feste `exec`-Wrapper (`systemctl` bzw. `ps`).
+`attach` öffnet die Serial-Console am Helper-Socket
+`$VZCTL_STATE_DIR/helpers/<vm>.console.sock` im Raw-TTY-Modus.
+Detach mit **Ctrl-P Ctrl-Q** (wie Docker; nicht Ctrl-C — das geht im Raw-Modus
+an den Guest). Literal Ctrl-P an den Guest: Ctrl-P Ctrl-P.
+
+`exec` unterstützt `-i/--interactive` und `-t/--tty` nur **gemeinsam** (`-it`):
+Supervisor `vm.exec_tty` → Helper-Unix-Socket mit Mux-Frames → Guest-PTY
+(Capability `exec_tty`). Detach ebenfalls Ctrl-P Ctrl-Q. Ohne `-it` bleibt
+One-Shot-`exec` unverändert.
+Usage liefert `2`, ungültige IDs/Pfade `3`, fehlender Supervisor/Helper/
+Console-Socket/`vm.logs`-Serial-Datei `10`, zu große Transfers `12`,
+Agent-/Guest-Fehler `18`.
 
 ### `vzctl net create|attach|list|detach|delete|default`
 
@@ -248,12 +335,19 @@ Das v1-Ergebnis enthält `routers[]`, `summary.changed` und pro Router
 Exit `18` steht für Route-/Guest-Apply-/Statusfehler, Exit `3` für ungültige
 Konfiguration, Rollen oder Topologien.
 
-### `vzctl dns query|install-resolver|uninstall-resolver`
+### `vzctl dns status|query|install-resolver|uninstall-resolver`
 
 ```bash
+vzctl dns status [--format human|json]
 vzctl dns query <name> \
   [--type A|AAAA] [--server <IP:port>] [--format human|json]
 ```
+
+`dns.status` ruft Supervisor-RPC `dns.status` auf und spiegelt
+`DNSServer.health()` / `daemon.health.dns` (`ok`, `listeners`, `records`,
+`zones`, `ttl`, `upstream`, `last_error`). Kanonischer Command: `dns.status`.
+`ok=true` liefert Exit `0`; Supervisor down oder `ok=false` liefert Exit `10`
+mit `status=fail` und dem `dns`-Payload. Usage `2`.
 
 `dns.query` sendet ein UDP-DNS-Paket direkt an den angegebenen Server. Der
 Default ist `127.0.0.1:15353`; der Command hängt nicht von `/etc/resolver` oder
@@ -286,6 +380,19 @@ Die kanonischen Commands heißen `dns.install-resolver` und
 Ungültige Projekte/Configs liefern Exit `3`. Fehlende Rechte, fremde Dateien,
 Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`. Idempotente
 No-op-Installationen und -Deinstallationen liefern Exit `0`.
+
+```bash
+vzctl docker [--project <name>] [--] <docker-args...>
+vzctl port list [--project <name>] [--stack <name>] [--format human|json]
+```
+
+`docker` ist ein Passthrough auf das lokale `docker`-Binary mit Context
+`vzctl-{project}` (SSH). Exitcode folgt dem docker-Prozess; Setup-Fehler vor
+dem Exec nutzen Exit `24` / `3`. Siehe [`docs/docker.md`](../docker.md).
+
+`port.list` folgt dem CLI-v1-Envelope; Payload `ports[]` mit `bind`,
+`host_port`, `guest_ip`, `guest_port`, `vm_id`, `state`, `source`. Siehe
+[`docs/ports.md`](../ports.md).
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

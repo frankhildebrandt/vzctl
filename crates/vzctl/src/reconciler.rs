@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -28,6 +29,8 @@ const APPLY_STEPS: &[&str] = &[
     "attach_nets",
     "start_helpers",
     "await_agents",
+    "ensure_docker_context",
+    "ensure_ports",
     "apply_routes_policies",
     "release_lease",
 ];
@@ -156,20 +159,22 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
     } else {
         (options.mode, options.purge)
     };
-    let plan = build_plan(effective_mode, desired, actual);
 
     if matches!(options.mode, Mode::Plan | Mode::Diff) {
+        let plan = build_plan(effective_mode, desired, actual);
         return Ok(plan_output(&stack_id, &plan));
     }
     if options.mode == Mode::Adopt {
-        return Ok(json!({
-            "message": "no lockfile-only resources adopted",
-            "stack_id": stack_id,
-            "actions": [],
-            "changed": false,
-            "minimal": true,
-        }));
+        return Ok(adopt_report(
+            &stack_id,
+            &environment,
+            &desired,
+            &actual,
+            socket_path,
+        )?);
     }
+
+    let plan = build_plan(effective_mode, desired, actual);
 
     let holder = holder();
     let mode = if options.resume {
@@ -214,6 +219,8 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             "stop_helpers",
             "detach_nets",
             "destroy_managed",
+            "purge_docker_context",
+            "purge_ports",
             "dns_cleanup",
             "release_lease",
         ]
@@ -312,17 +319,21 @@ fn execute_step(
         "ensure_nets" => ensure_networks(environment, options.force, socket_path),
         "ensure_dns" => ensure_dns(environment, &options.config),
         "ensure_images" => ensure_images(environment),
-        "ensure_vms" => ensure_vms(environment, options.force, plan, socket_path),
+        "ensure_vms" => ensure_vms(environment, options.force, plan, &options.config, socket_path),
         "attach_nets" => {
             ensure_attachments(environment, options.mode, socket_path)?;
             prune_networks(environment, options.mode, plan, socket_path)
         }
         "start_helpers" => start_helpers(environment, socket_path),
         "await_agents" => await_helpers(environment, socket_path),
+        "ensure_docker_context" => ensure_docker_context(environment),
+        "ensure_ports" => ensure_ports(environment, socket_path),
         "apply_routes_policies" => apply_routes(environment, socket_path),
         "stop_helpers" => stop_helpers(environment, socket_path),
         "detach_nets" if options.purge => detach_networks(environment, socket_path),
         "destroy_managed" if options.purge => purge_managed(environment, socket_path),
+        "purge_docker_context" if options.purge => purge_docker_context(environment),
+        "purge_ports" if options.purge => purge_ports(environment, socket_path),
         "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => run_self(&[
             "dns",
             "uninstall-resolver",
@@ -439,6 +450,7 @@ fn ensure_vms(
     environment: &Environment,
     force: bool,
     plan: &Plan,
+    config_path: &Path,
     socket_path: &Path,
 ) -> Result<(), Failure> {
     if options_apply_deletes(plan) {
@@ -453,6 +465,10 @@ fn ensure_vms(
         }
     }
     let order = dependency_order(&environment.spec.vms)?;
+    let config_dir = config::config_path(config_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     for name in order {
         let vm = &environment.spec.vms[&name];
         let action = plan
@@ -482,13 +498,43 @@ fn ensure_vms(
             "--data-disk".to_string(),
             size.to_string(),
         ];
+        if let Some(cpus) = vm.cpus {
+            if cpus == 0 {
+                return Err(Failure::new(
+                    EXIT_INVALID,
+                    format!("VM {name} cpus must be greater than zero"),
+                ));
+            }
+            owned.extend(["--cpus".to_string(), cpus.to_string()]);
+        }
+        if let Some(memory) = &vm.memory {
+            let mib = memory_mib(memory)?;
+            owned.extend(["--memory".to_string(), format!("{mib}MiB")]);
+        }
         if let Some(network) = vm.networks.first() {
             owned.extend(["--network".to_string(), network.name.clone()]);
         }
         for role in &vm.roles {
-            if role == "router" {
+            if role == "router" || role == "docker" {
                 owned.extend(["--role".to_string(), role.clone()]);
             }
+        }
+        if vm.roles.iter().any(|role| role == "docker") {
+            owned.extend([
+                "--project".to_string(),
+                environment.spec.project.clone(),
+            ]);
+        }
+        if let Some(cloud_init) = &vm.cloud_init {
+            let path = if Path::new(cloud_init).is_absolute() {
+                PathBuf::from(cloud_init)
+            } else {
+                config_dir.join(cloud_init)
+            };
+            owned.extend([
+                "--cloud-init".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]);
         }
         owned.extend(["--format".to_string(), "json".to_string()]);
         let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
@@ -496,6 +542,7 @@ fn ensure_vms(
     }
     Ok(())
 }
+
 
 fn ensure_attachments(
     environment: &Environment,
@@ -547,6 +594,11 @@ fn ensure_attachments(
                         && item["ip"] == attachment.ip
                 });
             if !exists {
+                let mut labels = serde_json::Map::new();
+                labels.insert("managed-by".into(), json!("vzctl"));
+                if vm.roles.iter().any(|role| role == "docker") {
+                    labels.insert("vzctl.dev/dns-services".into(), json!("docker"));
+                }
                 rpc(
                     socket_path,
                     "net.attach",
@@ -554,7 +606,7 @@ fn ensure_attachments(
                         "vm_id": vm_id,
                         "network": attachment.name,
                         "ip": attachment.ip,
-                        "labels": {"managed-by": "vzctl"},
+                        "labels": labels,
                         "project": environment.spec.project,
                         "stack": stack_id(environment),
                     }),
@@ -714,6 +766,114 @@ fn purge_managed(environment: &Environment, socket_path: &Path) -> Result<(), Fa
         }
     }
     Ok(())
+}
+
+fn ensure_docker_context(environment: &Environment) -> Result<(), Failure> {
+    let has_docker = environment
+        .spec
+        .vms
+        .values()
+        .any(|vm| vm.roles.iter().any(|role| role == "docker"));
+    if !has_docker {
+        return Ok(());
+    }
+    crate::docker::ensure_context(&environment.spec.project, &crate::state_dir(), None).map_err(
+        |error| Failure::new(EXIT_STEP, format!("docker context: {error}")),
+    )?;
+    Ok(())
+}
+
+fn purge_docker_context(environment: &Environment) -> Result<(), Failure> {
+    let has_docker = environment
+        .spec
+        .vms
+        .values()
+        .any(|vm| vm.roles.iter().any(|role| role == "docker"));
+    if !has_docker {
+        return Ok(());
+    }
+    let _ = crate::docker::remove_context(&environment.spec.project);
+    Ok(())
+}
+
+fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let forwards = config::collect_port_forwards(environment).map_err(|issues| {
+        Failure::new(
+            EXIT_INVALID,
+            issues
+                .iter()
+                .map(|issue| format!("{}: {}", issue.path, issue.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+    if forwards.is_empty() {
+        rpc(
+            socket_path,
+            "port.purge",
+            json!({
+                "project": environment.spec.project,
+                "stack": stack_id(environment),
+            }),
+        )?;
+        return Ok(());
+    }
+
+    let snapshot = rpc(socket_path, "net.list", json!({}))?;
+    let attachments = snapshot["attachments"].as_array().cloned().unwrap_or_default();
+    let mut desired = Vec::new();
+    for forward in forwards {
+        let guest_ip = attachments
+            .iter()
+            .find(|item| {
+                item["vm_id"] == forward.vm
+                    && item["project"] == environment.spec.project
+                    && item["stack"] == stack_id(environment)
+            })
+            .and_then(|item| item["ip"].as_str())
+            .ok_or_else(|| {
+                Failure::new(
+                    EXIT_STEP,
+                    format!(
+                        "port forward {} needs attachment IP for VM {}",
+                        forward.source, forward.vm
+                    ),
+                )
+            })?
+            .to_string();
+        desired.push(json!({
+            "bind": forward.bind,
+            "host_port": forward.host_port,
+            "guest_ip": guest_ip,
+            "guest_port": forward.guest_port,
+            "vm_id": forward.vm,
+            "source": forward.source,
+            "project": environment.spec.project,
+            "stack": stack_id(environment),
+        }));
+    }
+    rpc(
+        socket_path,
+        "port.ensure",
+        json!({
+            "project": environment.spec.project,
+            "stack": stack_id(environment),
+            "ports": desired,
+        }),
+    )?;
+    Ok(())
+}
+
+fn purge_ports(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    rpc(
+        socket_path,
+        "port.purge",
+        json!({
+            "project": environment.spec.project,
+            "stack": stack_id(environment),
+        }),
+    )
+    .map(|_| ())
 }
 
 fn remove_managed_vm(vm_id: &str) -> Result<(), Failure> {
@@ -961,6 +1121,10 @@ fn data_disk_gib(value: &str) -> Result<u64, Failure> {
     }
 }
 
+fn memory_mib(value: &str) -> Result<u64, Failure> {
+    crate::parse_memory_mib(value).map_err(|message| Failure::new(EXIT_INVALID, message))
+}
+
 fn checkpoint(
     socket_path: &Path,
     id: &str,
@@ -1168,6 +1332,154 @@ fn requested_format(args: &[String]) -> Format {
         .unwrap_or(Format::Human)
 }
 
+fn adopt_report(
+    stack_id: &str,
+    environment: &Environment,
+    desired: &[Resource],
+    actual: &[Resource],
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let mut candidates = BTreeSet::new();
+    for resource in desired.iter().chain(actual.iter()) {
+        if resource.kind == "vm" {
+            candidates.insert(resource.name.clone());
+        }
+    }
+    let project = environment.spec.project.as_str();
+    if let Ok(entries) = fs::read_dir(crate::state_dir().join("vms")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let manifest_path = entry.path().join("vm.json");
+            let Ok(raw) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            if manifest["managed-by"] != "vzctl" {
+                continue;
+            }
+            let labels = &manifest["labels"];
+            let matches_stack = labels["stack_id"].as_str() == Some(stack_id)
+                || (labels["project"].as_str() == Some(project)
+                    && candidates.contains(&name));
+            if matches_stack || candidates.contains(&name) {
+                candidates.insert(name);
+            }
+        }
+    }
+
+    let runtime = match rpc(socket_path, "vm.list", json!({})) {
+        Ok(records) => records,
+        Err(failure) if failure.code == EXIT_SUPERVISOR => json!([]),
+        Err(failure) => return Err(failure),
+    };
+    let live: BTreeSet<String> = runtime
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|record| {
+            matches!(
+                record["state"].as_str(),
+                Some("starting") | Some("running")
+            )
+        })
+        .filter_map(|record| record["vm_id"].as_str().map(str::to_string))
+        .collect();
+
+    let mut actions = Vec::new();
+    for vm_id in &candidates {
+        if live.contains(vm_id) {
+            continue;
+        }
+        let lock_path = helper_lock_path(vm_id);
+        if !lock_path.is_file() {
+            continue;
+        }
+        if !is_safe_stale_helper_lock(&lock_path) {
+            continue;
+        }
+        actions.push(json!({
+            "action": "report",
+            "kind": "helper-lock",
+            "name": vm_id,
+            "breaking": false,
+            "reason": "stale helper lock (pid dead or flock free)",
+        }));
+    }
+
+    let changed = !actions.is_empty();
+    let message = if changed {
+        format!("{} stale helper lock(s) reported", actions.len())
+    } else {
+        "no lockfile-only resources adopted".to_string()
+    };
+    Ok(json!({
+        "message": message,
+        "stack_id": stack_id,
+        "actions": actions,
+        "changed": changed,
+        "minimal": !changed,
+    }))
+}
+
+fn helper_lock_path(vm_id: &str) -> PathBuf {
+    crate::state_dir()
+        .join("helpers")
+        .join(format!("{}.lock", state_file_component(vm_id)))
+}
+
+fn state_file_component(value: &str) -> String {
+    let prefix: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    let hash = value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{prefix}-{hash:x}")
+}
+
+fn is_safe_stale_helper_lock(path: &Path) -> bool {
+    let file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let fd = file.as_raw_fd();
+    let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if locked == 0 {
+        unsafe {
+            libc::flock(fd, libc::LOCK_UN);
+        }
+        return true;
+    }
+    // Lock held — only treat as stale if recorded PID is dead.
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(pid) = contents.trim().parse::<i32>() else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 fn stack_id(environment: &Environment) -> String {
     format!("{}:{}", environment.spec.project, environment.metadata.name)
 }
@@ -1310,5 +1622,20 @@ mod tests {
             }
         });
         assert_eq!(journal_context(&state).unwrap(), (Mode::Down, true));
+    }
+
+    #[test]
+    fn stale_helper_lock_is_safe_when_flock_free() {
+        let path = std::env::temp_dir().join(format!(
+            "vzctl-adopt-lock-{}-{}.lock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, "999999").unwrap();
+        assert!(is_safe_stale_helper_lock(&path));
+        fs::remove_file(&path).unwrap();
     }
 }

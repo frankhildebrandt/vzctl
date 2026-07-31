@@ -79,6 +79,9 @@ pub(crate) struct Spec {
     pub(crate) networks: BTreeMap<String, NetworkConfig>,
     pub(crate) routes: Vec<RouteConfig>,
     pub(crate) policies: Vec<PolicyConfig>,
+    /// Stack-level host port forwards, e.g. `"8080:web:80"` or `"127.0.0.1:5432:db:5432"`.
+    #[serde(default)]
+    pub(crate) ports: Vec<String>,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
 }
@@ -183,6 +186,12 @@ pub(crate) struct VmConfig {
     #[serde(rename = "dataDisk")]
     #[schemars(regex(pattern = r"^[1-9][0-9]*(?:[KMGTP]i?B?|[kmgpt]i?b?)$"))]
     pub(crate) data_disk: String,
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub(crate) cpus: Option<u32>,
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^[1-9][0-9]*(?:[KMGTP]i?B?|[kmgpt]i?b?)?$"))]
+    pub(crate) memory: Option<String>,
     #[schemars(length(min = 1))]
     pub(crate) networks: Vec<VmNetwork>,
     #[serde(default, rename = "cloudInit")]
@@ -193,7 +202,22 @@ pub(crate) struct VmConfig {
     pub(crate) roles: Vec<String>,
     #[serde(default)]
     pub(crate) requires: Vec<String>,
+    /// VM-level host port forwards, e.g. `"8080:80"` or `"127.0.0.1:8080:80"`.
+    #[serde(default)]
+    pub(crate) ports: Vec<String>,
 }
+
+/// Parsed host→guest TCP port forward (Alpha: bind loopback only).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PortForward {
+    pub(crate) bind: String,
+    pub(crate) host_port: u16,
+    pub(crate) vm: String,
+    pub(crate) guest_port: u16,
+    pub(crate) source: String,
+}
+
+const ALLOWED_VM_ROLES: &[&str] = &["router", "docker"];
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -469,6 +493,16 @@ fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
     }
 
     let mut assigned_ips: BTreeMap<(&str, Ipv4Addr), (&str, usize)> = BTreeMap::new();
+    let mut host_binds: BTreeMap<(String, u16), String> = BTreeMap::new();
+    validate_port_list(
+        &environment.spec.ports,
+        "$.spec.ports",
+        None,
+        &environment.spec.vms,
+        &mut host_binds,
+        &mut issues,
+    );
+
     for (vm_name, vm) in &environment.spec.vms {
         let vm_base = json_path_key("$.spec.vms", vm_name);
         if !environment.spec.images.contains_key(&vm.from) {
@@ -477,6 +511,39 @@ fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
                 format!("unknown image {:?}", vm.from),
                 "semantic",
             ));
+        }
+        for (role_index, role) in vm.roles.iter().enumerate() {
+            if !ALLOWED_VM_ROLES.contains(&role.as_str()) {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.roles[{role_index}]"),
+                    format!("unsupported VM role {role:?}; allowed: router, docker"),
+                    "semantic",
+                ));
+            }
+        }
+        validate_port_list(
+            &vm.ports,
+            &format!("{vm_base}.ports"),
+            Some(vm_name.as_str()),
+            &environment.spec.vms,
+            &mut host_binds,
+            &mut issues,
+        );
+        if let Some(0) = vm.cpus {
+            issues.push(ValidationIssue::new(
+                format!("{vm_base}.cpus"),
+                "cpus must be greater than zero".to_string(),
+                "semantic",
+            ));
+        }
+        if let Some(memory) = &vm.memory {
+            if let Err(message) = crate::parse_memory_mib(memory) {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.memory"),
+                    message,
+                    "semantic",
+                ));
+            }
         }
         let mut attachments = BTreeSet::new();
         for (index, attachment) in vm.networks.iter().enumerate() {
@@ -577,6 +644,190 @@ fn validate_references(environment: &Environment) -> Vec<ValidationIssue> {
     detect_dependency_cycles(&environment.spec.vms, &mut issues);
     sort_and_deduplicate(&mut issues);
     issues
+}
+
+/// Collect all declared port forwards from an environment (stack + VM level).
+pub(crate) fn collect_port_forwards(
+    environment: &Environment,
+) -> Result<Vec<PortForward>, Vec<ValidationIssue>> {
+    let mut issues = Vec::new();
+    let mut host_binds = BTreeMap::new();
+    let mut forwards = Vec::new();
+    collect_port_list(
+        &environment.spec.ports,
+        "$.spec.ports",
+        None,
+        &environment.spec.vms,
+        &mut host_binds,
+        &mut forwards,
+        &mut issues,
+    );
+    for (vm_name, vm) in &environment.spec.vms {
+        collect_port_list(
+            &vm.ports,
+            &format!("{}.ports", json_path_key("$.spec.vms", vm_name)),
+            Some(vm_name.as_str()),
+            &environment.spec.vms,
+            &mut host_binds,
+            &mut forwards,
+            &mut issues,
+        );
+    }
+    if issues.is_empty() {
+        Ok(forwards)
+    } else {
+        Err(issues)
+    }
+}
+
+fn validate_port_list(
+    entries: &[String],
+    base: &str,
+    default_vm: Option<&str>,
+    vms: &BTreeMap<String, VmConfig>,
+    host_binds: &mut BTreeMap<(String, u16), String>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let mut forwards = Vec::new();
+    collect_port_list(
+        entries,
+        base,
+        default_vm,
+        vms,
+        host_binds,
+        &mut forwards,
+        issues,
+    );
+}
+
+fn collect_port_list(
+    entries: &[String],
+    base: &str,
+    default_vm: Option<&str>,
+    vms: &BTreeMap<String, VmConfig>,
+    host_binds: &mut BTreeMap<(String, u16), String>,
+    forwards: &mut Vec<PortForward>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (index, entry) in entries.iter().enumerate() {
+        let path = format!("{base}[{index}]");
+        match parse_port_forward(entry, default_vm) {
+            Ok(forward) => {
+                if forward.bind == "0.0.0.0" {
+                    issues.push(ValidationIssue::new(
+                        path.clone(),
+                        "Alpha rejects bind 0.0.0.0; use 127.0.0.1 (Ingress is loopback-only until v0.2)",
+                        "semantic",
+                    ));
+                } else if forward.bind != "127.0.0.1" {
+                    issues.push(ValidationIssue::new(
+                        path.clone(),
+                        format!(
+                            "unsupported bind address {:?}; Alpha only allows 127.0.0.1",
+                            forward.bind
+                        ),
+                        "semantic",
+                    ));
+                }
+                if !vms.contains_key(&forward.vm) {
+                    issues.push(ValidationIssue::new(
+                        path.clone(),
+                        format!("port forward references unknown VM {:?}", forward.vm),
+                        "semantic",
+                    ));
+                }
+                let key = (forward.bind.clone(), forward.host_port);
+                if let Some(other) = host_binds.insert(key.clone(), path.clone()) {
+                    issues.push(ValidationIssue::new(
+                        path.clone(),
+                        format!(
+                            "host bind {}:{} collides with {other}",
+                            forward.bind, forward.host_port
+                        ),
+                        "semantic",
+                    ));
+                }
+                forwards.push(forward);
+            }
+            Err(message) => issues.push(ValidationIssue::new(path, message, "semantic")),
+        }
+    }
+}
+
+/// Parse `"8080:80"`, `"127.0.0.1:8080:80"`, `"8080:web:80"`, or `"127.0.0.1:8080:web:80"`.
+pub(crate) fn parse_port_forward(
+    raw: &str,
+    default_vm: Option<&str>,
+) -> Result<PortForward, String> {
+    let parts = raw.split(':').collect::<Vec<_>>();
+    let (bind, host_port, vm, guest_port) = match parts.as_slice() {
+        [host, guest] => {
+            let vm = default_vm.ok_or_else(|| {
+                "stack-level port requires VM name (hostPort:vm:guestPort)".to_string()
+            })?;
+            (
+                "127.0.0.1".to_string(),
+                parse_port_number(host, "host port")?,
+                vm.to_string(),
+                parse_port_number(guest, "guest port")?,
+            )
+        }
+        [left, middle, right] => {
+            if middle.chars().all(|c| c.is_ascii_digit()) {
+                // bind:hostPort:guestPort (VM-level)
+                let vm = default_vm.ok_or_else(|| {
+                    "stack-level port with bind requires VM name (bind:hostPort:vm:guestPort)"
+                        .to_string()
+                })?;
+                (
+                    (*left).to_string(),
+                    parse_port_number(middle, "host port")?,
+                    vm.to_string(),
+                    parse_port_number(right, "guest port")?,
+                )
+            } else {
+                // hostPort:vm:guestPort
+                (
+                    "127.0.0.1".to_string(),
+                    parse_port_number(left, "host port")?,
+                    (*middle).to_string(),
+                    parse_port_number(right, "guest port")?,
+                )
+            }
+        }
+        [bind, host, vm, guest] => (
+            (*bind).to_string(),
+            parse_port_number(host, "host port")?,
+            (*vm).to_string(),
+            parse_port_number(guest, "guest port")?,
+        ),
+        _ => {
+            return Err(
+                "invalid port forward; expected hostPort:guestPort, bind:hostPort:guestPort, hostPort:vm:guestPort, or bind:hostPort:vm:guestPort"
+                    .to_string(),
+            )
+        }
+    };
+    if vm.is_empty() {
+        return Err("port forward VM name must not be empty".to_string());
+    }
+    Ok(PortForward {
+        bind,
+        host_port,
+        vm,
+        guest_port,
+        source: raw.to_string(),
+    })
+}
+
+fn parse_port_number(value: &str, label: &str) -> Result<u16, String> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid {label}: {value}"))?;
+    if port == 0 {
+        return Err(format!("{label} must be in 1...65535"));
+    }
+    Ok(port)
 }
 
 fn detect_dependency_cycles(vms: &BTreeMap<String, VmConfig>, issues: &mut Vec<ValidationIssue>) {
@@ -874,6 +1125,68 @@ mod tests {
             validate_source(include_str!("../tests/fixtures/validate/valid-full.yaml")).unwrap();
         assert_eq!(environment.metadata.name, "edge-dmz");
         assert_eq!(environment.spec.vms["router"].networks.len(), 2);
+        assert_eq!(environment.spec.vms["web"].cpus, Some(2));
+        assert_eq!(environment.spec.vms["web"].memory.as_deref(), Some("2Gi"));
+        assert_eq!(environment.spec.ports.len(), 1);
+        assert_eq!(environment.spec.vms["web"].ports, vec!["8080:80".to_string()]);
+        assert!(environment.spec.vms["docker"]
+            .roles
+            .iter()
+            .any(|role| role == "docker"));
+    }
+
+    #[test]
+    fn port_forward_parser_accepts_vm_and_stack_forms() {
+        let vm = parse_port_forward("8080:80", Some("web")).unwrap();
+        assert_eq!(vm.bind, "127.0.0.1");
+        assert_eq!(vm.host_port, 8080);
+        assert_eq!(vm.vm, "web");
+        assert_eq!(vm.guest_port, 80);
+
+        let bound = parse_port_forward("127.0.0.1:8080:80", Some("web")).unwrap();
+        assert_eq!(bound.host_port, 8080);
+
+        let stack = parse_port_forward("5432:db:5432", None).unwrap();
+        assert_eq!(stack.vm, "db");
+        assert_eq!(stack.guest_port, 5432);
+
+        let full = parse_port_forward("127.0.0.1:2222:router:22", None).unwrap();
+        assert_eq!(full.vm, "router");
+        assert_eq!(full.host_port, 2222);
+    }
+
+    #[test]
+    fn rejects_unknown_role_and_port_collision() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  ports: ["8080:web:80"]
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      roles: [builder]
+      ports: ["8080:80"]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| issue.message.contains("unsupported VM role")));
+        assert!(issues.iter().any(|issue| issue.message.contains("collides")));
     }
 
     #[test]

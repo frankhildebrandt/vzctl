@@ -83,6 +83,19 @@ final class StateDatabase {
                     cidr TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS port_forwards (
+                    bind TEXT NOT NULL,
+                    host_port INTEGER NOT NULL,
+                    guest_ip TEXT NOT NULL,
+                    guest_port INTEGER NOT NULL,
+                    vm_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    project TEXT NOT NULL,
+                    stack TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (bind, host_port)
+                );
                 """
             )
             try quickCheck()
@@ -311,6 +324,100 @@ final class StateDatabase {
                 cidr: text(statement, 1),
                 updatedAt: text(statement, 2)
             )
+        }
+    }
+
+    func replacePortForwards(project: String, stack: String, records: [PortForwardRecord]) throws {
+        try execute("BEGIN IMMEDIATE;")
+        do {
+            try withStatement(
+                "DELETE FROM port_forwards WHERE project = ? AND stack = ?;"
+            ) { statement in
+                try bind(project, at: 1, to: statement)
+                try bind(stack, at: 2, to: statement)
+                try stepDone(statement)
+            }
+            for record in records {
+                try withStatement(
+                    """
+                    INSERT INTO port_forwards
+                        (bind, host_port, guest_ip, guest_port, vm_id, source, project, stack, state, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """
+                ) { statement in
+                    try bind(record.bind, at: 1, to: statement)
+                    try bind(Int64(record.hostPort), at: 2, to: statement)
+                    try bind(record.guestIP, at: 3, to: statement)
+                    try bind(Int64(record.guestPort), at: 4, to: statement)
+                    try bind(record.vmID, at: 5, to: statement)
+                    try bind(record.source, at: 6, to: statement)
+                    try bind(record.project, at: 7, to: statement)
+                    try bind(record.stack, at: 8, to: statement)
+                    try bind(record.state, at: 9, to: statement)
+                    try bind(record.updatedAt, at: 10, to: statement)
+                    try stepDone(statement)
+                }
+            }
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    func deletePortForwards(project: String, stack: String) throws {
+        try withStatement(
+            "DELETE FROM port_forwards WHERE project = ? AND stack = ?;"
+        ) { statement in
+            try bind(project, at: 1, to: statement)
+            try bind(stack, at: 2, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func portForwards(project: String? = nil, stack: String? = nil) throws -> [PortForwardRecord] {
+        var sql =
+            """
+            SELECT bind, host_port, guest_ip, guest_port, vm_id, source, project, stack, state, updated_at
+            FROM port_forwards
+            """
+        var filters: [String] = []
+        if project != nil { filters.append("project = ?") }
+        if stack != nil { filters.append("stack = ?") }
+        if !filters.isEmpty {
+            sql += " WHERE " + filters.joined(separator: " AND ")
+        }
+        sql += " ORDER BY host_port, bind;"
+        return try withStatement(sql) { statement in
+            var index: Int32 = 1
+            if let project {
+                try bind(project, at: index, to: statement)
+                index += 1
+            }
+            if let stack {
+                try bind(stack, at: index, to: statement)
+            }
+            var records: [PortForwardRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                records.append(
+                    PortForwardRecord(
+                        bind: text(statement, 0),
+                        hostPort: UInt16(sqlite3_column_int64(statement, 1)),
+                        guestIP: text(statement, 2),
+                        guestPort: UInt16(sqlite3_column_int64(statement, 3)),
+                        vmID: text(statement, 4),
+                        source: text(statement, 5),
+                        project: text(statement, 6),
+                        stack: text(statement, 7),
+                        state: text(statement, 8),
+                        updatedAt: text(statement, 9)
+                    )
+                )
+            }
+            guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else {
+                throw databaseError()
+            }
+            return records
         }
     }
 
@@ -655,6 +762,12 @@ final class StateDatabase {
             result = sqlite3_bind_null(statement, index)
         }
         guard result == SQLITE_OK else { throw databaseError() }
+    }
+
+    private func bind(_ value: Int64, at index: Int32, to statement: OpaquePointer) throws {
+        guard sqlite3_bind_int64(statement, index, value) == SQLITE_OK else {
+            throw databaseError()
+        }
     }
 
     private func stepDone(_ statement: OpaquePointer) throws {

@@ -34,6 +34,7 @@ final class SupervisorServer: @unchecked Sendable {
     private let database: StateDatabase
     private let networkRegistry: NetworkRegistry
     private let dnsServer: DNSServer
+    private let portProxy = PortForwardProxy()
     private var helpers: [String: HelperRecord] = [:]
     private var helperProcesses: [String: Process] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
@@ -77,6 +78,7 @@ final class SupervisorServer: @unchecked Sendable {
                 throw SupervisorError.system("listen", errno)
             }
             reloadDNS(reason: "startup")
+            reloadPorts(reason: "startup")
 
             while true {
                 let client = Darwin.accept(fd, nil, nil)
@@ -134,6 +136,7 @@ final class SupervisorServer: @unchecked Sendable {
             Darwin.shutdown(client, SHUT_RDWR)
         }
         dnsServer.shutdown()
+        portProxy.shutdown()
         networkRegistry.shutdown()
     }
 
@@ -203,6 +206,11 @@ final class SupervisorServer: @unchecked Sendable {
                     "dns_ok": .bool(dnsHealth.ok),
                     "dns": dnsHealth.json,
                 ]),
+                id: request.id ?? .null
+            )
+        case "dns.status":
+            return JSONRPCResponse(
+                result: dnsServer.health().json,
                 id: request.id ?? .null
             )
         case "daemon.version":
@@ -414,6 +422,102 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return networkErrorResponse(error, request: request)
             }
+        case "port.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                let stack = try requiredString("stack", from: params)
+                let portsValue = params["ports"] ?? .array([])
+                guard case let .array(items) = portsValue else {
+                    return JSONRPCResponse(
+                        error: JSONRPCError(code: -32602, message: "ports must be an array"),
+                        id: request.id ?? .null
+                    )
+                }
+                var records: [PortForwardRecord] = []
+                for item in items {
+                    guard case let .object(object) = item else { continue }
+                    let bind = try requiredString("bind", from: object)
+                    let hostPort = try requiredPort("host_port", from: object)
+                    let guestIP = try requiredString("guest_ip", from: object)
+                    let guestPort = try requiredPort("guest_port", from: object)
+                    let vmID = try requiredString("vm_id", from: object)
+                    let source = try optionalString("source", from: object) ?? "\(bind):\(hostPort)"
+                    records.append(
+                        PortForwardRecord(
+                            bind: bind,
+                            hostPort: hostPort,
+                            guestIP: guestIP,
+                            guestPort: guestPort,
+                            vmID: vmID,
+                            source: source,
+                            project: project,
+                            stack: stack
+                        )
+                    )
+                }
+                let active = try portProxy.ensure(records)
+                try database.replacePortForwards(project: project, stack: stack, records: active)
+                emit(
+                    type: "port.ensured",
+                    data: [
+                        "project": .string(project),
+                        "stack": .string(stack),
+                        "count": .number(Double(active.count)),
+                    ]
+                )
+                return JSONRPCResponse(
+                    result: .object(["ports": .array(active.map(\.json))]),
+                    id: request.id ?? .null
+                )
+            } catch let error as PortProxyError {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -32020, message: error.description),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "port.list":
+            do {
+                let params = (try? networkParams(request.params)) ?? [:]
+                let project = try optionalString("project", from: params)
+                let stack = try optionalString("stack", from: params)
+                let records = try database.portForwards(project: project, stack: stack)
+                let live = portProxy.list()
+                let ports = live.isEmpty ? records : live.filter { record in
+                    (project == nil || record.project == project)
+                        && (stack == nil || record.stack == stack)
+                }
+                return JSONRPCResponse(
+                    result: .object(["ports": .array(ports.map(\.json))]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "port.purge":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                let stack = try requiredString("stack", from: params)
+                portProxy.purge(project: project, stack: stack)
+                try database.deletePortForwards(project: project, stack: stack)
+                emit(
+                    type: "port.purged",
+                    data: ["project": .string(project), "stack": .string(stack)]
+                )
+                return JSONRPCResponse(
+                    result: .object([
+                        "project": .string(project),
+                        "stack": .string(stack),
+                        "purged": .bool(true),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "vm.network.ensure":
             do {
                 let params = try networkParams(request.params)
@@ -435,6 +539,55 @@ final class SupervisorServer: @unchecked Sendable {
                 return JSONRPCResponse(result: selection.json, id: request.id ?? .null)
             } catch {
                 return networkErrorResponse(error, request: request)
+            }
+        case "vm.exec":
+            do {
+                let params = try objectParams(request.params, context: "vm.exec")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                try requireRunningHelper(vmID: vmID)
+                let timeoutSeconds = agentProxyTimeoutSeconds(from: params)
+                let result = try HelperAgentClient.run(
+                    method: "agent.exec",
+                    params: request.params,
+                    vmID: vmID,
+                    stateDirectory: stateDirectory,
+                    timeoutSeconds: timeoutSeconds
+                )
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return routeErrorResponse(error, request: request)
+            }
+        case "vm.exec_tty":
+            do {
+                let params = try objectParams(request.params, context: "vm.exec_tty")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                try requireRunningHelper(vmID: vmID)
+                let result = try HelperAgentClient.run(
+                    method: "agent.exec_tty",
+                    params: request.params,
+                    vmID: vmID,
+                    stateDirectory: stateDirectory,
+                    timeoutSeconds: 60
+                )
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return routeErrorResponse(error, request: request)
+            }
+        case "vm.agent.health", "vm.agent.version", "vm.agent.report_ip":
+            do {
+                let params = try objectParams(request.params, context: request.method)
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                try requireRunningHelper(vmID: vmID)
+                let helperMethod = "agent." + String(request.method.dropFirst("vm.agent.".count))
+                let result = try HelperAgentClient.run(
+                    method: helperMethod,
+                    params: request.params,
+                    vmID: vmID,
+                    stateDirectory: stateDirectory
+                )
+                return JSONRPCResponse(result: result, id: request.id ?? .null)
+            } catch {
+                return routeErrorResponse(error, request: request)
             }
         case "route.apply", "route.plan", "route.status":
             do {
@@ -747,6 +900,25 @@ final class SupervisorServer: @unchecked Sendable {
         while Darwin.read(client, &byte, 1) > 0 {}
     }
 
+    private func requireRunningHelper(vmID: String) throws {
+        let running = stateLock.withLock {
+            helpers[vmID]?.state == "running"
+        }
+        guard running else {
+            throw RouteApplyError.unavailable("VM \(vmID) is not running")
+        }
+    }
+
+    private func agentProxyTimeoutSeconds(from params: [String: JSONValue]) -> Int {
+        guard case let .number(value)? = params["timeout_ms"],
+              value.rounded() == value,
+              value > 0
+        else {
+            return 35
+        }
+        return max(35, Int(value / 1_000) + 5)
+    }
+
     private func vmIsStopped(_ vmID: String) -> Bool {
         let reportsRunning = stateLock.withLock {
             guard let helper = helpers[vmID] else { return false }
@@ -796,6 +968,29 @@ final class SupervisorServer: @unchecked Sendable {
             throw NetworkRegistryError.invalid("invalid \(key)")
         }
         return value
+    }
+
+    private func requiredPort(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> UInt16 {
+        guard let raw = params[key] else {
+            throw NetworkRegistryError.invalid("missing \(key)")
+        }
+        switch raw {
+        case let .number(value):
+            guard value >= 1, value <= 65535, value.rounded() == value else {
+                throw NetworkRegistryError.invalid("invalid \(key)")
+            }
+            return UInt16(value)
+        case let .string(value):
+            guard let parsed = UInt16(value), parsed > 0 else {
+                throw NetworkRegistryError.invalid("invalid \(key)")
+            }
+            return parsed
+        default:
+            throw NetworkRegistryError.invalid("invalid \(key)")
+        }
     }
 
     private func labels(from params: [String: JSONValue]) throws -> [String: String] {
@@ -1029,6 +1224,22 @@ final class SupervisorServer: @unchecked Sendable {
             "upstream": .string(health.upstream),
             "error": health.lastError.map(JSONValue.string) ?? .null,
         ])
+    }
+
+    private func reloadPorts(reason: String) {
+        do {
+            let records = try database.portForwards()
+            _ = try portProxy.ensure(records)
+            emit(type: "port.reloaded", data: [
+                "reason": .string(reason),
+                "count": .number(Double(records.count)),
+            ])
+        } catch {
+            emit(type: "port.reload_failed", data: [
+                "reason": .string(reason),
+                "error": .string(String(describing: error)),
+            ])
+        }
     }
 
     private func prepareSocketPath() throws {

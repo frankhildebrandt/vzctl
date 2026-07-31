@@ -218,6 +218,62 @@ public struct DefaultNetworkRecord: Equatable, Sendable {
     }
 }
 
+public struct PortForwardRecord: Equatable, Sendable {
+    public var bind: String
+    public var hostPort: UInt16
+    public var guestIP: String
+    public var guestPort: UInt16
+    public var vmID: String
+    public var source: String
+    public var project: String
+    public var stack: String
+    public var state: String
+    public var updatedAt: String
+
+    public init(
+        bind: String,
+        hostPort: UInt16,
+        guestIP: String,
+        guestPort: UInt16,
+        vmID: String,
+        source: String,
+        project: String,
+        stack: String,
+        state: String = "active",
+        updatedAt: String = ISO8601DateFormatter().string(from: Date())
+    ) {
+        self.bind = bind
+        self.hostPort = hostPort
+        self.guestIP = guestIP
+        self.guestPort = guestPort
+        self.vmID = vmID
+        self.source = source
+        self.project = project
+        self.stack = stack
+        self.state = state
+        self.updatedAt = updatedAt
+    }
+
+    public var key: String {
+        "\(bind):\(hostPort)"
+    }
+
+    public var json: JSONValue {
+        .object([
+            "bind": .string(bind),
+            "host_port": .number(Double(hostPort)),
+            "guest_ip": .string(guestIP),
+            "guest_port": .number(Double(guestPort)),
+            "vm_id": .string(vmID),
+            "source": .string(source),
+            "project": .string(project),
+            "stack": .string(stack),
+            "state": .string(state),
+            "updated_at": .string(updatedAt),
+        ])
+    }
+}
+
 public extension IPv4CIDR {
     static func gateway(for cidr: String) -> String {
         (try? IPv4CIDR(cidr)).map { string($0.network) } ?? ""
