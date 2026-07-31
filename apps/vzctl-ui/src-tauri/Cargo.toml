@@ -1,0 +1,20 @@
+[package]
+name = "vzctl-ui"
+version = "0.0.1"
+description = "vzctl Tauri UI — CLI wrapper only"
+authors = ["vzctl"]
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[lib]
+name = "vzctl_ui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

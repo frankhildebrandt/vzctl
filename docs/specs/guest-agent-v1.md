@@ -170,11 +170,18 @@ a `rotate_token` method are not part of v1.
 | `time_hint` | `host_unix_ms`, `reason` | `observed_guest_unix_ms`, `offset_ms`, `action` | 2 s / 5 s |
 | `fs.mount` | `name`, `target`, optional `read_only` | `mounted: true`, `name`, `target` | 10 s / 30 s |
 | `fs.unmount` | `name` and/or `target` | `mounted: false`, `name`, `target` | 10 s / 30 s |
+| `ca_inject` | `pem`, `fingerprint`, optional `name` | `installed: true`, `fingerprint` | 15 s / 60 s |
 
 Capability `fs_mount` advertises the virtiofs bind helpers. The agent invokes
 `/usr/local/lib/vzctl/virtiofs-bind` via `sudo -n` (installed by system
 NoCloud); it does **not** hold `CAP_SYS_ADMIN` itself. See
 [virtiofs-v1.md](virtiofs-v1.md).
+
+Capability `ca_inject` installs the Local CA PEM into the guest system store
+(see [certs-v1.md](certs-v1.md)): write
+`/usr/local/share/ca-certificates/{name}.crt` (default name `vzctl-local`) and
+run `update-ca-certificates` via `sudo -n`. `fingerprint` is the sha256 hex of
+the PEM/DER the host expects; mismatch after install is an error.
 
 All time values are integer milliseconds. A caller may choose a shorter
 deadline. Values above the maximum return `proto`; zero and negative values are

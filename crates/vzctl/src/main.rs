@@ -13,12 +13,15 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod builder;
+mod certs;
 mod config;
 mod dns;
 mod docker;
 mod image;
+mod ingress;
 mod mounts;
 mod network;
+mod oidc;
 mod port;
 mod reconciler;
 mod route;
@@ -322,6 +325,8 @@ fn main() -> ExitCode {
         Some("dns") => dns::command(args, &supervisor_socket_path()),
         Some("docker") => docker::command(args, &state_dir(), &supervisor_socket_path()),
         Some("port") => port::command(args, &supervisor_socket_path()),
+        Some("certs") => certs::command(args, &state_dir()),
+        Some("oidc") => oidc::command(args, &state_dir(), &supervisor_socket_path()),
         Some("image") => image_command(args),
         Some("vm") => vm_command(args),
         Some("ps") => vm::ps_command(args, &supervisor_socket_path()),
@@ -363,6 +368,10 @@ Commands:
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
   docker [--project P] [--] <docker-args...>
   port list [--project P] [--stack S] [--format human|json]
+  certs ca init|install [--force] [--format human|json]
+  certs mint <san> [--san alias...] [--format human|json]
+  certs fingerprint [--format human|json]
+  oidc status|clients [--project P] [--format human|json]
   image pull <alias> [--format human|json]
   image bake <alias> [--format human|json]
   image seal <name|path> [--format human|json]
@@ -2335,6 +2344,47 @@ fn prepare_cloud_init_seed(
         file
     })];
     append_virtiofs_bind_files(&mut write_files);
+    if let Ok(ca_files) = crate::certs::nocloud_ca_write_files(&state_dir()) {
+        for file in ca_files {
+            let path = file["path"].as_str().unwrap_or_default();
+            let content = file["content"].as_str().unwrap_or_default();
+            let permissions = file["permissions"].as_str().unwrap_or("0644");
+            write_files.push(serde_yaml::Value::Mapping({
+                let mut map = serde_yaml::Mapping::new();
+                map.insert(
+                    serde_yaml::Value::String("path".into()),
+                    serde_yaml::Value::String(path.into()),
+                );
+                map.insert(
+                    serde_yaml::Value::String("permissions".into()),
+                    serde_yaml::Value::String(permissions.into()),
+                );
+                map.insert(
+                    serde_yaml::Value::String("content".into()),
+                    serde_yaml::Value::String(content.into()),
+                );
+                map
+            }));
+        }
+        write_files.push(serde_yaml::Value::Mapping({
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                serde_yaml::Value::String("path".into()),
+                serde_yaml::Value::String("/etc/sudoers.d/vzctl-ca".into()),
+            );
+            map.insert(
+                serde_yaml::Value::String("permissions".into()),
+                serde_yaml::Value::String("0440".into()),
+            );
+            map.insert(
+                serde_yaml::Value::String("content".into()),
+                serde_yaml::Value::String(
+                    "vzctl-agent ALL=(root) NOPASSWD: /usr/sbin/update-ca-certificates\n".into(),
+                ),
+            );
+            map
+        }));
+    }
     let mut runcmd = Vec::new();
 
     if roles.iter().any(|role| role == "router") {

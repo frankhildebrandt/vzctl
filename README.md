@@ -34,6 +34,8 @@ benutzerlokal nach `~/.local/bin`. Der Supervisor wird als
 gestartet. Bei einer bestehenden Installation werden die geprüften Binaries
 atomar ersetzt und der Supervisor neu gestartet. Laufende VM-Helper werden
 nicht beendet; neue Helper-Prozesse verwenden sofort die aktualisierte Binary.
+Liegen Caddy/Dex unter `daemon/Vendor/` (`make vendor`), kopiert `install`
+sie zusätzlich nach `~/Library/Application Support/vzctl/bin/` für Ingress/OIDC.
 Falls `~/.local/bin` noch nicht im `PATH` liegt:
 
 ```bash
@@ -46,12 +48,24 @@ Für einen Installations-Test ohne launchd-Aktivierung:
 make install ACTIVATE=0
 ```
 
+v0.2 Ingress/OIDC-Vendor und UI:
+
+```bash
+make vendor          # Caddy + Dex nach daemon/Vendor/
+make install-vendor  # → ~/Library/Application Support/vzctl/bin/
+make validate        # examples/edge-dmz Schema
+make ui-install && make ui-dev
+```
+
 ## Layout
 
 | Path | Role |
 |---|---|
-| `crates/vzctl` | Rust CLI (`doctor`, `events subscribe`, `apply` stub) |
+| `crates/vzctl` | Rust CLI (`doctor`, stacks, certs, oidc, …) |
 | `daemon/` | Swift `vz-supervisor` + `vz-helper` (ADR 0002) |
+| `daemon/Vendor/` | Gepinnte Caddy/Dex-Binaries (`make vendor`) |
+| `apps/vzctl-ui/` | Tauri 2 UI (CLI-Wrapper) |
+| `guest-agent/` | vsock Guest-Agent |
 | `docs/adr/` | Accepted ADRs (macOS 26, process ownership, apply) |
 | `docs/spikes/g0-network.md` | G0 network/DNS/crash spike |
 | `spikes/g0/` | Measurement harness |

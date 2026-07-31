@@ -289,6 +289,24 @@ final class GuestAgentClient: @unchecked Sendable {
         _ = try request(method: "fs.unmount", params: params, timeout: timeout)
     }
 
+    @discardableResult
+    func caInject(
+        pem: String,
+        fingerprint: String,
+        name: String = "vzctl-local",
+        timeout: TimeInterval = 30
+    ) throws -> [String: Any] {
+        try request(
+            method: "ca_inject",
+            params: [
+                "pem": pem,
+                "fingerprint": fingerprint,
+                "name": name,
+            ],
+            timeout: timeout
+        )
+    }
+
     private func request(
         method: String,
         params: [String: Any],

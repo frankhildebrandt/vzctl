@@ -35,6 +35,8 @@ final class SupervisorServer: @unchecked Sendable {
     private let networkRegistry: NetworkRegistry
     private let dnsServer: DNSServer
     private let portProxy = PortForwardProxy()
+    private let gatewayIngressProxy = HostGatewayIngressProxy()
+    private let embeddedProcesses = EmbeddedProcessManager()
     private var helpers: [String: HelperRecord] = [:]
     private var helperProcesses: [String: Process] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
@@ -137,6 +139,8 @@ final class SupervisorServer: @unchecked Sendable {
         }
         dnsServer.shutdown()
         portProxy.shutdown()
+        gatewayIngressProxy.shutdown()
+        embeddedProcesses.shutdown()
         networkRegistry.shutdown()
     }
 
@@ -513,6 +517,169 @@ final class SupervisorServer: @unchecked Sendable {
                         "stack": .string(stack),
                         "purged": .bool(true),
                     ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "dns.host_services.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let hostsValue = params["hosts"] ?? .array([])
+                guard case let .array(items) = hostsValue else {
+                    return JSONRPCResponse(
+                        error: JSONRPCError(code: -32602, message: "hosts must be an array"),
+                        id: request.id ?? .null
+                    )
+                }
+                let hosts = items.compactMap { item -> String? in
+                    if case let .string(value) = item { return value }
+                    return nil
+                }
+                dnsServer.setHostServices(hosts)
+                reloadDNS(reason: "dns.host_services.ensure")
+                return JSONRPCResponse(
+                    result: .object([
+                        "hosts": .array(hosts.map(JSONValue.string)),
+                        "dns": dnsServer.health().json,
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "ingress.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                let caddyfile = try requiredString("caddyfile", from: params)
+                let binary = try optionalString("binary", from: params)
+                    ?? stateDirectory.appendingPathComponent("bin/caddy").path
+                let httpPort = try optionalPort("http_port", from: params) ?? 80
+                let httpsPort = try optionalPort("https_port", from: params) ?? 443
+                let workDir = stateDirectory
+                    .appendingPathComponent("runtime/ingress/\(project)", isDirectory: true)
+                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+                let configPath = workDir.appendingPathComponent("Caddyfile").path
+                try caddyfile.write(toFile: configPath, atomically: true, encoding: .utf8)
+
+                var bindings: [HostGatewayIngressProxy.Binding] = []
+                if case let .array(gateways) = params["gateways"] {
+                    for item in gateways {
+                        guard case let .string(ip) = item else { continue }
+                        bindings.append(
+                            .init(
+                                gatewayIP: ip,
+                                port: httpPort,
+                                backendHost: "127.0.0.1",
+                                backendPort: httpPort
+                            )
+                        )
+                        bindings.append(
+                            .init(
+                                gatewayIP: ip,
+                                port: httpsPort,
+                                backendHost: "127.0.0.1",
+                                backendPort: httpsPort
+                            )
+                        )
+                    }
+                }
+                let activeBindings = try gatewayIngressProxy.ensure(bindings)
+
+                let status = try embeddedProcesses.ensure(
+                    EmbeddedProcessManager.Spec(
+                        name: "caddy-\(project)",
+                        binary: binary,
+                        arguments: ["run", "--config", configPath, "--adapter", "caddyfile"],
+                        workDir: workDir.path,
+                        pidFile: workDir.appendingPathComponent("caddy.pid").path,
+                        env: [:]
+                    )
+                )
+                emit(
+                    type: "ingress.ensured",
+                    data: [
+                        "project": .string(project),
+                        "bindings": .number(Double(activeBindings.count)),
+                    ]
+                )
+                return JSONRPCResponse(
+                    result: .object([
+                        "project": .string(project),
+                        "caddy": .object(status),
+                        "gateways": .array(activeBindings.map {
+                            .object([
+                                "gateway": .string($0.gatewayIP),
+                                "port": .number(Double($0.port)),
+                            ])
+                        }),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch let error as PortProxyError {
+                return JSONRPCResponse(
+                    error: JSONRPCError(code: -32021, message: error.description),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "ingress.purge":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                embeddedProcesses.stop(name: "caddy-\(project)")
+                gatewayIngressProxy.purge()
+                dnsServer.setHostServices([])
+                reloadDNS(reason: "ingress.purge")
+                return JSONRPCResponse(
+                    result: .object(["project": .string(project), "purged": .bool(true)]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "oidc.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                let config = try requiredString("config", from: params)
+                let binary = try optionalString("binary", from: params)
+                    ?? stateDirectory.appendingPathComponent("bin/dex").path
+                let workDir = stateDirectory
+                    .appendingPathComponent("runtime/oidc/\(project)", isDirectory: true)
+                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+                let configPath = workDir.appendingPathComponent("config.yaml").path
+                try config.write(toFile: configPath, atomically: true, encoding: .utf8)
+                // Keep a stable pid path for CLI status
+                let runtimeRoot = stateDirectory.appendingPathComponent("runtime/oidc", isDirectory: true)
+                try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+                let status = try embeddedProcesses.ensure(
+                    EmbeddedProcessManager.Spec(
+                        name: "dex-\(project)",
+                        binary: binary,
+                        arguments: ["serve", configPath],
+                        workDir: workDir.path,
+                        pidFile: runtimeRoot.appendingPathComponent("dex.pid").path,
+                        env: [:]
+                    )
+                )
+                emit(type: "oidc.ensured", data: ["project": .string(project)])
+                return JSONRPCResponse(
+                    result: .object(["project": .string(project), "dex": .object(status)]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "oidc.purge":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                embeddedProcesses.stop(name: "dex-\(project)")
+                return JSONRPCResponse(
+                    result: .object(["project": .string(project), "purged": .bool(true)]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -1008,6 +1175,14 @@ final class SupervisorServer: @unchecked Sendable {
         default:
             throw NetworkRegistryError.invalid("invalid \(key)")
         }
+    }
+
+    private func optionalPort(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> UInt16? {
+        guard let raw = params[key], raw != .null else { return nil }
+        return try requiredPort(key, from: params)
     }
 
     private func labels(from params: [String: JSONValue]) throws -> [String: String] {

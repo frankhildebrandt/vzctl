@@ -44,5 +44,24 @@ vzctl down -C examples/edge-dmz
 `down --purge` entfernt Stack-Ressourcen inkl. Docker-Context und Port-Forwards;
 das versiegelte Base-Image bleibt unverändert.
 
-Siehe auch [docs/docker.md](../../docs/docker.md) und [docs/ports.md](../../docs/ports.md).
+Siehe auch [docs/docker.md](../../docs/docker.md), [docs/ports.md](../../docs/ports.md),
+[certs-v1](../../docs/specs/certs-v1.md), [ingress-v1](../../docs/specs/ingress-v1.md) und
+[oidc-v1](../../docs/specs/oidc-v1.md).
+
+## v0.2 Ingress / OIDC
+
+Das Beispiel aktiviert Local CA, Caddy Ingress und Dex:
+
+- `https://web.svc.edge-dmz.vz.test` → VM `web:80`
+- `https://auth.svc.edge-dmz.vz.test` → Dex auf `127.0.0.1:5556`
+- Host-Alias `web.localhost` wenn `hostAliases: true`
+- `web.requires: [oidc]` → Client-Autoconfig unter Application Support
+
+Vor `up` Binaries holen:
+
+```bash
+./scripts/fetch-caddy.sh
+./scripts/fetch-dex.sh
+vzctl certs ca init
+```
 

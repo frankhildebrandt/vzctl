@@ -34,7 +34,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | **implementation complete** (#31/#32/#51/#33 ✅) |
 | [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | **closed** (#36/#37/#38/#52 ✅; adopt report-only; reclaim deferred) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Docker Context + Ports | P4 | **closed** (#40/#41 ✅; #42 deferred v0.1.x) |
-| [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | open |
+| [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | **implementation landed** (#44–#47 code on `feat/v02-ingress-oidc`) |
 | [#48](https://github.com/frankhildebrandt/vzctl/issues/48) | DX Logs / Docs | P1 | Alpha `vm logs` (#49) ✅; v0.1.x Diagnose residual |
 
 ## Closed Gates / ADRs

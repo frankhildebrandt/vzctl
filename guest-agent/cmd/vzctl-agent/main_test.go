@@ -49,7 +49,7 @@ func TestHelloPingVersionHealthExecAndReportIP(t *testing.T) {
 	assertOK(t, hello)
 	result := hello["result"].(map[string]any)
 	caps := result["capabilities"].([]any)
-	if len(caps) != 8 {
+	if len(caps) != 9 {
 		t.Fatalf("capabilities = %#v", caps)
 	}
 
