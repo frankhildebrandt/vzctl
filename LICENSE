@@ -1,0 +1,191 @@
+vzctl Public License v1
+=======================
+
+Copyright (c) 2026 Frank Hildebrandt
+
+This is a custom source-available license. It is inspired by the GNU Affero
+General Public License version 3, but it is NOT the AGPL, is NOT an
+OSI-approved Open Source license, and is NOT a Free Software license as
+defined by the Free Software Foundation.
+
+The purpose of Sections 2–4 is to keep vzctl free for end users and operators,
+while blocking sale of the software and commercial "open-source polishing"
+(OEM wrapping, proprietary bundling, paid forks, and paid hosted offerings of
+vzctl itself).
+
+
+0. Definitions
+
+"Software" means this repository's source code, binaries, and documentation,
+including any modified version or derivative work.
+
+"You" means any individual or legal entity exercising rights under this License.
+
+"Sell" means to charge, or arrange for others to charge, any fee, subscription,
+license fee, royalty, or other consideration for:
+  (a) the Software;
+  (b) access to the Software;
+  (c) a packaged distribution, mirror, binary build, installer, or container
+      image of the Software; or
+  (d) a fork, rebrand, "enterprise edition", "pro build", or substantially
+      similar offering whose primary value is the Software.
+
+"Commercial Product" means any software, appliance, platform, SDK, control
+plane, GUI, or service that is sold, licensed for a fee, marketed as a paid
+offering, or distributed under a proprietary / closed-source commercial
+license.
+
+"Bundle" means to embed, combine, wrap, rebrand, OEM, white-label, ship as a
+component, or otherwise redistribute the Software as part of another product
+or distribution, including thin wrappers whose primary functionality is the
+Software.
+
+"Provide as a Service" means to offer third parties remote access to the
+Software's functionality (including via API, UI, CLI proxy, or managed
+control plane), whether self-hosted on your infrastructure or multi-tenant.
+
+
+1. Grant
+
+Subject to your full and continuing compliance with this License, you are
+granted a worldwide, royalty-free, non-exclusive copyright license to use,
+copy, modify, and distribute the Software.
+
+The copyleft, source-disclosure, patent, warranty, and liability terms of the
+GNU Affero General Public License version 3 (the text of which is included in
+this repository as LICENSE.AGPL-3.0) are incorporated by reference as
+obligations you must satisfy as if you were a licensee under that license,
+except where this License expressly states otherwise.
+
+This License is a separate copyright grant. The AGPL text is used only to
+define those shared obligations; it does not independently license the
+Software. AGPL sections 7 and 10 (including any right to remove "further
+restrictions") do not apply to, and cannot sever, Sections 2–5 of this License.
+
+
+2. No Sale
+
+You may not Sell the Software.
+
+Prohibited (non-exhaustive):
+  - selling vzctl, forks, or derivatives as a product;
+  - paid redistribution of source or binaries;
+  - paid "enterprise", "pro", "supported build", or branded forks whose
+    primary deliverable is the Software;
+  - charging for download, installers, container images, or access to the
+    Software itself.
+
+Allowed:
+  - using the Software free of charge inside your own organization, including
+    for commercial internal operations;
+  - charging for genuine professional services that are not a pretext for
+    Selling the Software (for example consulting, custom integration,
+    training, or time-and-materials support), provided the Software itself
+    remains available under this License at no charge and is not the product
+    being sold.
+
+
+3. No Commercial Bundling / No Open-Source Polishing
+
+You may not Bundle the Software into a Commercial Product.
+
+This section prohibits commercial redistributors and "open-source polishers"
+that package, wrap, rebrand, or integrate the Software into a paid or
+proprietary offering.
+
+Prohibited (non-exhaustive):
+  - embedding or shipping the Software inside a paid hypervisor, DevOps,
+    virtualization, or lab-management product;
+  - proprietary commercial GUIs, control planes, or appliances that
+    redistribute or require the Software as a bundled component;
+  - OEM / white-label distributions of the Software;
+  - combining the Software with proprietary code into one Commercial Product
+    that customers receive or run.
+
+Allowed:
+  - running the Software as a standalone tool in a commercial environment;
+  - using the Software to build, host, or operate your own workloads and
+    internal infrastructure;
+  - combining the Software only with software that is itself licensed under
+    this License or under AGPLv3 (or another strong copyleft that keeps the
+    combination non-proprietary), provided the result is not Sold and is not
+    offered as a Commercial Product.
+
+
+4. No Commercial Hosted Offering of the Software
+
+You may not Provide as a Service a Commercial Product whose primary purpose
+or primary value is access to the Software or a thin wrapper around it.
+
+Prohibited (non-exhaustive):
+  - "managed vzctl", "vzctl cloud", or equivalent paid hosted offerings;
+  - multi-tenant SaaS control planes that expose the Software's core
+    functionality to paying customers;
+  - paid remote access to forks/derivatives that are substantially the
+    Software.
+
+Allowed:
+  - using the Software privately to operate your own unrelated services
+    (the Software is infrastructure you run, not the product you sell to
+    customers);
+  - employees/contractors of your organization using the Software on your
+    behalf, without providing the Software's functionality as a paid product
+    to third parties.
+
+
+5. No Circumvention
+
+You may not do indirectly what this License prohibits directly, including
+through affiliates, resellers, agents, "partner" SKUs, separate download
+portals, dual packaging, or contracts that effectively Sell, Bundle, or
+Provide as a Service the Software in violation of Sections 2–4.
+
+Any attempt to relicense, sublicense, or redistribute the Software under
+plain AGPL or any other terms that omit Sections 2–4 is void and is a
+breach of this License.
+
+
+6. Same License for Distributions
+
+If you distribute the Software, you must do so under this License (vzctl
+Public License v1), including Sections 2–5. Recipients must receive a copy
+of this License and of LICENSE.AGPL-3.0.
+
+
+7. Acceptance
+
+By using, copying, modifying, or distributing the Software, you accept this
+License. If you do not accept all terms, you have no license.
+
+
+8. Termination
+
+Any breach automatically terminates your rights under this License. Upon
+termination you must cease all use and distribution of the Software.
+Licenses previously granted to downstream recipients who received the
+Software in compliance with this License survive termination of your rights.
+
+
+9. No Trademark License
+
+This License does not grant rights to use the names, logos, or trademarks of
+the copyright holder, except for reasonable attribution required to state
+the Software's origin.
+
+
+10. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF,
+OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Commercial licensing
+
+If you need rights beyond this License (sale, commercial bundling, OEM,
+managed/hosted offering of the Software, or similar), contact the copyright
+holder for a separate commercial agreement.
