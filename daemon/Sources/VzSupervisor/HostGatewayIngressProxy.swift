@@ -17,7 +17,9 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
     private let lock = NSLock()
     private var listeners: [String: Listener] = [:]
 
-    func ensure(_ desired: [Binding]) throws -> [Binding] {
+    /// Ensures gateway listeners. Per-binding bind failures are skipped
+    /// (same soft-fail pattern as DNS `.0:53`) so host loopback Caddy still starts.
+    func ensure(_ desired: [Binding]) -> [Binding] {
         lock.lock()
         defer { lock.unlock() }
 
@@ -33,9 +35,14 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
                 continue
             }
             listeners.removeValue(forKey: binding.key)?.close()
-            let listener = try Listener(binding: binding)
-            listeners[binding.key] = listener
-            active.append(binding)
+            do {
+                let listener = try Listener(binding: binding)
+                listeners[binding.key] = listener
+                active.append(binding)
+            } catch {
+                // EADDRNOTAVAIL until host bridge is up; collision; etc.
+                continue
+            }
         }
         return active.sorted { $0.key < $1.key }
     }
