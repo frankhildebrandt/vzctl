@@ -1,0 +1,7 @@
+#cloud-config
+# This installs a local Docker Engine only; it does not publish a TCP socket.
+package_update: true
+packages:
+  - docker.io
+runcmd:
+  - [systemctl, enable, --now, docker]

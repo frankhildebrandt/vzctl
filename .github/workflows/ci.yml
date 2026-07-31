@@ -31,3 +31,37 @@ jobs:
 
       - name: CI
         run: make ci
+
+      - name: Validate and diff edge-dmz reference environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_dir="${RUNNER_TEMP}/vzctl-edge-dmz"
+          mkdir -p "${state_dir}"
+          VZCTL_STATE_DIR="${state_dir}" \
+            daemon/.build/debug/vz-supervisor serve \
+            >"${state_dir}/supervisor.log" 2>&1 &
+          supervisor_pid=$!
+          cleanup() {
+            kill "${supervisor_pid}" 2>/dev/null || true
+            wait "${supervisor_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in {1..100}; do
+            if [[ -S "${state_dir}/vz.sock" ]]; then
+              break
+            fi
+            if ! kill -0 "${supervisor_pid}" 2>/dev/null; then
+              cat "${state_dir}/supervisor.log"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          test -S "${state_dir}/vz.sock"
+
+          target/debug/vzctl validate -C examples/edge-dmz
+          VZCTL_STATE_DIR="${state_dir}" \
+            target/debug/vzctl plan -C examples/edge-dmz --format json
+          VZCTL_STATE_DIR="${state_dir}" \
+            target/debug/vzctl diff -C examples/edge-dmz --format json

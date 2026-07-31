@@ -27,7 +27,8 @@ Entstanden in Cursor (Juli 2026): Vergleich → Plan → Features → Fable-Revi
 
 ## Nächster Schritt
 
-**P3 / #38 lokal implementiert** — `examples/edge-dmz` ist vollständig und
-CI führt `validate`, `plan` und `diff` gegen einen isolierten Supervisor aus.
-Ausstehend sind GitHub-CI/Close sowie die Epic-#34-DoD-Prüfung: `ps` fehlt,
-`adopt` ist bisher minimal.
+**P3 / Epic #34 closed** — Schema, Image-Pull, Reconciler und edge-dmz
+Referenz-Env + CI sind fertig (`vzctl ps` + `adopt` report-only im DoD;
+reclaim/`doctor --fix-locks` deferred).
+
+Weiter mit **P4 / Epic #39** Docker Context + Ports.

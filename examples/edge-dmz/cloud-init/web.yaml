@@ -1,0 +1,17 @@
+#cloud-config
+# The guest agent and per-VM identity already come from the sealed base image.
+package_update: true
+packages:
+  - nginx
+write_files:
+  - path: /var/www/html/index.html
+    owner: root:root
+    permissions: "0644"
+    content: |
+      <!doctype html>
+      <html lang="en">
+        <head><meta charset="utf-8"><title>edge-dmz web</title></head>
+        <body><h1>edge-dmz web</h1></body>
+      </html>
+runcmd:
+  - [systemctl, enable, --now, nginx]

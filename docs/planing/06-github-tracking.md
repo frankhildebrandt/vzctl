@@ -16,7 +16,7 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | P0 — Foundation | Ownership, Helper, Agent, Journal-ADR, doctor | **complete** (#20 closed) |
 | P1 — CLI + Clones | JSON/Events, Seal/Clone/Identity | **core complete** |
 | P2 — Net + DNS | vmnet, Dual-DNS, Policies | **complete** (#25 closed; #30 DoD ✅) |
-| P3 — Stacks | hypernetwork reconcile | **implementation complete** (#36/#37/#38/#52 ✅; CI/Close + Epic-DoD pending) |
+| P3 — Stacks | hypernetwork reconcile | **complete** (#34 closed; #36/#37/#38/#52 ✅) |
 | P4 — Docker + Ports | SSH Context, Ports basic | open |
 | v0.1.x — Polish | virtiofs, Docker polish | open |
 | v0.2 — Ingress/OIDC/CA | Caddy, Dex, CA, Tauri | open |
@@ -28,14 +28,14 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 | [#1](https://github.com/frankhildebrandt/vzctl/issues/1) | G0 Netzwerk-/DNS-/Crash-Spike | G0 | **closed** (Go) |
 | [#7](https://github.com/frankhildebrandt/vzctl/issues/7) | Process-Modell & Ownership | P0 | **closed** |
 | [#12](https://github.com/frankhildebrandt/vzctl/issues/12) | vsock Guest-Agent | P0 | **closed** (Live Sleep/Base-Raw residual) |
-| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; CLI surface rest open |
+| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | CLI Contracts | P1 | contract complete; DX-Sofortgaps (#49 logs, adopt report, dns status) landed; Epic rest open |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | P1 | **complete** |
 | [#25](https://github.com/frankhildebrandt/vzctl/issues/25) | Dual-DNS + macOS Resolver | P2 | **closed** (#26–#29 ✅; Live-Boot residual) |
 | [#30](https://github.com/frankhildebrandt/vzctl/issues/30) | vmnet + Routes + Policies | P2 | **implementation complete** (#31/#32/#51/#33 ✅) |
-| [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | **in progress** (#36/#37/#38/#52 implemented; `ps` missing, `adopt` minimal) |
+| [#34](https://github.com/frankhildebrandt/vzctl/issues/34) | Stack Reconciler | P3 | **closed** (#36/#37/#38/#52 ✅; adopt report-only; reclaim deferred) |
 | [#39](https://github.com/frankhildebrandt/vzctl/issues/39) | Docker Context + Ports | P4 | open |
 | [#43](https://github.com/frankhildebrandt/vzctl/issues/43) | v0.2 Ingress + CA + OIDC | v0.2 | open |
-| [#48](https://github.com/frankhildebrandt/vzctl/issues/48) | DX Logs / Docs | P1 | open |
+| [#48](https://github.com/frankhildebrandt/vzctl/issues/48) | DX Logs / Docs | P1 | Alpha `vm logs` (#49) ✅; v0.1.x Diagnose residual |
 
 ## Closed Gates / ADRs
 
@@ -74,7 +74,7 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 
 | # | Story | Status |
 |---|---|---|
-| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | Contract-DoD complete; CLI surface rest |
+| [#17](https://github.com/frankhildebrandt/vzctl/issues/17) | Epic CLI Contracts | Contract-DoD complete; DX-Sofortgaps landed; surface rest |
 | [#18](https://github.com/frankhildebrandt/vzctl/issues/18) | JSON + Exitcodes Spec | **complete** (CLI Contract v1 + Golden Tests) |
 | [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | **closed** (UDS + NDJSON + Filter) |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | **complete** (#22/#23/#24 ✅) |
@@ -92,7 +92,8 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#36](https://github.com/frankhildebrandt/vzctl/issues/36) | hypernetwork/v1 Schema + serde | **complete** (Schema export, CLI Validate, Fixtures, JSON-Pfade) |
 | [#52](https://github.com/frankhildebrandt/vzctl/issues/52) | Image-Pull `*-latest` Bases | **complete** (14 Aliase, Digest/Raw-Store, Seal/`--from`) |
 | [#37](https://github.com/frankhildebrandt/vzctl/issues/37) | Reconcile-/Apply-Engine | **complete** (plan/diff/up/down/apply, Lease, Journal Resume/Abort, Events) |
-| [#38](https://github.com/frankhildebrandt/vzctl/issues/38) | examples/edge-dmz + CI validate/diff | **implemented locally** (real Supervisor CI; GitHub-CI/Close pending) |
+| [#38](https://github.com/frankhildebrandt/vzctl/issues/38) | examples/edge-dmz + CI validate/diff | **complete** (README + cloud-init + Supervisor CI validate/plan/diff) |
+| [#49](https://github.com/frankhildebrandt/vzctl/issues/49) | `vzctl vm logs` | **complete** (serial + follow + redaction; Agent deferred) |
 
 ## Label-Schema
 

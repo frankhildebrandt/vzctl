@@ -150,7 +150,7 @@ spec:
 | P0 | Foundation | 1–3 | **Scaffold da** (`crates/vzctl`, `daemon/`); UDS/Journal/launchd/Agent folgen |
 | P1 | CLI + Clones | 2–4 | JSON-CLI, Exitcodes, events schema, Seal/clonefile, Identity |
 | P2 | Net + DNS | 3–5 | vmnet, IP-Modell, Dual-DNS, macOS-Resolver, Router+Policy |
-| P3 | Stacks | 5–7 | **#36/#37/#38 implementiert**; GitHub-CI/Close und Epic-DoD (`ps`, `adopt`) ausstehend |
+| P3 | Stacks | 5–7 | **#34 closed** (#36/#37/#38/#52 ✅; adopt report-only; reclaim deferred) |
 | P4 | Docker + Ports | 7–9 | Docker-Context (SSH), Ports; **kein** virtiofs-Muss |
 | P4b | v0.1.x | nach Alpha | virtiofs + Docker-Polish + Logs/Diagnose |
 | P5 | Ingress + CA + OIDC | **v0.2** | Caddy, CA→Guests, Dex |

@@ -1,0 +1,14 @@
+#cloud-config
+# Network addresses and DNS are rendered by vzctl from hypernetwork.config.yaml.
+package_update: true
+packages:
+  - nftables
+write_files:
+  - path: /etc/sysctl.d/90-vzctl-router.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      net.ipv4.ip_forward=1
+runcmd:
+  - [sysctl, --system]
+  - [systemctl, enable, --now, nftables]

@@ -24,7 +24,7 @@ const PHASES = [
   { id: "P0", name: "Foundation", weeks: "1–3", goal: "Ownership ADR, Helper, Agent-in-Base, Journal, doctor", done: true },
   { id: "P1", name: "CLI + Clones", weeks: "2–4", goal: "JSON/Events/Exitcodes, Seal/clonefile, Identity", done: true },
   { id: "P2", name: "Net + DNS", weeks: "3–5", goal: "vmnet, Dual-DNS *.vz.test, Router+Policies", done: true },
-  { id: "P3", name: "Stacks", weeks: "5–7", goal: "#36/#37/#38 implementiert · CI/Close + Epic-DoD pending", done: false },
+  { id: "P3", name: "Stacks", weeks: "5–7", goal: "#34 closed · #36/#37/#38/#52 ✅", done: true },
   { id: "P4", name: "Docker + Ports", weeks: "7–9", goal: "SSH Docker-Context, Ports basic", done: false },
   { id: "P4b", name: "v0.1.x", weeks: "nach Alpha", goal: "virtiofs, Docker-Polish, Diagnose", done: false },
   { id: "P5", name: "Ingress + OIDC", weeks: "v0.2", goal: "Caddy, Dex, CA→Guests, *.localhost Alias", done: false },
@@ -38,7 +38,7 @@ const EPICS = [
   { n: 21, title: "Clones / Identity", ms: "P1", done: true },
   { n: 25, title: "Dual-DNS + Resolver", ms: "P2", done: true },
   { n: 30, title: "Net + Policies", ms: "P2", done: true },
-  { n: 34, title: "Stack Reconciler", ms: "P3", done: "partial" as const },
+  { n: 34, title: "Stack Reconciler", ms: "P3", done: true },
   { n: 39, title: "Docker + Ports", ms: "P4", done: false },
   { n: 43, title: "Ingress / CA / OIDC", ms: "v0.2", done: false },
   { n: 48, title: "DX Logs / Docs", ms: "P1", done: false },
@@ -215,7 +215,7 @@ export default function VzHypervisorImplementationsplan() {
         #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
 
-      <Callout tone="success" title="P3 Stack-Reconciler + Referenz-Env implementiert">
+      <Callout tone="success" title="P3 Stack-Reconciler Epic #34 closed">
         #36 implementiert <Code>hypernetwork/v1</Code> als Serde-Typen plus
         exportierbares JSON Schema. <Code>vzctl validate -C</Code> prüft Schema,
         Referenzen, IPv4/CIDR, DependsOn-DAG und DHCP/static-Kollisionen mit
@@ -223,7 +223,8 @@ export default function VzHypervisorImplementationsplan() {
         Digestprüfung und den content-addressed Raw-Store. #37 ergänzt
         Plan/Diff/Up/Down/Apply, SQLite-Journal/Lease, Resume/Abort und
         UI-Events. #38 ergänzt edge-dmz Cloud-Init, README sowie reale
-        Validate/Plan/Diff-CI. GitHub-CI/Close und Epic-DoD bleiben offen.
+        Validate/Plan/Diff-CI. <Code>vzctl ps</Code> und <Code>adopt</Code>
+        report-only sind im DoD; reclaim/<Code>doctor --fix-locks</Code> bleibt deferred.
       </Callout>
 
       <Callout tone="success" title="Builder-VM Bake/Seal auf macOS">
@@ -236,10 +237,10 @@ export default function VzHypervisorImplementationsplan() {
       </Callout>
 
       <Grid columns={6} gap={12}>
-        <Stat value="G0–P2" label="phases done" tone="success" />
-        <Stat value="#22✓" label="image seal" tone="success" />
+        <Stat value="G0–P3" label="phases done" tone="success" />
+        <Stat value="#34✓" label="stack epic" tone="success" />
         <Stat value="#36✓" label="validate" tone="success" />
-        <Stat value="#51✓" label="default net" tone="success" />
+        <Stat value="#38✓" label="edge-dmz" tone="success" />
         <Stat value="#52✓" label="image pull" tone="success" />
         <Stat value="#37✓" label="reconciler" tone="success" />
       </Grid>
@@ -367,9 +368,9 @@ export default function VzHypervisorImplementationsplan() {
               <Struck>
                 Journal-Runtime · apply --resume|--abort · Lease · Lockfile (#37)
               </Struck>
-              <Text size="small" tone="secondary">
-                Epic-DoD offen: <Code>ps</Code> fehlt · <Code>adopt</Code> minimal
-              </Text>
+              <Struck>
+                edge-dmz + CI validate/plan/diff (#38) · ps · adopt report-only
+              </Struck>
             </Stack>
           </CardBody>
         </Card>
@@ -575,7 +576,7 @@ export default function VzHypervisorImplementationsplan() {
           headers={["Phase", "Name", "Zeit", "Deliverable"]}
           columnAlign={["center", "left", "center", "left"]}
           rows={PHASES.map((p) => [
-            <Pill size="sm" active={p.done || p.id === "P3"}>
+            <Pill size="sm" active={p.done || p.id === "P4"}>
               {p.done ? `${p.id}✓` : p.id}
             </Pill>,
             p.done ? <Struck>{p.name}</Struck> : p.name,
@@ -587,8 +588,8 @@ export default function VzHypervisorImplementationsplan() {
             "success",
             "success",
             "success",
+            "success",
             "info",
-            "neutral",
             "warning",
             "warning",
           ]}
@@ -710,9 +711,9 @@ spec:
           <Struck>vzctl dns query|install-resolver|uninstall-resolver</Struck>
           <Struck>vzctl events subscribe · vzctl doctor</Struck>
           <Struck>vzctl plan|diff|up|down|apply [--force|--resume|--abort]</Struck>
+          <Struck>vzctl ps · adopt (report-only) · vm logs</Struck>
           <Text size="small" tone="secondary">
-            Offen: <Code>ps|adopt</Code>-Polish · <Code>vm logs</Code> ·{" "}
-            <Code>docker …</Code> · v0.2{" "}
+            Offen: <Code>docker …</Code> · reclaim/fix-locks · v0.2{" "}
             <Code>ingress|certs|oidc</Code>
           </Text>
         </Stack>
@@ -738,9 +739,7 @@ spec:
             e.done === true
               ? "done"
               : e.done === "partial"
-                ? e.n === 34
-                  ? "#36/#37/#38/#52 ✓ · DoD pending"
-                  : "contract ✓ · CLI surface rest"
+                ? "contract ✓ · CLI surface rest"
                 : "open",
           ])}
           rowTone={[
@@ -751,13 +750,13 @@ spec:
             "success",
             "success",
             "success",
-            "info",
+            "success",
             "neutral",
             "warning",
             "neutral",
           ]}
         />
-        <Callout tone="success" title="P1 abgeschlossen · P2 Netzwerk + Dual-DNS">
+        <Callout tone="success" title="P3 Epic #34 closed · Next P4 Docker">
           #21 mit #22/#23/#24 abgeschlossen: Seal, COW Root + dataDisk und
           per-Clone Identity/NoCloud. #31/#32/#51/#33: Network CRUD,
           Router-Apply, Default-Netz und deklarative nftables-Policies. #26/#27:
@@ -767,8 +766,9 @@ spec:
           Validate mit JSON-Pfaden. #52: ARM64 Image-Pull mit 14 Aliasen,
           Digestprüfung und Raw-Normalisierung. #37: Plan/Diff/Up/Down/Apply
           mit SQLite-Lease, Journal Resume/Abort und Apply-Events. #38:
-          edge-dmz Referenz-Env plus Validate/Plan/Diff-CI. Epic-DoD:
-          <Code>ps</Code> fehlt, <Code>adopt</Code> ist minimal.
+          edge-dmz Referenz-Env plus Validate/Plan/Diff-CI. Epic #34 DoD
+          vollständig; reclaim/<Code>doctor --fix-locks</Code> deferred.
+          Weiter: Epic #39 Docker Context + Ports.
         </Callout>
       </Stack>
 
