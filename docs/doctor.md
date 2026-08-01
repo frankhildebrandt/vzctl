@@ -43,6 +43,10 @@ Wichtige Hinweise:
   Details stehen in [`network.md`](network.md).
 - Ein nicht gestarteter Supervisor ist eine Warnung. Ein erreichbarer, aber
   defekter Socket bzw. eine schlechte DB-Health ist ein Fehler.
+- `certs.host_trust`: WARN, wenn die Local CA existiert, aber noch nicht in der
+  macOS-Keychain liegt (`vzctl certs ca install`). Safari/Chrome/curl brauchen
+  das Trust; Firefox/Zen nutzen einen eigenen Store (enterprise roots oder
+  manueller Import).
 
 ## Exitcodes
 

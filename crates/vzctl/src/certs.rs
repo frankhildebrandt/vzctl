@@ -49,11 +49,15 @@ pub(crate) fn command(args: impl Iterator<Item = String>, state_dir: &Path) -> E
         "fingerprint" => match parse_format_only(iter) {
             Ok(format) => match read_fingerprint(state_dir) {
                 Ok(fp) => {
-                    emit_ok(
-                        format,
-                        "certs.fingerprint",
-                        json!({ "fingerprint": fp, "path": fingerprint_path(state_dir) }),
-                    );
+                    let mut info = host_trust_status(state_dir);
+                    if let Some(obj) = info.as_object_mut() {
+                        obj.insert("fingerprint".into(), json!(fp));
+                        obj.insert(
+                            "path".into(),
+                            json!(fingerprint_path(state_dir)),
+                        );
+                    }
+                    emit_ok(format, "certs.fingerprint", info);
                     ExitCode::SUCCESS
                 }
                 Err(message) => fail(format, EXIT_INVALID, message),
@@ -446,6 +450,45 @@ fn install_keychain(state_dir: &Path) -> Result<Value, String> {
         "cert": cert,
         "fingerprint": read_fingerprint(state_dir)?,
     }))
+}
+
+/// Host Keychain trust for the Local CA (Safari/Chrome/curl). Firefox/Zen need
+/// enterprise roots or a manual import — not covered here.
+pub(crate) fn host_trust_status(state_dir: &Path) -> Value {
+    let cert = ca_cert_path(state_dir);
+    if !cert.exists() {
+        return json!({
+            "present": false,
+            "trusted": false,
+            "fingerprint": null,
+            "cert": cert,
+            "fix": "vzctl certs ca init",
+        });
+    }
+    let fingerprint = read_fingerprint(state_dir).ok();
+    let trusted = mac_keychain_trusts(&cert);
+    json!({
+        "present": true,
+        "trusted": trusted,
+        "fingerprint": fingerprint,
+        "cert": cert,
+        "fix": if trusted {
+            Value::Null
+        } else {
+            Value::String("vzctl certs ca install".into())
+        },
+    })
+}
+
+fn mac_keychain_trusts(cert: &Path) -> bool {
+    let Some(path) = cert.to_str() else {
+        return false;
+    };
+    Command::new("security")
+        .args(["verify-cert", "-c", path])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// NoCloud write_files entries that seed the CA into a guest at first boot.

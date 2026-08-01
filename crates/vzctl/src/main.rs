@@ -3396,6 +3396,7 @@ fn doctor(options: DoctorOptions) -> ExitCode {
         docker_check.message,
         docker_check.details,
     ));
+    checks.push(check_certs_host_trust(&state_dir));
 
     let exit_code = if macos_version.unwrap_or(0) < 26 {
         EXIT_HOST_UNSUPPORTED
@@ -3951,6 +3952,40 @@ fn check_image_backend(images_dir: &Path) -> Check {
         _ => CheckStatus::Warn,
     };
     Check::new("image.backend", status, message, details)
+}
+
+fn check_certs_host_trust(state_dir: &Path) -> Check {
+    let details = crate::certs::host_trust_status(state_dir);
+    let present = details
+        .get("present")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let trusted = details
+        .get("trusted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !present {
+        Check::new(
+            "certs.host_trust",
+            CheckStatus::Ok,
+            "no local CA yet (optional until ingress/OIDC)",
+            details,
+        )
+    } else if trusted {
+        Check::new(
+            "certs.host_trust",
+            CheckStatus::Ok,
+            "vzctl Local CA is trusted in the macOS Keychain",
+            details,
+        )
+    } else {
+        Check::new(
+            "certs.host_trust",
+            CheckStatus::Warn,
+            "Local CA exists but is not trusted in the Keychain; browsers show SEC_ERROR_UNKNOWN_ISSUER — run vzctl certs ca install",
+            details,
+        )
+    }
 }
 
 fn check_supervisor() -> Check {

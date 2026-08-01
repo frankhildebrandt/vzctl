@@ -39,6 +39,11 @@ vzctl certs rollout [--vm NAME]
 vzctl certs verify --vm NAME --url https://auth.svc.…
 ```
 
+`vzctl doctor` meldet `certs.host_trust` (WARN), wenn die CA existiert, aber
+noch nicht in der Login-Keychain vertrauenswürdig ist. Fix: `certs ca install`.
+Firefox/Zen brauchen zusätzlich `security.enterprise_roots.enabled` oder einen
+manuellen CA-Import.
+
 ## Guest rollout
 
 1. **Boot seed (NoCloud):** write
