@@ -1,5 +1,8 @@
+use crate::config::ContainerConfig;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -492,6 +495,310 @@ pub(crate) fn docker_binary_available() -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+const LABEL_MANAGED: &str = "vzctl.dev/managed";
+const LABEL_VM: &str = "vzctl.dev/vm";
+const LABEL_HASH: &str = "vzctl.dev/hash";
+
+/// Ensure compose files + declarative containers for one docker-role VM (ensure-only).
+pub(crate) fn ensure_vm_containers(
+    project: &str,
+    state_dir: &Path,
+    config_dir: &Path,
+    vm_key: &str,
+    compose_files: &[String],
+    containers: &BTreeMap<String, ContainerConfig>,
+) -> Result<(), String> {
+    if compose_files.is_empty() && containers.is_empty() {
+        return Ok(());
+    }
+    let (context, ssh_command) = docker_session(project, state_dir)?;
+    for compose_file in compose_files {
+        ensure_compose_file(&context, &ssh_command, config_dir, vm_key, compose_file)?;
+    }
+    for (name, container) in containers {
+        ensure_one_container(&context, &ssh_command, config_dir, vm_key, name, container)?;
+    }
+    Ok(())
+}
+
+fn docker_session(project: &str, state_dir: &Path) -> Result<(String, String), String> {
+    let context = ensure_context(project, state_dir, None)?;
+    let private_key = project_docker_dir(state_dir, project).join("id_ed25519");
+    let ssh_config = ssh_config_path(state_dir, project);
+    let ssh_command = format!(
+        "ssh -F \"{}\" -i \"{}\" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
+        ssh_config.display(),
+        private_key.display()
+    );
+    Ok((context, ssh_command))
+}
+
+fn compose_project_name(vm_key: &str, compose_file: &str) -> String {
+    let stem = Path::new(compose_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("compose");
+    let raw = format!("{vm_key}-{stem}");
+    let mut out = String::with_capacity(raw.len());
+    for (index, byte) in raw.bytes().enumerate() {
+        let ok = byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || (index > 0 && matches!(byte, b'-' | b'_'));
+        if ok {
+            out.push(byte as char);
+        } else if byte.is_ascii_uppercase() {
+            out.push((byte as char).to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "vzctl".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn ensure_compose_file(
+    context: &str,
+    ssh_command: &str,
+    config_dir: &Path,
+    vm_key: &str,
+    compose_file: &str,
+) -> Result<(), String> {
+    let path = if Path::new(compose_file).is_absolute() {
+        PathBuf::from(compose_file)
+    } else {
+        config_dir.join(compose_file)
+    };
+    if !path.is_file() {
+        return Err(format!("compose file not found: {}", path.display()));
+    }
+    let project_name = compose_project_name(vm_key, compose_file);
+    let project_directory = path.parent().unwrap_or(config_dir).to_path_buf();
+    let args = vec![
+        "compose".into(),
+        "-f".into(),
+        path.display().to_string(),
+        "-p".into(),
+        project_name,
+        "--project-directory".into(),
+        project_directory.display().to_string(),
+        "up".into(),
+        "-d".into(),
+    ];
+    let (code, _stdout, stderr) = docker_output(context, ssh_command, &args)?;
+    if code != 0 {
+        return Err(format!(
+            "docker compose up failed for {}: {}",
+            path.display(),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_one_container(
+    context: &str,
+    ssh_command: &str,
+    config_dir: &Path,
+    vm_key: &str,
+    name: &str,
+    container: &ContainerConfig,
+) -> Result<(), String> {
+    let resolved_volumes = resolve_container_volumes(&container.volumes, config_dir)?;
+    let hash = container_config_hash(container, &resolved_volumes);
+    let inspect = inspect_container(context, ssh_command, name)?;
+    match inspect {
+        None => create_container(
+            context,
+            ssh_command,
+            vm_key,
+            name,
+            container,
+            &resolved_volumes,
+            &hash,
+        ),
+        Some(info) => {
+            let managed = info
+                .pointer("/Config/Labels")
+                .and_then(|labels| labels.get(LABEL_MANAGED))
+                .and_then(|v| v.as_str())
+                == Some("true");
+            if !managed {
+                return Err(format!(
+                    "container {name:?} exists but is not vzctl-managed; rename it or remove it"
+                ));
+            }
+            let existing_hash = info
+                .pointer("/Config/Labels")
+                .and_then(|labels| labels.get(LABEL_HASH))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let running = info
+                .pointer("/State/Running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if existing_hash == hash {
+                if running {
+                    return Ok(());
+                }
+                let (code, _stdout, stderr) =
+                    docker_output(context, ssh_command, &["start".into(), name.into()])?;
+                if code != 0 {
+                    return Err(format!("docker start {name:?} failed: {}", stderr.trim()));
+                }
+                return Ok(());
+            }
+            let (code, _stdout, stderr) = docker_output(
+                context,
+                ssh_command,
+                &["rm".into(), "-f".into(), name.into()],
+            )?;
+            if code != 0 {
+                return Err(format!("docker rm {name:?} failed: {}", stderr.trim()));
+            }
+            create_container(
+                context,
+                ssh_command,
+                vm_key,
+                name,
+                container,
+                &resolved_volumes,
+                &hash,
+            )
+        }
+    }
+}
+
+fn inspect_container(
+    context: &str,
+    ssh_command: &str,
+    name: &str,
+) -> Result<Option<JsonValue>, String> {
+    let (code, stdout, stderr) =
+        docker_output(context, ssh_command, &["inspect".into(), name.into()])?;
+    if code != 0 {
+        let err = stderr.to_lowercase();
+        if err.contains("no such object") || err.contains("no such container") {
+            return Ok(None);
+        }
+        return Err(format!("docker inspect {name:?} failed: {}", stderr.trim()));
+    }
+    let value: JsonValue = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("docker inspect parse failed: {error}"))?;
+    Ok(value
+        .as_array()
+        .and_then(|arr| arr.first().cloned())
+        .or(Some(value)))
+}
+
+fn create_container(
+    context: &str,
+    ssh_command: &str,
+    vm_key: &str,
+    name: &str,
+    container: &ContainerConfig,
+    resolved_volumes: &[String],
+    hash: &str,
+) -> Result<(), String> {
+    let args = build_run_args(vm_key, name, container, resolved_volumes, hash);
+    let (code, _stdout, stderr) = docker_output(context, ssh_command, &args)?;
+    if code != 0 {
+        return Err(format!("docker run {name:?} failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
+pub(crate) fn build_run_args(
+    vm_key: &str,
+    name: &str,
+    container: &ContainerConfig,
+    resolved_volumes: &[String],
+    hash: &str,
+) -> Vec<String> {
+    let mut args = vec!["run".into(), "-d".into(), "--name".into(), name.into()];
+    args.push("--label".into());
+    args.push(format!("{LABEL_MANAGED}=true"));
+    args.push("--label".into());
+    args.push(format!("{LABEL_VM}={vm_key}"));
+    args.push("--label".into());
+    args.push(format!("{LABEL_HASH}={hash}"));
+    if let Some(restart) = &container.restart {
+        args.push("--restart".into());
+        args.push(restart.clone());
+    }
+    if let Some(workdir) = &container.workdir {
+        args.push("--workdir".into());
+        args.push(workdir.clone());
+    }
+    if let Some(user) = &container.user {
+        args.push("--user".into());
+        args.push(user.clone());
+    }
+    for (key, value) in &container.env {
+        args.push("-e".into());
+        args.push(format!("{key}={value}"));
+    }
+    for port in &container.ports {
+        args.push("-p".into());
+        args.push(port.clone());
+    }
+    for volume in resolved_volumes {
+        args.push("-v".into());
+        args.push(volume.clone());
+    }
+    args.push(container.image.clone());
+    args.extend(container.command.iter().cloned());
+    args
+}
+
+pub(crate) fn resolve_container_volumes(
+    volumes: &[String],
+    config_dir: &Path,
+) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(volumes.len());
+    for raw in volumes {
+        let parts = raw.split(':').collect::<Vec<_>>();
+        if parts.len() < 2 {
+            return Err(format!("invalid volume {raw:?}"));
+        }
+        let host = parts[0];
+        let host_path = if Path::new(host).is_absolute() {
+            PathBuf::from(host)
+        } else {
+            config_dir.join(host)
+        };
+        let mut rebuilt = host_path.display().to_string();
+        for part in &parts[1..] {
+            rebuilt.push(':');
+            rebuilt.push_str(part);
+        }
+        out.push(rebuilt);
+    }
+    Ok(out)
+}
+
+pub(crate) fn container_config_hash(
+    container: &ContainerConfig,
+    resolved_volumes: &[String],
+) -> String {
+    let payload = json!({
+        "image": container.image,
+        "ports": container.ports,
+        "env": container.env,
+        "volumes": resolved_volumes,
+        "restart": container.restart,
+        "command": container.command,
+        "workdir": container.workdir,
+        "user": container.user,
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let digest = Sha256::digest(&bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 const STRUCTURED_VERBS: &[&str] = &["ps", "inspect", "start", "stop", "restart", "run"];
@@ -1566,5 +1873,45 @@ runcmd: [[systemctl, enable, --now, docker]]
                 "unexpected error: {message}"
             ),
         }
+    }
+
+    #[test]
+    fn container_hash_and_run_args_are_stable() {
+        let mut env = BTreeMap::new();
+        env.insert("FOO".into(), "bar".into());
+        let container = ContainerConfig {
+            image: "redis:7".into(),
+            ports: vec!["6379:6379".into()],
+            env,
+            volumes: vec!["./data:/data".into()],
+            restart: Some("unless-stopped".into()),
+            command: vec!["redis-server".into()],
+            workdir: None,
+            user: None,
+        };
+        let volumes = resolve_container_volumes(&container.volumes, Path::new("/stack")).unwrap();
+        assert_eq!(volumes, vec!["/stack/./data:/data".to_string()]);
+        let hash = container_config_hash(&container, &volumes);
+        assert_eq!(hash.len(), 64);
+        assert_eq!(hash, container_config_hash(&container, &volumes));
+
+        let args = build_run_args("docker", "redis", &container, &volumes, &hash);
+        assert!(args.windows(2).any(|w| w[0] == "--name" && w[1] == "redis"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--label" && w[1] == "vzctl.dev/managed=true"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--label" && w[1] == format!("vzctl.dev/hash={hash}")));
+        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "FOO=bar"));
+        assert!(args.ends_with(&["redis:7".into(), "redis-server".into()][..]));
+    }
+
+    #[test]
+    fn compose_project_name_sanitizes() {
+        assert_eq!(
+            compose_project_name("Docker", "apps/Api/compose.yaml"),
+            "docker-compose"
+        );
     }
 }

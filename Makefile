@@ -25,6 +25,7 @@ DEX_VENDOR := daemon/Vendor/dex/dex
 	fmt fmt-check doctor doctor-json sign-helper \
 	vendor vendor-caddy vendor-dex install-vendor \
 	validate validate-edge-dmz \
+	smoke-split-dns \
 	ui-install ui-dev ui-build package \
 	install clean
 
@@ -119,6 +120,9 @@ validate: validate-edge-dmz ## hypernetwork-Beispiele validieren
 
 validate-edge-dmz: ## examples/edge-dmz gegen Schema prüfen
 	$(CARGO) run -q -p vzctl -- validate -C examples/edge-dmz --format json
+
+smoke-split-dns: ## Privilegierter Split-Horizon Multi-Net/Docker-Smoke-Test
+	scripts/smoke-split-horizon-dns.sh
 
 fmt: ## Rust-Code formatieren
 	$(CARGO) fmt --all

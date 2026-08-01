@@ -20,7 +20,35 @@ Data-Disk unter `/var/lib/docker` und legt Apt-Caches dorthin. User `vzctl`
    SSH-Pfade mit Leerzeichen werden gequotet; `~/.ssh/config` bekommt ein
    `Include` auf die vzctl-`ssh_config` (Docker Desktop ignoriert oft
    `DOCKER_SSH_COMMAND`). Bei VM-Recreate werden stale Host-Keys entfernt.
-5. `down --purge` entfernt den Context.
+5. Apply-Step `ensure_containers` (danach): pro Docker-VM `composeFiles` via
+   `docker compose up -d` und deklarative `containers` ensure-only
+   (Labels `vzctl.dev/managed`, `vzctl.dev/vm`, `vzctl.dev/hash`).
+6. `down --purge` entfernt den Context.
+
+## Deklarative Container
+
+Unter `spec.vms.<docker-vm>`:
+
+```yaml
+vms:
+  docker:
+    roles: [docker]
+    composeFiles:
+      - compose.yaml
+      - apps/api/compose.yaml
+    containers:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        env: { REDIS_PASSWORD: dev }
+        volumes: ["./data/redis:/data"]
+        restart: unless-stopped
+```
+
+- Mehrere Compose-Files sind erlaubt (je eigenes Compose-Projekt `{vm}-{stem}`).
+- Ensure-only: fehlende/geänderte managed Container anlegen/recreaten; manuell
+  gestartete Container bleiben. Kein Prune.
+- Bind-Mounts nutzen den Project-Mount (Host-Pfad = Guest-Pfad).
 
 ## `backend: docker` (Hypernetwork)
 

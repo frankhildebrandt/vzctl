@@ -27,13 +27,14 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 14 | macOS Baseline | **Fest: Mindestversion macOS 26**; Pre-26 unsupported |
 | 15 | Bridged | v0.1 **out of scope** |
 | 16 | IP-Precedence | **cloud-init static** Primär; kein wildes DHCP+static |
-| 17 | Router-IP | **`.2`** je Net (Host-Bridge/DNS = **`.0`**; `.1` unused) |
+| 17 | Router-IP | **`.2`** je Net (Host-Bridge/DNS = **`.0`**; geschützter Host-/Ingress-Alias = **`.1`**) |
 | 18 | Isolation | `routes` + **`policies`** (Forward allow/deny) |
 | 19 | Ownership ADR | VZ=Helper; vmnet+DNS+Journal=Supervisor; Reconnect spezifiziert |
 | 20 | Apply | **Journal + Resume/Abort** — [ADR 0003](../adr/0003-apply-state.md) |
 | 21 | Guest-Agent | **In sealed Base vorinstalliert** (nicht First-Boot-Install) |
 | 25 | Image Customize Backend | **Builder-VM** mit gepinnter Appliance auf macOS; lokales `virt-customize` wenn vorhanden (CI/Linux). Seal und Bake teilen das Backend, bleiben getrennte Contracts. |
 | 26 | Docker-Netz | **`backend: docker`** als first-class Hypernetwork (Bridge/bip = CIDR, Firewall via Router-Rolle) |
+| 27 | Ingress Split-Horizon | Host → `127.0.0.1`; Guest → nur lokale `.1`; fremdes Projekt `NXDOMAIN`; PF erlaubt auf `.1` nur Ingress. Docker nutzt Primary-vmnet der owning VM. |
 | 22 | MVP Label | v0.1 = **Alpha**; virtiofs + Docker-Polish → **v0.1.x** |
 | 23 | Guest-DNS-IP | Host-Bridge **`.0`** (UDP gemessen); Host-Listener parallel `127.0.0.1` |
 | 24 | G0 Verdict | **Go**; ADR 0002+0003 accepted |

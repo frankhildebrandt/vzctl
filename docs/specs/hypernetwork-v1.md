@@ -45,6 +45,30 @@ steuern Helper-Resources beim Create (Defaults: 2 vCPUs / 1024 MiB). `cloudInit`
 zur Stack-Config und wird beim Create mit dem System-NoCloud-Seed gemerged
 (System-Felder gewinnen bei Skalar-Konflikten; Listen werden angehängt).
 
+Docker-Container (nur bei `roles` inkl. `docker`):
+
+```yaml
+vms:
+  docker:
+    roles: [docker]
+    composeFiles:
+      - compose.yaml              # relativ zur Config; mehrere erlaubt
+      - apps/api/compose.yaml
+    containers:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]      # Docker -p, nicht Host-Port-Forward
+        env: { REDIS_PASSWORD: dev }
+        volumes: ["./data/redis:/data"]
+        restart: unless-stopped
+        command: ["redis-server", "--appendonly", "yes"]
+```
+
+- `composeFiles`: Apply ruft pro File `docker compose -f … -p {vm}-{stem} up -d`
+- `containers`: Ensure-only (Label `vzctl.dev/managed`); fehlende/geänderte recreaten,
+  manuell gestartete Container bleiben unberührt (kein Prune)
+- Volume-Hostpfade relativ zur Config (gleicher Abs-Pfad im Guest via Project-Mount)
+
 Host-Port-Forwards:
 
 - Stack: `spec.ports` — `"8080:web:80"` oder `"127.0.0.1:8080:web:80"`
@@ -141,6 +165,9 @@ oidc:
   analog zu `routes.*.via`. Die VM muss `roles: [router]` haben und am
   Quellnetz hängen (sowie an jedem `allow.to`-Netz außer `internet`). Bei
   mehreren Routern am Quellnetz ohne `via` schlägt Apply mit Ambiguity fehl.
+- `composeFiles` / `containers` nur auf VMs mit `roles` inkl. `docker`.
+  Compose-Pfade müssen relativ zur Config existieren. Container-Namen:
+  1–63 `[A-Za-z0-9][A-Za-z0-9_.-]*`; `image` Pflicht.
 
 Die Validierung verändert weder Runtime-State noch Journal/Lease. Reconcile
 und Apply folgen separat in [#37](https://github.com/frankhildebrandt/vzctl/issues/37).

@@ -51,6 +51,46 @@ enum DnsBindClient {
         return fileDescriptor
     }
 
+    static func ensureAlias(
+        cidr: String,
+        socketPath: String = DnsBind.socketPath(),
+        timeoutSeconds: Int = 2
+    ) throws {
+        let request = DnsBind.AliasRequest(op: DnsBind.opAliasEnsure, cidr: cidr)
+        try DnsBind.validate(request)
+        try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+    }
+
+    static func removeAlias(
+        cidr: String,
+        socketPath: String = DnsBind.socketPath(),
+        timeoutSeconds: Int = 2
+    ) throws {
+        let request = DnsBind.AliasRequest(op: DnsBind.opAliasRemove, cidr: cidr)
+        try DnsBind.validate(request)
+        try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+    }
+
+    static func reconcileFirewall(
+        _ bindings: [DnsBind.FirewallBinding],
+        socketPath: String = DnsBind.socketPath(),
+        timeoutSeconds: Int = 2
+    ) throws {
+        let request = DnsBind.FirewallRequest(bindings: bindings)
+        try DnsBind.validate(request)
+        try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+    }
+
+    static func cleanupNetworking(
+        socketPath: String = DnsBind.socketPath(),
+        timeoutSeconds: Int = 2
+    ) throws {
+        try simpleRequest(
+            DnsBind.CleanupRequest(), socketPath: socketPath,
+            timeoutSeconds: timeoutSeconds
+        )
+    }
+
     /// Open a privileged TCP accept stream: helper listens and forwards accepted clients.
     static func openTCPAcceptStream(
         address: String,
@@ -197,10 +237,37 @@ enum DnsBindClient {
 
     private static func sendRequest(_ request: DnsBind.BindRequest, on client: Int32) throws {
         try DnsBind.validate(request)
+        try sendEncodable(request, on: client)
+    }
+
+    private static func simpleRequest<T: Encodable>(
+        _ request: T,
+        socketPath: String,
+        timeoutSeconds: Int
+    ) throws {
+        let client = try connect(socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        defer { Darwin.close(client) }
+        try sendEncodable(request, on: client)
+        let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
+        if let fileDescriptor { Darwin.close(fileDescriptor) }
+        let response = try decodeResponse(responseData)
+        guard response.ok else {
+            throw Error.helper(response.error ?? "operation failed")
+        }
+    }
+
+    private static func sendEncodable<T: Encodable>(_ request: T, on client: Int32) throws {
         var payload = try JSONEncoder().encode(request)
         payload.append(0x0A)
-        let sent = payload.withUnsafeBytes { raw in
-            Darwin.send(client, raw.baseAddress, raw.count, 0)
+        let sent = payload.withUnsafeBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return 0 }
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.send(client, base.advanced(by: offset), raw.count - offset, 0)
+                if count <= 0 { return offset }
+                offset += count
+            }
+            return offset
         }
         guard sent == payload.count else {
             throw Error.system("send", errno)

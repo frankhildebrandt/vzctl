@@ -38,6 +38,7 @@ const APPLY_STEPS: &[&str] = &[
     "ensure_ca_rollout",
     "ensure_oidc_inject",
     "ensure_docker_context",
+    "ensure_containers",
     "ensure_ports",
     "apply_routes_policies",
     "release_lease",
@@ -358,6 +359,7 @@ fn execute_step(
         "ensure_ca_rollout" => ensure_ca_rollout(environment, socket_path),
         "ensure_oidc_inject" => ensure_oidc_inject(environment, socket_path),
         "ensure_docker_context" => ensure_docker_context(environment),
+        "ensure_containers" => ensure_containers(environment, &options.config),
         "ensure_ports" => ensure_ports(environment, socket_path),
         "apply_routes_policies" => apply_routes(environment, socket_path),
         "purge_ingress" => purge_ingress(environment, socket_path),
@@ -367,15 +369,17 @@ fn execute_step(
         "destroy_managed" if options.purge => purge_managed(environment, socket_path),
         "purge_docker_context" if options.purge => purge_docker_context(environment),
         "purge_ports" if options.purge => purge_ports(environment, socket_path),
-        "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => run_self_privileged(&[
-            "dns",
-            "uninstall-resolver",
-            "--project",
-            &environment.spec.project,
-            "--format",
-            "json",
-        ])
-        .map(|_| ()),
+        "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => {
+            run_self_privileged(&[
+                "dns",
+                "uninstall-resolver",
+                "--project",
+                &environment.spec.project,
+                "--format",
+                "json",
+            ])
+            .map(|_| ())
+        }
         _ => Ok(()),
     }
 }
@@ -1057,6 +1061,37 @@ fn ensure_docker_context(environment: &Environment) -> Result<(), Failure> {
     Ok(())
 }
 
+fn ensure_containers(environment: &Environment, config_path: &Path) -> Result<(), Failure> {
+    let config_dir = config::config_path(config_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let state_dir = crate::state_dir();
+    for (vm_key, vm) in &environment.spec.vms {
+        if !vm.roles.iter().any(|role| role == "docker") {
+            continue;
+        }
+        if vm.compose_files.is_empty() && vm.containers.is_empty() {
+            continue;
+        }
+        crate::docker::ensure_vm_containers(
+            &environment.spec.project,
+            &state_dir,
+            &config_dir,
+            vm_key,
+            &vm.compose_files,
+            &vm.containers,
+        )
+        .map_err(|error| {
+            Failure::new(
+                EXIT_STEP,
+                format!("ensure containers on VM {vm_key}: {error}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn purge_docker_context(environment: &Environment) -> Result<(), Failure> {
     let has_docker = environment
         .spec
@@ -1296,18 +1331,13 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
     }
 
     let snapshot = rpc(socket_path, "net.list", json!({}))?;
+    let networks = snapshot["networks"].as_array().cloned().unwrap_or_default();
     let attachments = snapshot["attachments"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let rendered = crate::ingress::render(environment, &attachments, &state_dir)
+    let rendered = crate::ingress::render(environment, &networks, &attachments, &state_dir)
         .map_err(|e| Failure::new(EXIT_STEP, format!("caddyfile: {e}")))?;
-
-    rpc(
-        socket_path,
-        "dns.host_services.ensure",
-        json!({ "project": environment.spec.project, "hosts": rendered.hosts }),
-    )?;
 
     let binary = state_dir.join("bin").join("caddy");
     let binary = if binary.exists() {
@@ -1327,7 +1357,13 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
             "backend_http_port": rendered.caddy_http_port,
             "backend_https_port": rendered.caddy_https_port,
             "gateways": rendered.gateways,
+            "gateway_bindings": rendered.gateway_bindings,
         }),
+    )?;
+    rpc(
+        socket_path,
+        "dns.host_services.ensure",
+        json!({ "project": environment.spec.project, "hosts": rendered.hosts }),
     )?;
     Ok(())
 }
@@ -1879,7 +1915,6 @@ fn run_self(args: &[&str]) -> Result<Value, Failure> {
         )
     })
 }
-
 
 /// Like `run_self`, but retries via macOS Admin dialog when `/etc/resolver` needs root.
 fn run_self_privileged(args: &[&str]) -> Result<Value, Failure> {

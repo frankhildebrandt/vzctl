@@ -5,6 +5,11 @@ import VzDaemonKit
 
 @main
 enum VzDnsBindMain {
+    private static let networkLock = NSLock()
+    private static let aliasStatePath = "/var/run/vzctl/dns-bind-aliases.json"
+    private static let pfTokenPath = "/var/run/vzctl/dns-bind-pf.token"
+    private static let pfAnchor = "com.apple/vzctl"
+
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
@@ -19,6 +24,7 @@ enum VzDnsBindMain {
                 Commands:
                   version
                   serve --allow-uid <uid> [--socket <path>]
+                  cleanup
                   help
 
                 UDP: binds SOCK_DGRAM on privileged ports and returns the FD via SCM_RIGHTS.
@@ -27,6 +33,17 @@ enum VzDnsBindMain {
                 No DNS or proxy logic.
                 """
             )
+        case "cleanup":
+            guard geteuid() == 0 else {
+                fputs("error: cleanup requires root\n", stderr)
+                exit(1)
+            }
+            do {
+                try networkLock.withLock { try cleanupManagedNetworking() }
+            } catch {
+                fputs("error: \(error)\n", stderr)
+                exit(1)
+            }
         case "serve":
             do {
                 let options = try ServeOptions.parse(Array(args.dropFirst()))
@@ -165,19 +182,34 @@ enum VzDnsBindMain {
                 return
             }
 
-            var buffer = [UInt8](repeating: 0, count: 4096)
-            let count = Darwin.recv(client, &buffer, buffer.count, 0)
-            guard count > 0 else {
-                try sendFailure(on: client, "empty request")
+            let operation = try DnsBind.parseOperation(readRequest(on: client))
+            guard case let .bind(request) = operation else {
+                try networkLock.withLock {
+                    switch operation {
+                    case let .alias(request):
+                        if request.op == DnsBind.opAliasEnsure {
+                            try ensureHostServiceAlias(cidr: request.cidr)
+                            try updateAliasState(cidr: request.cidr, present: true)
+                        } else {
+                            try removeHostServiceAlias(cidr: request.cidr)
+                            try updateAliasState(cidr: request.cidr, present: false)
+                        }
+                    case let .firewall(request):
+                        try reconcileFirewall(request.bindings)
+                    case .cleanup:
+                        try cleanupManagedNetworking()
+                    case .bind:
+                        break
+                    }
+                }
+                let response = try JSONEncoder().encode(DnsBind.BindResponse(ok: true))
+                var framed = response
+                framed.append(0x0A)
+                try UnixFDPassing.send(payload: framed, fileDescriptor: nil, on: client)
                 return
             }
-            let request = try DnsBind.parseRequest(Data(buffer.prefix(Int(count))))
             let proto = request.proto.lowercased()
-            let bound = try bindSocket(
-                address: request.address,
-                port: request.port,
-                proto: proto
-            )
+            let bound = try bindSocket(address: request.address, port: request.port, proto: proto)
 
             if proto == DnsBind.protoTCP {
                 // Keep listening FD in-helper; stream accepted clients over this UDS.
@@ -265,10 +297,26 @@ enum VzDnsBindMain {
         try UnixFDPassing.send(payload: framed, fileDescriptor: nil, on: client)
     }
 
+    private static func readRequest(on client: Int32) throws -> Data {
+        var request = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while request.count <= 65_536 {
+            let count = Darwin.recv(client, &buffer, buffer.count, 0)
+            guard count > 0 else {
+                throw ServeError.usage(request.isEmpty ? "empty request" : "unterminated request")
+            }
+            request.append(contentsOf: buffer.prefix(Int(count)))
+            if let newline = request.firstIndex(of: 0x0A) {
+                return Data(request[..<newline])
+            }
+        }
+        throw ServeError.usage("request exceeds 64 KiB")
+    }
+
     private static func bindSocket(address: String, port: UInt16, proto: String) throws -> Int32 {
         let isTCP = proto == DnsBind.protoTCP
         if isTCP {
-            try ensureHostServiceAlias(address)
+            try ensureHostServiceAlias(address: address)
         }
         let descriptor = Darwin.socket(
             AF_INET,
@@ -315,53 +363,227 @@ enum VzDnsBindMain {
         return descriptor
     }
 
-    /// Guest TCP cannot reach vmnet `.0`; ingress binds `.1`. Ensure that alias exists.
-    private static func ensureHostServiceAlias(_ address: String) throws {
+    /// Backward-compatible safety net for TCP callers. The normal lifecycle uses
+    /// explicit alias.ensure before any ingress listener is opened.
+    private static func ensureHostServiceAlias(address: String) throws {
         if address == "127.0.0.1" || address == "0.0.0.0" { return }
-        var target = in_addr()
-        guard inet_pton(AF_INET, address, &target) == 1 else { return }
-        let targetHost = UInt32(bigEndian: target.s_addr)
+        guard let cidr = cidrForHostServiceAddress(address) else {
+            throw ServeError.usage("no vmnet bridge found for host-service alias \(address)")
+        }
+        try ensureHostServiceAlias(cidr: cidr)
+        try updateAliasState(cidr: cidr, present: true)
+    }
 
+    private static func ensureHostServiceAlias(cidr: String) throws {
+        let parsed = try IPv4CIDR(cidr)
+        let gateway = IPv4CIDR.gateway(for: cidr)
+        let address = IPv4CIDR.hostService(for: cidr)
+        let mask = ipv4String(parsed.mask)
+        guard !gateway.isEmpty, !address.isEmpty, !mask.isEmpty else {
+            throw ServeError.usage("invalid host-service CIDR \(cidr)")
+        }
+
+        let interfaces = ipv4Interfaces()
+        if let alias = interfaces.first(where: { $0.address == address }) {
+            guard interfaces.contains(where: {
+                $0.name == alias.name && $0.address == gateway && $0.netmask == mask
+            }) else {
+                throw ServeError.usage(
+                    "refusing to reuse alias \(address): matching vmnet bridge \(gateway)/\(parsed.prefix) missing"
+                )
+            }
+            return
+        }
+        guard let bridge = interfaces.first(where: {
+            $0.address == gateway && $0.netmask == mask
+        }) else {
+            throw ServeError.usage("no vmnet bridge \(gateway)/\(parsed.prefix) for alias \(address)")
+        }
+        try runIfconfig([bridge.name, "alias", address, "netmask", mask])
+    }
+
+    private static func removeHostServiceAlias(cidr: String) throws {
+        let gateway = IPv4CIDR.gateway(for: cidr)
+        let address = IPv4CIDR.hostService(for: cidr)
+        let interfaces = ipv4Interfaces()
+        guard let alias = interfaces.first(where: { $0.address == address }) else { return }
+        guard interfaces.contains(where: { $0.name == alias.name && $0.address == gateway }) else {
+            throw ServeError.usage("refusing to remove alias \(address): matching vmnet gateway missing")
+        }
+        try runIfconfig([alias.name, "-alias", address])
+    }
+
+    private struct IPv4Interface {
+        let name: String
+        let address: String
+        let netmask: String
+    }
+
+    private static func ipv4Interfaces() -> [IPv4Interface] {
+        var result: [IPv4Interface] = []
         var ifap: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifap) == 0, let first = ifap else { return }
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return [] }
         defer { freeifaddrs(ifap) }
 
-        var interfaceName: String?
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
         while let current = cursor {
             defer { cursor = current.pointee.ifa_next }
-            guard let raw = current.pointee.ifa_addr, raw.pointee.sa_family == sa_family_t(AF_INET)
-            else {
-                continue
+            guard let raw = current.pointee.ifa_addr,
+                  raw.pointee.sa_family == sa_family_t(AF_INET)
+            else { continue }
+            let address = UnsafeRawPointer(raw).assumingMemoryBound(to: sockaddr_in.self).pointee
+            let mask = current.pointee.ifa_netmask.map {
+                UnsafeRawPointer($0).assumingMemoryBound(to: sockaddr_in.self).pointee
             }
-            let sin = UnsafeRawPointer(raw).assumingMemoryBound(to: sockaddr_in.self).pointee
-            let ip = UInt32(bigEndian: sin.sin_addr.s_addr)
-            if ip == targetHost {
-                return // already assigned
-            }
-            // Prefer the bridge that already owns the matching `.0` network address.
-            if (ip & 0xffff_ff00) == (targetHost & 0xffff_ff00), (ip & 0xff) == 0 {
-                interfaceName = String(cString: current.pointee.ifa_name)
-            }
+            result.append(IPv4Interface(
+                name: String(cString: current.pointee.ifa_name),
+                address: ipv4String(UInt32(bigEndian: address.sin_addr.s_addr)),
+                netmask: mask.map { ipv4String(UInt32(bigEndian: $0.sin_addr.s_addr)) } ?? ""
+            ))
         }
-        guard let interfaceName else {
-            throw ServeError.usage("no vmnet bridge found for host-service alias \(address)")
-        }
+        return result
+    }
 
+    private static func cidrForHostServiceAddress(_ address: String) -> String? {
+        var target = in_addr()
+        guard inet_pton(AF_INET, address, &target) == 1 else { return nil }
+        let targetHost = UInt32(bigEndian: target.s_addr)
+        guard targetHost > 0 else { return nil }
+        let gateway = ipv4String(targetHost - 1)
+        guard let bridge = ipv4Interfaces().first(where: { $0.address == gateway }),
+              let prefix = prefixLength(netmask: bridge.netmask)
+        else { return nil }
+        return "\(gateway)/\(prefix)"
+    }
+
+    private static func prefixLength(netmask: String) -> Int? {
+        var address = in_addr()
+        guard inet_pton(AF_INET, netmask, &address) == 1 else { return nil }
+        let value = UInt32(bigEndian: address.s_addr)
+        let prefix = value.nonzeroBitCount
+        let expected = prefix == 0 ? UInt32(0) : UInt32.max << UInt32(32 - prefix)
+        return value == expected ? prefix : nil
+    }
+
+    private static func ipv4String(_ value: UInt32) -> String {
+        var address = in_addr(s_addr: value.bigEndian)
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &address, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else {
+            return ""
+        }
+        return String(decoding: buffer.map { UInt8(bitPattern: $0) }.prefix { $0 != 0 }, as: UTF8.self)
+    }
+
+    private static func runIfconfig(_ arguments: [String]) throws {
+        _ = try runProcess(path: "/sbin/ifconfig", arguments: arguments)
+    }
+
+    private static func reconcileFirewall(_ bindings: [DnsBind.FirewallBinding]) throws {
+        try ensurePFEnabled()
+        var interfaces: [String: String] = [:]
+        var availableBindings: [DnsBind.FirewallBinding] = []
+        for binding in bindings.sorted(by: { $0.cidr < $1.cidr }) {
+            let parsed = try IPv4CIDR(binding.cidr)
+            let gateway = IPv4CIDR.gateway(for: binding.cidr)
+            let hostService = IPv4CIDR.hostService(for: binding.cidr)
+            let mask = ipv4String(parsed.mask)
+            guard let interface = ipv4Interfaces().first(where: {
+                $0.address == gateway && $0.netmask == mask
+            }) else { continue }
+            guard !hostService.isEmpty else { continue }
+            interfaces[binding.cidr] = interface.name
+            availableBindings.append(binding)
+        }
+        let body = try DnsBind.firewallRules(
+            bindings: availableBindings,
+            interfaceByCIDR: interfaces
+        )
+        _ = try runProcess(
+            path: "/sbin/pfctl",
+            arguments: ["-a", pfAnchor, "-f", "-"],
+            input: Data(body.utf8)
+        )
+    }
+
+    private static func ensurePFEnabled() throws {
+        if FileManager.default.fileExists(atPath: pfTokenPath) { return }
+        let output = try runProcess(path: "/sbin/pfctl", arguments: ["-E"])
+        let tokens = output.split(whereSeparator: { !$0.isNumber })
+        guard let token = tokens.last, !token.isEmpty else {
+            throw ServeError.usage("pfctl -E did not return an enable token")
+        }
+        try Data((String(token) + "\n").utf8)
+            .write(to: URL(fileURLWithPath: pfTokenPath), options: .atomic)
+        _ = chmod(pfTokenPath, 0o600)
+    }
+
+    private static func cleanupManagedNetworking() throws {
+        for cidr in loadAliasState().sorted().reversed() {
+            try removeHostServiceAlias(cidr: cidr)
+        }
+        try saveAliasState([])
+        if FileManager.default.fileExists(atPath: pfTokenPath) {
+            _ = try runProcess(path: "/sbin/pfctl", arguments: ["-a", pfAnchor, "-F", "rules"])
+            let token = (try? String(contentsOfFile: pfTokenPath, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let token, !token.isEmpty {
+                _ = try runProcess(path: "/sbin/pfctl", arguments: ["-X", token])
+            }
+            try? FileManager.default.removeItem(atPath: pfTokenPath)
+        }
+    }
+
+    private static func updateAliasState(cidr: String, present: Bool) throws {
+        var state = loadAliasState()
+        if present { state.insert(cidr) } else { state.remove(cidr) }
+        try saveAliasState(state)
+    }
+
+    private static func loadAliasState() -> Set<String> {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: aliasStatePath)),
+              let values = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return Set(values)
+    }
+
+    private static func saveAliasState(_ values: Set<String>) throws {
+        let data = try JSONEncoder().encode(values.sorted())
+        try data.write(to: URL(fileURLWithPath: aliasStatePath), options: .atomic)
+        _ = chmod(aliasStatePath, 0o600)
+    }
+
+    @discardableResult
+    private static func runProcess(
+        path: String,
+        arguments: [String],
+        input: Data? = nil
+    ) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-        process.arguments = [interfaceName, "alias", address, "netmask", "255.255.255.0"]
-        let errPipe = Pipe()
-        process.standardError = errPipe
-        process.standardOutput = Pipe()
-        try process.run()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        if let input {
+            let stdin = Pipe()
+            process.standardInput = stdin
+            try process.run()
+            stdin.fileHandleForWriting.write(input)
+            try? stdin.fileHandleForWriting.close()
+        } else {
+            try process.run()
+        }
         process.waitUntilExit()
+        let stdout = output.fileHandleForReading.readDataToEndOfFile()
+        let stderr = errors.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0 else {
-            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-                ?? ""
+            let message = String(data: stderr, encoding: .utf8) ?? ""
             throw ServeError.usage(
-                "ifconfig alias \(address) on \(interfaceName) failed: \(err.trimmingCharacters(in: .whitespacesAndNewlines))"
+                "\((path as NSString).lastPathComponent) \(arguments.joined(separator: " ")) failed: \(message.trimmingCharacters(in: .whitespacesAndNewlines))"
             )
         }
+        return (String(data: stdout, encoding: .utf8) ?? "")
+            + (String(data: stderr, encoding: .utf8) ?? "")
     }
 }

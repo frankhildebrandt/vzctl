@@ -1039,6 +1039,21 @@ fn uninstall_bind_helper() -> Result<(PathBuf, Change), Failure> {
         Some(existing) => {
             ensure_bind_helper_owned(&marker, &existing)?;
             launchctl_bootout_bind_helper();
+            let cleanup = std::process::Command::new(&binary)
+                .arg("cleanup")
+                .status()
+                .map_err(|error| {
+                    Failure::new(
+                        EXIT_RESOLVER,
+                        format!("bind-helper network cleanup failed: {error}"),
+                    )
+                })?;
+            if !cleanup.success() {
+                return Err(Failure::new(
+                    EXIT_RESOLVER,
+                    "bind-helper network cleanup failed; aliases and PF anchor were not confirmed removed",
+                ));
+            }
             if plist.exists() {
                 fs::remove_file(&plist).map_err(|error| io_failure("remove", &plist, error))?;
             }

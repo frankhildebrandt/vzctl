@@ -432,6 +432,35 @@ pub(crate) struct VmConfig {
     /// virtiofs mounts; `source` references `spec.volumes` name.
     #[serde(default)]
     pub(crate) mounts: Vec<VmMount>,
+    /// Docker Compose files relative to the stack config (docker-role VMs only).
+    #[serde(default, rename = "composeFiles")]
+    pub(crate) compose_files: Vec<String>,
+    /// Declarative default containers (docker-role VMs only); key = container name.
+    #[serde(default)]
+    pub(crate) containers: BTreeMap<String, ContainerConfig>,
+}
+
+/// Declared container under a docker-role VM (`ensure_containers`, ensure-only).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContainerConfig {
+    pub(crate) image: String,
+    /// Docker publish specs, e.g. `"8080:80"` or `"127.0.0.1:8080:80"`.
+    #[serde(default)]
+    pub(crate) ports: Vec<String>,
+    #[serde(default)]
+    pub(crate) env: BTreeMap<String, String>,
+    /// Bind mounts `host:container` or `host:container:ro` (host path relative to config).
+    #[serde(default)]
+    pub(crate) volumes: Vec<String>,
+    #[serde(default)]
+    pub(crate) restart: Option<String>,
+    #[serde(default)]
+    pub(crate) command: Vec<String>,
+    #[serde(default)]
+    pub(crate) workdir: Option<String>,
+    #[serde(default)]
+    pub(crate) user: Option<String>,
 }
 
 /// Declared host→guest virtiofs mount (`source` = volume name).
@@ -898,6 +927,7 @@ fn validate_references(
             &vm_base,
             &mut issues,
         );
+        validate_vm_containers(vm_name, vm, &vm_base, config_dir, &mut issues);
         if let Some(0) = vm.cpus {
             issues.push(ValidationIssue::new(
                 format!("{vm_base}.cpus"),
@@ -1719,6 +1749,182 @@ pub(crate) fn resolve_volume_path(path: &str, config_dir: Option<&Path>) -> Opti
     config_dir.map(|dir| dir.join(raw))
 }
 
+fn validate_vm_containers(
+    vm_name: &str,
+    vm: &VmConfig,
+    vm_base: &str,
+    config_dir: Option<&Path>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let has_docker = vm.roles.iter().any(|role| role == "docker");
+    if !has_docker {
+        if !vm.compose_files.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{vm_base}.composeFiles"),
+                format!("composeFiles requires roles to include docker (VM {vm_name})"),
+                "semantic",
+            ));
+        }
+        if !vm.containers.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{vm_base}.containers"),
+                format!("containers requires roles to include docker (VM {vm_name})"),
+                "semantic",
+            ));
+        }
+        return;
+    }
+
+    for (index, compose_file) in vm.compose_files.iter().enumerate() {
+        let path = format!("{vm_base}.composeFiles[{index}]");
+        if compose_file.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                path,
+                "compose file path must not be empty",
+                "semantic",
+            ));
+            continue;
+        }
+        let Some(resolved) = resolve_volume_path(compose_file, config_dir) else {
+            // Without config_dir (inline tests) skip existence checks.
+            continue;
+        };
+        if !resolved.is_file() {
+            issues.push(ValidationIssue::new(
+                path,
+                format!("compose file not found: {}", resolved.display()),
+                "semantic",
+            ));
+        }
+    }
+
+    for (name, container) in &vm.containers {
+        let base = json_path_key(&format!("{vm_base}.containers"), name);
+        if !valid_container_name(name) {
+            issues.push(ValidationIssue::new(
+                base.clone(),
+                "container name must be 1-63 ASCII characters: alphanumeric, underscore, dot, or dash",
+                "semantic",
+            ));
+        }
+        if container.image.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{base}.image"),
+                "container image must not be empty",
+                "semantic",
+            ));
+        }
+        for (index, publish) in container.ports.iter().enumerate() {
+            if let Err(message) = validate_container_publish(publish) {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.ports[{index}]"),
+                    message,
+                    "semantic",
+                ));
+            }
+        }
+        for (index, volume) in container.volumes.iter().enumerate() {
+            if let Err(message) = validate_container_volume(volume, config_dir) {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.volumes[{index}]"),
+                    message,
+                    "semantic",
+                ));
+            }
+        }
+        if let Some(restart) = &container.restart {
+            if !valid_restart_policy(restart) {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.restart"),
+                    format!(
+                        "unsupported restart policy {restart:?}; allowed: no, always, on-failure, unless-stopped"
+                    ),
+                    "semantic",
+                ));
+            }
+        }
+    }
+}
+
+fn valid_container_name(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'_' | b'.' | b'-'))
+        })
+}
+
+fn valid_restart_policy(policy: &str) -> bool {
+    matches!(policy, "no" | "always" | "on-failure" | "unless-stopped")
+        || policy.starts_with("on-failure:")
+}
+
+/// Validate a Docker `-p` publish string (`80`, `8080:80`, `127.0.0.1:8080:80`, optional `/tcp`).
+fn validate_container_publish(raw: &str) -> Result<(), String> {
+    let without_proto = raw.split('/').next().unwrap_or(raw);
+    if without_proto.is_empty() {
+        return Err("publish spec must not be empty".into());
+    }
+    let parts = without_proto.split(':').collect::<Vec<_>>();
+    if !(1..=3).contains(&parts.len()) {
+        return Err(format!(
+            "invalid publish {raw:?}; expected PORT, HOST:CONTAINER, or IP:HOST:CONTAINER"
+        ));
+    }
+    let container_port = parts.last().copied().unwrap_or("");
+    if container_port.parse::<u16>().is_err() {
+        return Err(format!("invalid container port in publish {raw:?}"));
+    }
+    if parts.len() >= 2 {
+        let host_port = parts[parts.len() - 2];
+        if host_port.parse::<u16>().is_err() {
+            return Err(format!("invalid host port in publish {raw:?}"));
+        }
+    }
+    if parts.len() == 3 {
+        let bind = parts[0];
+        if bind.parse::<Ipv4Addr>().is_err() && bind != "localhost" {
+            return Err(format!(
+                "invalid bind address in publish {raw:?}; use IPv4 or localhost"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_container_volume(raw: &str, config_dir: Option<&Path>) -> Result<(), String> {
+    let parts = raw.split(':').collect::<Vec<_>>();
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(format!(
+            "invalid volume {raw:?}; expected HOST:CONTAINER or HOST:CONTAINER:ro|rw"
+        ));
+    }
+    if parts[0].is_empty() || parts[1].is_empty() {
+        return Err(format!(
+            "invalid volume {raw:?}; host and container paths required"
+        ));
+    }
+    if !parts[1].starts_with('/') {
+        return Err(format!(
+            "container volume target must be absolute: {:?}",
+            parts[1]
+        ));
+    }
+    if parts.len() == 3 && !matches!(parts[2], "ro" | "rw") {
+        return Err(format!(
+            "invalid volume mode {:?}; expected ro or rw",
+            parts[2]
+        ));
+    }
+    let host = parts[0];
+    if let Some(resolved) = resolve_volume_path(host, config_dir) {
+        // Parent may not exist yet; only reject empty host path after resolve.
+        if resolved.as_os_str().is_empty() {
+            return Err(format!("cannot resolve volume host path {host:?}"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_vm_mounts(
     vm_name: &str,
     mounts: &[VmMount],
@@ -2023,6 +2229,62 @@ mod tests {
             .roles
             .iter()
             .any(|role| role == "router"));
+    }
+
+    #[test]
+    fn docker_containers_fixture_validates_with_base() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/validate/valid-docker-containers.yaml");
+        let environment = validate_path(&path).unwrap();
+        let docker = &environment.spec.vms["docker"];
+        assert_eq!(docker.compose_files, vec!["compose.yaml".to_string()]);
+        assert_eq!(docker.containers["redis"].image, "redis:7-alpine");
+        assert_eq!(
+            docker.containers["redis"].restart.as_deref(),
+            Some("unless-stopped")
+        );
+    }
+
+    #[test]
+    fn containers_require_docker_role() {
+        let issues = validate_source(include_str!(
+            "../tests/fixtures/validate/invalid-containers-no-docker-role.yaml"
+        ))
+        .unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains(".containers") && issue.message.contains("docker")
+        }));
+    }
+
+    #[test]
+    fn missing_compose_file_is_rejected() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: bad }
+spec:
+  project: bad
+  domain: bad.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
+  networks:
+    lan: { cidr: 10.90.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  vms:
+    docker:
+      from: ubuntu-base
+      dataDisk: 40G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+      roles: [docker]
+      composeFiles: [missing-compose.yaml]
+"#;
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/validate");
+        let issues = validate_source_with_base(source, Some(&dir)).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains("composeFiles") && issue.message.contains("not found")
+        }));
     }
 
     #[test]

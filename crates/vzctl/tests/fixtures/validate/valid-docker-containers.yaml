@@ -1,0 +1,44 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: docker-containers
+spec:
+  project: docker-containers
+  domain: docker-containers.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base:
+      from: ubuntu-latest
+      role: base
+      tag: v1
+  networks:
+    lan:
+      cidr: 10.90.0.0/24
+      mode: shared
+      natEgress: false
+  routes: []
+  policies: []
+  vms:
+    docker:
+      from: ubuntu-base
+      clone: linked
+      dataDisk: 40G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+      roles: [docker]
+      composeFiles:
+        - compose.yaml
+      containers:
+        redis:
+          image: redis:7-alpine
+          ports: ["6379:6379"]
+          env:
+            REDIS_PASSWORD: dev
+          volumes:
+            - "./data/redis:/data"
+          restart: unless-stopped
+          command: ["redis-server", "--appendonly", "yes"]

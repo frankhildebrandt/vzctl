@@ -272,6 +272,7 @@ export const deDE = {
   "apply.step.ensure_ca_rollout": "CA-Rollout",
   "apply.step.ensure_oidc_inject": "OIDC-Inject",
   "apply.step.ensure_docker_context": "Docker-Context",
+  "apply.step.ensure_containers": "Container",
   "apply.step.ensure_ports": "Ports",
   "apply.step.apply_routes_policies": "Routes/Policies",
   "apply.step.release_lease": "Lease freigeben",

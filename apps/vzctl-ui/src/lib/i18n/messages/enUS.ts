@@ -246,6 +246,7 @@ export const enUS: Record<MessageKey, string> = {
   "apply.step.ensure_ca_rollout": "CA rollout",
   "apply.step.ensure_oidc_inject": "OIDC inject",
   "apply.step.ensure_docker_context": "Docker context",
+  "apply.step.ensure_containers": "Containers",
   "apply.step.ensure_ports": "Ports",
   "apply.step.apply_routes_policies": "Routes/policies",
   "apply.step.release_lease": "Release lease",

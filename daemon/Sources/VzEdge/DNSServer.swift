@@ -10,6 +10,8 @@ struct DNSZone: Equatable, Sendable {
     let records: [String: [String]]
     /// Host-horizon A records for ingress/OIDC names (loopback for Mac clients).
     let hostRecords: [String: [String]]
+    /// Project ownership for host-managed ingress/OIDC names.
+    let ingressProjects: [String: String]
     let zones: Set<String>
     let ttl: UInt32
 
@@ -21,8 +23,11 @@ struct DNSZone: Equatable, Sendable {
                 return host
             }
             return records[canonical]
-        case .guest:
-            // Never serve host-loopback overrides to guests (split horizon).
+        case let .guest(context):
+            if hostRecords[canonical] != nil {
+                guard ingressProjects[canonical] == context.project else { return nil }
+                return [context.hostService]
+            }
             return records[canonical]
         }
     }
@@ -34,14 +39,21 @@ struct DNSZone: Equatable, Sendable {
     }
 }
 
-enum DNSHorizon: Sendable, CustomStringConvertible {
+struct DNSGuestContext: Equatable, Sendable {
+    let network: String
+    let project: String?
+    let gateway: String
+    let hostService: String
+}
+
+enum DNSHorizon: Equatable, Sendable, CustomStringConvertible {
     case host
-    case guest
+    case guest(DNSGuestContext)
 
     var description: String {
         switch self {
         case .host: return "host"
-        case .guest: return "guest"
+        case let .guest(context): return "guest:\(context.network)"
         }
     }
 }
@@ -58,20 +70,6 @@ enum DNSZoneBuilder {
         let networks = Dictionary(uniqueKeysWithValues: snapshot.networks.map { ($0.name, $0) })
         var records: [String: Set<String>] = [:]
         var zones: Set<String> = []
-        var gatewayByProject: [String: Set<String>] = [:]
-
-        for network in snapshot.networks where network.runtimeState == "active" {
-            // docker-backend CIDRs have no host bridge IP; skip for guest *.svc / ingress.
-            if network.isDockerBackend { continue }
-            if let project = network.project.flatMap(dnsLabel) {
-                // Guest TCP cannot reach vmnet `.0`; advertise host-service `.1` instead.
-                let hostService = IPv4CIDR.hostService(for: network.cidr)
-                if !hostService.isEmpty {
-                    gatewayByProject[project, default: []].insert(hostService)
-                }
-            }
-        }
-
         for attachment in snapshot.attachments {
             guard let network = networks[attachment.networkName],
                   network.runtimeState == "active",
@@ -101,7 +99,7 @@ enum DNSZoneBuilder {
         }
 
         var hostRecords: [String: [String]] = [:]
-        var guestHostServices: [String: Set<String>] = [:]
+        var ingressProjects: [String: String] = [:]
         for raw in hostServices {
             let name = canonicalName(raw)
             guard !name.isEmpty else { continue }
@@ -127,22 +125,15 @@ enum DNSZoneBuilder {
             // own bridge `.1` alias: EHOSTDOWN). Guests → host-service `.1`
             // (vmnet drops guest TCP to `.0`; never 127.0.0.1 — that would be the
             // guest's own loopback if mDNSResponder steals the query).
-            if let project,
-               let gateways = gatewayByProject[project],
-               !gateways.isEmpty
-            {
-                guestHostServices[name] = gateways
-            }
             hostRecords[name] = ["127.0.0.1"]
+            if let project { ingressProjects[name] = project }
             zones.insert(zoneName(from: name))
-        }
-        for (name, gateways) in guestHostServices {
-            records[name] = Set(gateways)
         }
 
         return DNSZone(
             records: records.mapValues { $0.sorted() },
             hostRecords: hostRecords,
+            ingressProjects: ingressProjects,
             zones: zones.filter { !$0.isEmpty },
             ttl: min(30, max(5, ttl))
         )
@@ -251,6 +242,7 @@ final class DNSServer: @unchecked Sendable {
     private var zone: DNSZone
     private var listeners: [String: DNSListener] = [:]
     private var desiredListeners: Set<String> = []
+    private var guestContexts: [DNSGuestContext] = []
     private var hostServices: [String] = []
     private var lastError: String?
     private var stopped = false
@@ -260,6 +252,7 @@ final class DNSServer: @unchecked Sendable {
         zone = DNSZone(
             records: [:],
             hostRecords: [:],
+            ingressProjects: [:],
             zones: [],
             ttl: min(30, max(5, configuration.ttl))
         )
@@ -279,25 +272,39 @@ final class DNSServer: @unchecked Sendable {
             ttl: configuration.ttl,
             hostServices: services
         )
-        let guestAddresses = snapshot.networks
-            .filter { $0.runtimeState == "active" && !$0.isDockerBackend }
-            .map { IPv4CIDR.gateway(for: $0.cidr) }
-            .filter { !$0.isEmpty }
-        var desired = Set(guestAddresses.map { endpoint($0, configuration.guestPort) })
-        desired.insert(endpoint(configuration.hostAddress, configuration.hostPort))
+        let contexts = snapshot.networks.compactMap { network -> DNSGuestContext? in
+            guard network.runtimeState == "active", !network.isDockerBackend else { return nil }
+            let gateway = IPv4CIDR.gateway(for: network.cidr)
+            let hostService = IPv4CIDR.hostService(for: network.cidr)
+            guard !gateway.isEmpty, !hostService.isEmpty else { return nil }
+            return DNSGuestContext(
+                network: network.name,
+                project: network.project.map(DNSZoneBuilder.canonicalName),
+                gateway: gateway,
+                hostService: hostService
+            )
+        }
+        var desired = Dictionary(uniqueKeysWithValues: contexts.map {
+            (endpoint($0.gateway, configuration.guestPort), DNSHorizon.guest($0))
+        })
+        desired[endpoint(configuration.hostAddress, configuration.hostPort)] = .host
+        let desiredKeys = Set(desired.keys)
 
         lock.withLock {
             guard !stopped else { return }
             zone = nextZone
-            desiredListeners = desired
+            desiredListeners = desiredKeys
+            guestContexts = contexts.sorted { $0.network < $1.network }
             lastError = nil
 
-            for key in listeners.keys where !desired.contains(key) {
+            for key in listeners.keys where !desiredKeys.contains(key) {
                 removeListenerLocked(key)
             }
-            for key in desired.sorted() where listeners[key] == nil {
+            for key in desired.keys.sorted() {
+                if let existing = listeners[key], existing.horizon == desired[key] { continue }
+                removeListenerLocked(key)
                 do {
-                    listeners[key] = try makeListener(endpoint: key)
+                    listeners[key] = try makeListener(endpoint: key, horizon: desired[key]!)
                 } catch {
                     lastError = [lastError, "\(key): \(error)"]
                         .compactMap { $0 }
@@ -324,11 +331,16 @@ final class DNSServer: @unchecked Sendable {
     }
 
     /// Debug/resolve helper: return A-addresses for both horizons from the live zone.
-    func lookup(_ name: String) -> (host: [String]?, guest: [String]?) {
-        let snapshot = lock.withLock { zone }
+    func lookup(_ name: String, network: String? = nil) -> (host: [String]?, guest: [String]?) {
+        let state = lock.withLock { (zone, guestContexts) }
+        let contexts = state.1.filter { network == nil || $0.network == network }
+        let guest = contexts
+            .compactMap { state.0.addresses(for: name, horizon: .guest($0)) }
+            .flatMap { $0 }
+        let uniqueGuest = Array(Set(guest)).sorted()
         return (
-            snapshot.addresses(for: name, horizon: .host),
-            snapshot.addresses(for: name, horizon: .guest)
+            state.0.addresses(for: name, horizon: .host),
+            uniqueGuest.isEmpty ? nil : uniqueGuest
         )
     }
 
@@ -347,13 +359,10 @@ final class DNSServer: @unchecked Sendable {
         }
     }
 
-    private func makeListener(endpoint value: String) throws -> DNSListener {
+    private func makeListener(endpoint value: String, horizon: DNSHorizon) throws -> DNSListener {
         guard let parsed = parseEndpoint(value) else {
             throw DNSError.invalidEndpoint(value)
         }
-        let horizon: DNSHorizon =
-            parsed.address == configuration.hostAddress
-                && parsed.port == configuration.hostPort ? .host : .guest
         if DnsBind.needsPrivilege(port: parsed.port) {
             let descriptor = try DnsBindClient.bindUDP(
                 address: parsed.address,
@@ -421,34 +430,6 @@ final class DNSServer: @unchecked Sendable {
         return DNSListener(descriptor: descriptor, source: source, horizon: horizon)
     }
 
-    private func horizonFromSockname(_ descriptor: Int32) -> (DNSHorizon, String)? {
-        var addr = sockaddr_in()
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let ok = withUnsafeMutablePointer(to: &addr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.getsockname(descriptor, $0, &length) == 0
-            }
-        }
-        guard ok else { return nil }
-        // Darwin sockaddr_in uses sin_len + sin_family; accept AF_INET via numeric compare.
-        let family = Int32(addr.sin_family)
-        guard family == AF_INET else { return nil }
-        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        guard inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil
-        else {
-            return nil
-        }
-        let local = String(decoding: buffer.map { UInt8(bitPattern: $0) }.prefix { $0 != 0 }, as: UTF8.self)
-        let port = UInt16(bigEndian: addr.sin_port)
-        if local == configuration.hostAddress, port == configuration.hostPort {
-            return (.host, "\(local):\(port)")
-        }
-        if local == "0.0.0.0" {
-            return nil
-        }
-        return (.guest, "\(local):\(port)")
-    }
-
     private func removeListenerLocked(_ key: String) {
         guard let listener = listeners.removeValue(forKey: key) else { return }
         listener.source.cancel()
@@ -466,9 +447,7 @@ final class DNSServer: @unchecked Sendable {
         }
         guard count > 0 else { return }
         let request = Data(buffer.prefix(Int(count)))
-        let sock = horizonFromSockname(descriptor)
-        let effectiveHorizon = sock?.0 ?? horizon
-        let responseData = makeResponse(for: request, horizon: effectiveHorizon)
+        let responseData = makeResponse(for: request, horizon: horizon)
         guard !responseData.isEmpty else { return }
         _ = responseData.withUnsafeBytes { bytes in
             withUnsafePointer(to: &peer) { pointer in

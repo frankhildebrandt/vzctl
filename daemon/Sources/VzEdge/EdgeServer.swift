@@ -39,12 +39,15 @@ final class EdgeServer: @unchecked Sendable {
     private let portProxy = PortForwardProxy()
     private let gatewayProxy = HostGatewayIngressProxy()
     private let processes = EmbeddedProcessManager()
+    private let hostNetworking: HostNetworkReconciler
 
     init(
         stateDirectory: URL,
-        dnsConfiguration: DNSConfiguration = .environment()
+        dnsConfiguration: DNSConfiguration = .environment(),
+        hostNetworking: HostNetworkReconciler = HostNetworkReconciler()
     ) throws {
         self.stateDirectory = stateDirectory
+        self.hostNetworking = hostNetworking
         dnsServer = DNSServer(configuration: dnsConfiguration)
         runtimeDirectory = stateDirectory.appendingPathComponent("runtime/edge", isDirectory: true)
         manifestPath = runtimeDirectory.appendingPathComponent("manifest.json")
@@ -144,9 +147,11 @@ final class EdgeServer: @unchecked Sendable {
             case "dns.lookup":
                 let params = try object(request.params)
                 let name = try string("name", params)
-                let result = dnsServer.lookup(name)
+                let network = try optionalString("network", params)
+                let result = dnsServer.lookup(name, network: network)
                 return JSONRPCResponse(result: .object([
                     "name": .string(DNSZoneBuilder.canonicalName(name)),
+                    "network": network.map(JSONValue.string) ?? .null,
                     "host": result.host.map { .array($0.map(JSONValue.string)) } ?? .null,
                     "guest": result.guest.map { .array($0.map(JSONValue.string)) } ?? .null,
                 ]), id: id)
@@ -218,6 +223,20 @@ final class EdgeServer: @unchecked Sendable {
 
         var serviceSpecs: [EmbeddedProcessManager.Spec] = []
         var gatewayBindings: [HostGatewayIngressProxy.Binding] = []
+        let activeNetworks = snapshot.networks.filter {
+            $0.runtimeState == "active" && !$0.isDockerBackend
+        }
+        let targetAliasCIDRs = Set(activeNetworks.map(\.cidr))
+        var targetFirewall = Dictionary(uniqueKeysWithValues: activeNetworks.map { network in
+            (
+                network.cidr,
+                DnsBind.FirewallBinding(
+                    cidr: network.cidr,
+                    allowedSources: [network.cidr],
+                    tcpPorts: []
+                )
+            )
+        })
         for raw in ingress {
             let params = try object(raw)
             let project = try safeProject(string("project", params))
@@ -249,6 +268,30 @@ final class EdgeServer: @unchecked Sendable {
                     gatewayIP: gateway, port: https,
                     backendHost: "127.0.0.1", backendPort: backendHTTPS
                 ))
+                if let network = activeNetworks.first(where: {
+                    IPv4CIDR.hostService(for: $0.cidr) == gateway
+                }) {
+                    mergeFirewallBinding(
+                        cidr: network.cidr,
+                        allowedSources: [network.cidr],
+                        ports: [http, https],
+                        into: &targetFirewall
+                    )
+                }
+            }
+            for rawBinding in try array(params["gateway_bindings"] ?? .array([])) {
+                let binding = try object(rawBinding)
+                let cidr = try string("cidr", binding)
+                guard targetAliasCIDRs.contains(cidr) else {
+                    throw EdgeServerError.invalid("ingress gateway binding requires active vmnet \(cidr)")
+                }
+                let sources = try strings(binding["allowed_sources"] ?? .array([.string(cidr)]))
+                mergeFirewallBinding(
+                    cidr: cidr,
+                    allowedSources: sources,
+                    ports: [http, https],
+                    into: &targetFirewall
+                )
             }
         }
         for raw in oidc {
@@ -281,6 +324,10 @@ final class EdgeServer: @unchecked Sendable {
             ))
         }
 
+        try hostNetworking.prepare(
+            targetCIDRs: targetAliasCIDRs,
+            targetFirewall: targetFirewall
+        )
         _ = try processes.reconcile(serviceSpecs)
         _ = try portProxy.ensure(ports)
         let ingressResult = gatewayProxy.ensure(gatewayBindings)
@@ -292,6 +339,10 @@ final class EdgeServer: @unchecked Sendable {
         dnsServer.setHostServices(hostServices)
         let dns = dnsServer.reload(snapshot: snapshot)
         guard dns.ok else { throw EdgeServerError.invalid(dns.lastError ?? "DNS reconcile failed") }
+        try hostNetworking.finish(
+            targetCIDRs: targetAliasCIDRs,
+            targetFirewall: targetFirewall
+        )
     }
 
     func status() -> JSONValue {
@@ -308,6 +359,7 @@ final class EdgeServer: @unchecked Sendable {
             "dns": dns.json,
             "port_forwards": .array(portProxy.list().map(\.json)),
             "ingress_bindings": .number(Double(gatewayProxy.list().count)),
+            "host_aliases": .number(Double(hostNetworking.aliasCount)),
             "services": .array(services.map(JSONValue.object)),
             "last_error": state.2.map(JSONValue.string) ?? .null,
         ])
@@ -429,6 +481,20 @@ private func strings(_ value: JSONValue) throws -> [String] {
         guard case let .string(item) = $0 else { throw EdgeServerError.invalid("string array required") }
         return item
     }
+}
+
+private func mergeFirewallBinding(
+    cidr: String,
+    allowedSources: [String],
+    ports: [UInt16],
+    into bindings: inout [String: DnsBind.FirewallBinding]
+) {
+    let existing = bindings[cidr]
+    bindings[cidr] = DnsBind.FirewallBinding(
+        cidr: cidr,
+        allowedSources: Array(Set((existing?.allowedSources ?? []) + allowedSources)).sorted(),
+        tcpPorts: Array(Set((existing?.tcpPorts ?? []) + ports)).sorted()
+    )
 }
 
 private func port(_ key: String, _ values: [String: JSONValue], default fallback: UInt16? = nil) throws -> UInt16 {

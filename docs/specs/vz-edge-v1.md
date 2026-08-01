@@ -60,7 +60,9 @@ forwards, ingress-listener count, supervised child status and `last_error`.
 
 ### `dns.lookup`
 
-Params: `{ "name": "web.svc.edge-dmz.vz.test" }`.
+Params: `{ "name": "web.svc.edge-dmz.vz.test", "network": "lan" }`.
+`network` ist optional; ohne Feld bleibt `guest` die sortierte Vereinigung der
+netzbezogenen Diagnosewerte.
 
 Returns host- and guest-horizon addresses from the live zone.
 

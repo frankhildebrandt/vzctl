@@ -1,0 +1,32 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: bad-containers
+spec:
+  project: bad-containers
+  domain: bad-containers.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base:
+      from: ubuntu-latest
+      role: base
+      tag: v1
+  networks:
+    lan:
+      cidr: 10.90.0.0/24
+      mode: shared
+  routes: []
+  policies: []
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 8G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+      containers:
+        redis:
+          image: redis:7-alpine

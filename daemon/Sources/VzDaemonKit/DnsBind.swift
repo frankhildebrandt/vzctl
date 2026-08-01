@@ -11,6 +11,10 @@ public enum DnsBind {
     public static let privilegedPortLimit: UInt16 = 1024
     public static let protoUDP = "udp"
     public static let protoTCP = "tcp"
+    public static let opAliasEnsure = "alias.ensure"
+    public static let opAliasRemove = "alias.remove"
+    public static let opFirewallReconcile = "firewall.reconcile"
+    public static let opCleanup = "cleanup"
 
     public static func socketPath(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -62,6 +66,59 @@ public enum DnsBind {
         }
     }
 
+    public struct AliasRequest: Codable, Equatable, Sendable {
+        public var op: String
+        public var cidr: String
+
+        public init(op: String, cidr: String) {
+            self.op = op
+            self.cidr = cidr
+        }
+    }
+
+    public struct FirewallBinding: Codable, Equatable, Sendable {
+        public var cidr: String
+        public var allowedSources: [String]
+        public var tcpPorts: [UInt16]
+
+        public init(cidr: String, allowedSources: [String], tcpPorts: [UInt16]) {
+            self.cidr = cidr
+            self.allowedSources = allowedSources
+            self.tcpPorts = tcpPorts
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case cidr
+            case allowedSources = "allowed_sources"
+            case tcpPorts = "tcp_ports"
+        }
+    }
+
+    public struct FirewallRequest: Codable, Equatable, Sendable {
+        public var op: String
+        public var bindings: [FirewallBinding]
+
+        public init(bindings: [FirewallBinding]) {
+            op = DnsBind.opFirewallReconcile
+            self.bindings = bindings
+        }
+    }
+
+    public struct CleanupRequest: Codable, Equatable, Sendable {
+        public var op: String
+
+        public init() {
+            op = DnsBind.opCleanup
+        }
+    }
+
+    public enum Request: Equatable, Sendable {
+        case bind(BindRequest)
+        case alias(AliasRequest)
+        case firewall(FirewallRequest)
+        case cleanup(CleanupRequest)
+    }
+
     public enum ValidationError: Error, CustomStringConvertible, Equatable {
         case invalidJSON
         case unsupportedOp(String)
@@ -69,6 +126,8 @@ public enum DnsBind {
         case invalidProto(String)
         case portNotPrivileged(UInt16)
         case portInvalid
+        case invalidCIDR(String)
+        case invalidFirewall(String)
 
         public var description: String {
             switch self {
@@ -84,7 +143,45 @@ public enum DnsBind {
                 return "port \(port) is not privileged (< \(privilegedPortLimit))"
             case .portInvalid:
                 return "port must be > 0"
+            case let .invalidCIDR(cidr):
+                return "invalid canonical IPv4 CIDR: \(cidr)"
+            case let .invalidFirewall(message):
+                return "invalid firewall request: \(message)"
             }
+        }
+    }
+
+    private struct Operation: Decodable {
+        let op: String
+    }
+
+    public static func parseOperation(_ data: Data) throws -> Request {
+        let trimmed = data.trimmingASCIINewlines()
+        guard let operation = try? JSONDecoder().decode(Operation.self, from: trimmed) else {
+            throw ValidationError.invalidJSON
+        }
+        switch operation.op {
+        case "bind":
+            return .bind(try parseRequest(trimmed))
+        case opAliasEnsure, opAliasRemove:
+            guard let request = try? JSONDecoder().decode(AliasRequest.self, from: trimmed) else {
+                throw ValidationError.invalidJSON
+            }
+            try validate(request)
+            return .alias(request)
+        case opFirewallReconcile:
+            guard let request = try? JSONDecoder().decode(FirewallRequest.self, from: trimmed) else {
+                throw ValidationError.invalidJSON
+            }
+            try validate(request)
+            return .firewall(request)
+        case opCleanup:
+            guard let request = try? JSONDecoder().decode(CleanupRequest.self, from: trimmed) else {
+                throw ValidationError.invalidJSON
+            }
+            return .cleanup(request)
+        default:
+            throw ValidationError.unsupportedOp(operation.op)
         }
     }
 
@@ -115,6 +212,66 @@ public enum DnsBind {
         guard inet_pton(AF_INET, request.address, &addr) == 1 else {
             throw ValidationError.invalidAddress(request.address)
         }
+    }
+
+    public static func validate(_ request: AliasRequest) throws {
+        guard request.op == opAliasEnsure || request.op == opAliasRemove else {
+            throw ValidationError.unsupportedOp(request.op)
+        }
+        guard (try? IPv4CIDR(request.cidr))?.canonical == request.cidr else {
+            throw ValidationError.invalidCIDR(request.cidr)
+        }
+    }
+
+    public static func validate(_ request: FirewallRequest) throws {
+        guard request.op == opFirewallReconcile else {
+            throw ValidationError.unsupportedOp(request.op)
+        }
+        var seen = Set<String>()
+        for binding in request.bindings {
+            guard (try? IPv4CIDR(binding.cidr))?.canonical == binding.cidr else {
+                throw ValidationError.invalidCIDR(binding.cidr)
+            }
+            guard seen.insert(binding.cidr).inserted else {
+                throw ValidationError.invalidFirewall("duplicate binding \(binding.cidr)")
+            }
+            guard !binding.tcpPorts.contains(0) else {
+                throw ValidationError.invalidFirewall("TCP port must be greater than zero")
+            }
+            for source in binding.allowedSources {
+                guard (try? IPv4CIDR(source))?.canonical == source else {
+                    throw ValidationError.invalidCIDR(source)
+                }
+            }
+        }
+    }
+
+    public static func firewallRules(
+        bindings: [FirewallBinding],
+        interfaceByCIDR: [String: String]
+    ) throws -> String {
+        try validate(FirewallRequest(bindings: bindings))
+        var rules: [String] = []
+        for binding in bindings.sorted(by: { $0.cidr < $1.cidr }) {
+            guard let interface = interfaceByCIDR[binding.cidr],
+                  !interface.isEmpty,
+                  interface.allSatisfy({ $0.isLetter || $0.isNumber })
+            else {
+                throw ValidationError.invalidFirewall(
+                    "missing or invalid interface for \(binding.cidr)"
+                )
+            }
+            let hostService = IPv4CIDR.hostService(for: binding.cidr)
+            let sources = Array(Set(binding.allowedSources)).sorted()
+            let ports = Array(Set(binding.tcpPorts)).sorted()
+            if !sources.isEmpty, !ports.isEmpty {
+                rules.append(
+                    "pass in quick on \(interface) inet proto tcp from { \(sources.joined(separator: ", ")) } to \(hostService) port { \(ports.map(String.init).joined(separator: ", ")) } flags S/SA keep state"
+                )
+            }
+            rules.append("block in quick on \(interface) inet from any to \(hostService)")
+        }
+        return rules.isEmpty ? "" : rules.joined(separator: "\n") + "\n"
     }
 }
 

@@ -38,6 +38,57 @@ import VzDaemonKit
     #expect(throws: DnsBind.ValidationError.unsupportedOp("listen")) {
         try DnsBind.parseRequest(Data(#"{"op":"listen","address":"10.80.0.0","port":53}"#.utf8))
     }
+
+    let alias = try DnsBind.parseOperation(
+        Data(#"{"op":"alias.ensure","cidr":"10.90.0.0/24"}"#.utf8)
+    )
+    #expect(alias == .alias(.init(op: DnsBind.opAliasEnsure, cidr: "10.90.0.0/24")))
+    for cidr in ["10.0.0.0/8", "10.90.0.0/30"] {
+        let request = try DnsBind.parseOperation(
+            Data(#"{"op":"alias.ensure","cidr":"\#(cidr)"}"#.utf8)
+        )
+        #expect(request == .alias(.init(op: DnsBind.opAliasEnsure, cidr: cidr)))
+    }
+    #expect(throws: DnsBind.ValidationError.invalidCIDR("10.90.0.1/24")) {
+        try DnsBind.parseOperation(
+            Data(#"{"op":"alias.ensure","cidr":"10.90.0.1/24"}"#.utf8)
+        )
+    }
+
+    let firewall = try DnsBind.parseOperation(Data(#"""
+    {
+      "op":"firewall.reconcile",
+      "bindings":[{
+        "cidr":"10.90.0.0/24",
+        "allowed_sources":["10.90.0.0/24","10.95.0.0/24"],
+        "tcp_ports":[80,443]
+      }]
+    }
+    """#.utf8))
+    #expect(firewall == .firewall(.init(bindings: [
+        .init(
+            cidr: "10.90.0.0/24",
+            allowedSources: ["10.90.0.0/24", "10.95.0.0/24"],
+            tcpPorts: [80, 443]
+        ),
+    ])))
+
+    let rules = try DnsBind.firewallRules(
+        bindings: [
+            .init(
+                cidr: "10.90.0.0/24",
+                allowedSources: ["10.95.0.0/24", "10.90.0.0/24"],
+                tcpPorts: [443, 80]
+            ),
+            .init(cidr: "10.80.0.0/24", allowedSources: ["10.80.0.0/24"], tcpPorts: []),
+        ],
+        interfaceByCIDR: ["10.80.0.0/24": "bridge100", "10.90.0.0/24": "bridge101"]
+    )
+    #expect(rules.contains("block in quick on bridge100 inet from any to 10.80.0.1"))
+    #expect(rules.contains(
+        "pass in quick on bridge101 inet proto tcp from { 10.90.0.0/24, 10.95.0.0/24 } to 10.90.0.1 port { 80, 443 }"
+    ))
+    #expect(rules.contains("block in quick on bridge101 inet from any to 10.90.0.1"))
 }
 
 @Test func unixFDPassingRoundTripsDescriptor() throws {

@@ -388,7 +388,7 @@ export default function VzHypervisorImplementationsplan() {
             ["9–12", "DNS", "*.vz.test · Dual Listener · Forward · dns query direkt"],
             ["14", "Baseline", "macOS 26+ (ADR 0001)"],
             ["15", "Bridged", "out of scope"],
-            ["16–18", "IP / Isolation", "static · DNS/gw=.0 UDP · Router .2 · .1 unused · policies"],
+            ["16–18", "IP / Isolation", "static · DNS/gw=.0 UDP · Host/Ingress .1 + PF · Router .2 · policies"],
             ["20–22", "Apply / Agent / MVP", "Journal · Agent-in-Base · Alpha + v0.1.x"],
             ["6–7", "v0.2 Embed", "Caddy + Dex · Issuer nie *.localhost"],
           ]}
@@ -449,7 +449,7 @@ export default function VzHypervisorImplementationsplan() {
             ["Host ↔ Guest .10", "ICMP OK", "static cloud-init"],
             ["Guest → Host .0 UDP", "OK echo :15353", "Guest-DNS Listener"],
             ["Guest → Host .0 TCP", "FAIL", "kein TCP-Service auf .0 nötig für DNS"],
-            ["Guest → Host .1", "FAIL", "nicht als gw/DNS"],
+            ["Guest → Host .1", "G0 FAIL → Alias", "Root-Helper + PF, nur Ingress"],
             ["FE → BE via Router .2", "ICMP OK", "DMZ-Topologie machbar"],
             ["kill -9 Monolith", "VM dead + CIDR leak", "Helper 1:1 Pflicht"],
           ]}
@@ -491,8 +491,9 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Text size="small" tone="secondary">
                 Listener auf Host-Bridge-<Code>.0:53/UDP</Code> (gemessen;
-                Dev-Port 15353).{" "}
-                <Code>.1</Code> nicht. NoCloud setzt{" "}
+                Dev-Port 15353). Split-Horizon liefert je Listener nur die
+                lokale Host-/Ingress-<Code>.1</Code>; ein PF-Anchor erlaubt dort
+                ausschließlich konfigurierte Ingress-Ports. NoCloud setzt{" "}
                 <Code>via .0 on-link</Code>, <Code>nameservers: [.0]</Code> und{" "}
                 <Code>{"search: [{project}.vz.test]"}</Code>.
                 Host parallel <Code>127.0.0.1</Code> +{" "}
@@ -524,7 +525,8 @@ export default function VzHypervisorImplementationsplan() {
           rowTone={["success", "info", "warning", "danger"]}
         />
         <Text size="small" tone="secondary">
-          Host-DNS/gw = <Code>.0</Code> (UDP). Router = <Code>.2</Code> je Net.
+          Host-DNS/gw = <Code>.0</Code> (UDP). Geschützter Host-/Ingress-Alias ={" "}
+          <Code>.1</Code>. Router = <Code>.2</Code> je Net.
           Guests <Code>.10+</Code>. <Code>routes</Code> + <Code>policies</Code>{" "}
           für DMZ.
         </Text>
@@ -761,7 +763,9 @@ spec:
         <Callout tone="success" title="P4 Epic #39 closed · Next v0.1.x / v0.2">
           #40/#41: Docker SSH-Context (`vzctl docker`), cloudInit-Merge,
           DNS <Code>docker.svc</Code>, Userspace Port-Forwards
-          (`vzctl port list`) und Collision-Check. #42 virtiofs (live share-swap +
+          (`vzctl port list`) und Collision-Check. Logische Docker-Netze nutzen
+          für Ingress die geschützte <Code>.1</Code> der primären vmnet-NIC ihrer
+          Docker-VM. #42 virtiofs (live share-swap +
           `vm mount`) ist gelandet. Weiter: DX (#48 residual) oder Ingress/OIDC (#43).
         </Callout>
       </Stack>

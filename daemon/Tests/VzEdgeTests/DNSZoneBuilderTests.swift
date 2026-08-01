@@ -60,8 +60,8 @@ import VzDaemonKit
     )
 
     #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["127.0.0.1"])
-    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.1"])
-    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: guestHorizon()) == ["10.80.0.1"])
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: guestHorizon()) == ["10.80.0.10"])
 }
 
 @Test func hostServiceWireResponseHonorsHorizonParameter() {
@@ -91,10 +91,20 @@ import VzDaemonKit
     let query = dnsQuery("web.svc.edge-dmz.vz.test")
 
     let hostIps = aRecords(in: server.response(for: query, horizon: .host))
-    let guestIps = aRecords(in: server.response(for: query, horizon: .guest))
+    let dmzIps = aRecords(in: server.response(for: query, horizon: guestHorizon()))
+    let lanIps = aRecords(in: server.response(
+        for: query,
+        horizon: guestHorizon(network: "lan", gateway: "10.90.0.0")
+    ))
+    let foreign = server.response(
+        for: query,
+        horizon: guestHorizon(project: "another-project")
+    )
 
     #expect(hostIps == ["127.0.0.1"])
-    #expect(guestIps == ["10.80.0.1", "10.90.0.1"])
+    #expect(dmzIps == ["10.80.0.1"])
+    #expect(lanIps == ["10.90.0.1"])
+    #expect(dnsResponseCode(foreign) == 3)
 }
 
 @Test func hostServicesSkipDockerBackendGateways() {
@@ -138,10 +148,11 @@ import VzDaemonKit
     #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .host) == [
         "127.0.0.1",
     ])
-    #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .guest) == [
-        "10.80.0.1",
-        "10.90.0.1",
-    ])
+    #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: guestHorizon()) == ["10.80.0.1"])
+    #expect(zone.addresses(
+        for: "web.svc.edge-dmz.vz.test",
+        horizon: guestHorizon(network: "lan", gateway: "10.90.0.0")
+    ) == ["10.90.0.1"])
 }
 
 @Test func zoneBuilderCreatesVMARecordFromActualAttachments() {
@@ -165,7 +176,7 @@ import VzDaemonKit
     let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 15)
 
     #expect(zone.zones == ["edge-dmz.vz.test"])
-    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test.", horizon: .guest) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test.", horizon: guestHorizon()) == ["10.80.0.10"])
     #expect(zone.ttl == 15)
 }
 
@@ -190,8 +201,8 @@ import VzDaemonKit
 
     let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 15)
 
-    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
-    #expect(zone.addresses(for: "edge-dmz/web.dmz.edge-dmz.vz.test", horizon: .guest) == nil)
+    #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: guestHorizon()) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "edge-dmz/web.dmz.edge-dmz.vz.test", horizon: guestHorizon()) == nil)
     #expect(DNSZoneBuilder.vmDNSLabel("edge-dmz/web") == "web")
     #expect(DNSZoneBuilder.vmDNSLabel("web") == "web")
 }
@@ -226,13 +237,13 @@ import VzDaemonKit
 
     let zone = DNSZoneBuilder.build(snapshot: snapshot, ttl: 5)
 
-    #expect(zone.addresses(for: "api-1.lan.shop.vz.test", horizon: .guest) == ["10.90.0.10"])
-    #expect(zone.addresses(for: "api.svc.shop.vz.test", horizon: .guest) == [
+    #expect(zone.addresses(for: "api-1.lan.shop.vz.test", horizon: guestHorizon(project: "shop")) == ["10.90.0.10"])
+    #expect(zone.addresses(for: "api.svc.shop.vz.test", horizon: guestHorizon(project: "shop")) == [
         "10.90.0.10",
         "10.90.0.11",
     ])
-    #expect(zone.addresses(for: "metrics.svc.shop.vz.test", horizon: .guest) == ["10.90.0.10"])
-    #expect(zone.addresses(for: "api-1.lan.fallback.vz.test", horizon: .guest) == nil)
+    #expect(zone.addresses(for: "metrics.svc.shop.vz.test", horizon: guestHorizon(project: "shop")) == ["10.90.0.10"])
+    #expect(zone.addresses(for: "api-1.lan.fallback.vz.test", horizon: guestHorizon()) == nil)
 }
 
 @Test func zoneBuilderSkipsOrphanedNetworksAndInvalidDNSLabels() {
@@ -406,6 +417,24 @@ private final class UDPFixture: @unchecked Sendable {
 private enum FixtureError: Error {
     case socket
     case bind
+}
+
+private func guestHorizon(
+    network: String = "dmz",
+    project: String? = "edge-dmz",
+    gateway: String = "10.80.0.0"
+) -> DNSHorizon {
+    let prefix = gateway.split(separator: ".").dropLast().joined(separator: ".")
+    return .guest(DNSGuestContext(
+        network: network,
+        project: project,
+        gateway: gateway,
+        hostService: "\(prefix).1"
+    ))
+}
+
+private func dnsResponseCode(_ response: Data) -> UInt8 {
+    response.count >= 4 ? response[3] & 0x0F : 0xFF
 }
 
 private func dnsQuery(_ name: String) -> Data {

@@ -26,6 +26,7 @@ export const APPLY_STEPS = [
   "ensure_ca_rollout",
   "ensure_oidc_inject",
   "ensure_docker_context",
+  "ensure_containers",
   "ensure_ports",
   "apply_routes_policies",
   "release_lease",

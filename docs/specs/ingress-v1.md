@@ -15,7 +15,8 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
 - Host: `127.0.0.1:80` / `:443` (ports configurable via `httpPort` / `httpsPort`)
 - Guests reach the same Caddy via Split-Horizon DNS + Host Gateway Proxy:
   - Host DNS (`127.0.0.1:15353`): Ingress hosts → `127.0.0.1`
-  - Guest DNS (bridge `.0:53`): Ingress hosts → vmnet host-service `.1` addresses
+  - Guest DNS (bridge `.0:53`): Ingress hosts → genau die vmnet host-service
+    `.1` des Listener-Netzes
     (not `.0` — guest TCP to `.0` is blackholed on macOS vmnet; docker-backend
     CIDRs are omitted)
   - Supervisor `HostGatewayIngressProxy`: public `:80/:443` on vmnet `.1` **and**
@@ -24,6 +25,13 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
   - Privileged TCP: `vz-dns-bind` aliases `.1` on the bridge if needed, listens,
     and streams accepted client FDs to the supervisor (UDP `:53` still hands back
     the bound socket FD on `.0`)
+  - Der Helper legt `.1` für jedes aktive vmnet an. Ein PF-Anchor
+    `com.apple/vzctl` erlaubt auf `.1` nur die konfigurierten Ingress-Ports;
+    andere Host-Dienste sowie UDP/ICMP bleiben gesperrt.
+  - Projektfremde Ingress-Namen liefern am Guest-Listener `NXDOMAIN`.
+    `backend: docker` nutzt die `.1` der primären vmnet-NIC der owning Docker-VM.
+  - `ingress.ensure` übergibt je vmnet `gateway_bindings` mit kanonischem CIDR
+    und erlaubten Quell-CIDRs; Docker-CIDRs werden nur der Primary-NIC zugeordnet.
   - Caddy itself binds only `ingress.bind` on those unprivileged ports so the
     user-level process does not need root for `:80/:443`
 - Direct guest→VM traffic uses `{vm}.{net}.{project}.vz.test`, not `*.svc`

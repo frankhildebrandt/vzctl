@@ -28,8 +28,6 @@ spec:
       cidr: 10.90.0.0/24
       mode: shared
       dhcp: false
-      # Host-NAT kept on for guest DNS (.0:53). Policies use via: to pin routers.
-      # Internet edge path remains dmz (router) via lan-to-internet.
       natEgress: true
       backend: vmnet
     containers:
@@ -50,7 +48,6 @@ spec:
   policies:
     - name: dmz-default
       network: dmz
-      via: router
       forward: deny-all
       allow:
         - to: lan
@@ -63,7 +60,6 @@ spec:
             - 80
     - name: lan-to-containers
       network: lan
-      via: docker
       forward: deny-all
       allow:
         - to: containers
@@ -76,7 +72,6 @@ spec:
           ports: []
     - name: lan-to-internet
       network: lan
-      via: router
       forward: deny-all
       allow:
         - to: internet
@@ -86,7 +81,6 @@ spec:
             - 443
     - name: containers-default
       network: containers
-      via: docker
       forward: deny-all
       allow:
         - to: lan

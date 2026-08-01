@@ -23,6 +23,26 @@ unprivilegierte `vz-edge`-LaunchAgent nutzt den Root-LaunchDaemon
   verwirft Guest-TCP zu `.0`; Loopback wäre im Guest tot, falls mDNSResponder
   die Query stiehlt).
 
+`vz-edge` ordnet jedem Guest-Listener fest sein vmnet und Projekt zu. Eine
+Ingress-Query an `10.90.0.0:53` liefert deshalb ausschließlich `10.90.0.1`;
+ein Ingress-Name eines anderen Projekts liefert `NXDOMAIN`. Jedes aktive
+vmnet erhält den `.1`-Alias unabhängig von Attachments. Ein verwalteter
+PF-Anchor erlaubt dort nur die konfigurierten Ingress-TCP-Ports und blockiert
+sonstige Host-Dienste sowie UDP/ICMP. Logische `backend: docker`-Netze besitzen
+keinen Alias; Container verwenden `.1` der primären vmnet-NIC ihrer Docker-VM.
+
+Der Helper akzeptiert dafür idempotente, kanonische Netzwerkoperationen:
+
+```json
+{"op":"alias.ensure","cidr":"10.90.0.0/24"}
+{"op":"alias.remove","cidr":"10.90.0.0/24"}
+{"op":"firewall.reconcile","bindings":[{"cidr":"10.90.0.0/24","allowed_sources":["10.90.0.0/24"],"tcp_ports":[80,443]}]}
+```
+
+Aliases und PF-Token liegen geschützt unter `/var/run/vzctl/`; `/etc/pf.conf`
+bleibt unverändert. Der Helper ist für aktive vmnet-Netze erforderlich, weil
+`.1` ohne erfolgreich geladenen Schutz nicht veröffentlicht wird.
+
 ```sh
 sudo vzctl dns install-bind-helper
 sudo vzctl dns uninstall-bind-helper
@@ -165,6 +185,15 @@ curl http://web.dmz.edge-dmz.vz.test
 `curl`, Browser und andere libc-Clients verwenden den macOS-Systemresolver.
 `dig` bildet die macOS-Split-DNS-Auswahl dagegen nicht zuverlässig ab und kann
 `/etc/resolver` ohne explizites `@server` umgehen.
+
+Der opt-in Multi-Net-/Docker-Smoke-Test erwartet den laufenden Referenz-Stack,
+prüft DNS-Horizonte, `.1`-Netzmasken, PF-Portabschirmung und Idempotenz:
+
+```sh
+make smoke-split-dns
+# zusätzlich Helper-Crash + Reconcile:
+VZCTL_SMOKE_CRASH_HELPER=1 make smoke-split-dns
+```
 
 ### Direkter CLI-Query
 

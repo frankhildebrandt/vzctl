@@ -30,8 +30,10 @@ werden. Bridged Mode ist in v0.1 unsupported.
 - Sauberer CP-Stop releast **keine** vmnet-Refs. Sauberer `vz-net`-Stop
   (SIGTERM) gibt alle CIDRs frei; `stop_interface` allein reicht laut G0 nicht.
 
-IP-Konvention: Host-Gateway und DNS liegen auf der Netzadresse `.0`, Router auf
-`.2`, Gäste beginnen bei `.10`. Eine Attachment-IP muss `.2` oder im
+IP-Konvention: Host-Gateway und DNS liegen auf der Netzadresse `.0`; der
+geschützte macOS-Host-/Ingress-Alias liegt auf `.1`, Router auf `.2`, Gäste
+beginnen bei `.10`. Auf `.1` veröffentlicht vzctl ausschließlich konfigurierte
+Ingress-Ports. Eine Attachment-IP muss `.2` oder im
 Guest-Bereich liegen; IPs sind pro Netz eindeutig.
 
 ## Default-Netzwerk
