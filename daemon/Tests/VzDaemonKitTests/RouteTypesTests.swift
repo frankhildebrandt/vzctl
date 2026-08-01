@@ -119,34 +119,34 @@ import Testing
     #expect(plan.rules.first?.to == "internet")
 }
 
-@Test func routerPlanRejectsInternetWithoutNatEgress() {
-    #expect(throws: RouteApplyError.self) {
-        try RouterPlan(
-            vmID: "router",
-            networks: [
-                RouterNetwork(
-                    name: "lan",
-                    cidr: "10.90.0.0/24",
-                    address: "10.90.0.2",
-                    natEgress: false
-                ),
-                RouterNetwork(
-                    name: "dmz",
-                    cidr: "10.80.0.0/24",
-                    address: "10.80.0.2",
-                    natEgress: false
-                ),
-            ],
-            policies: [
-                ForwardPolicy(
-                    name: "bad",
-                    network: "lan",
-                    forward: "deny-all",
-                    allow: [PolicyAllow(to: "internet", proto: "tcp", ports: [80])]
-                ),
-            ]
-        )
-    }
+@Test func routerPlanInternetWithoutNatEgressForwardsWithoutMasquerade() throws {
+    let plan = try RouterPlan(
+        vmID: "router",
+        networks: [
+            RouterNetwork(
+                name: "lan",
+                cidr: "10.90.0.0/24",
+                address: "10.90.0.2",
+                natEgress: false
+            ),
+            RouterNetwork(
+                name: "dmz",
+                cidr: "10.80.0.0/24",
+                address: "10.80.0.2",
+                natEgress: false
+            ),
+        ],
+        policies: [
+            ForwardPolicy(
+                name: "forward-only",
+                network: "lan",
+                forward: "deny-all",
+                allow: [PolicyAllow(to: "internet", proto: "tcp", ports: [80])]
+            ),
+        ]
+    )
+    #expect(plan.nftables.contains("tcp dport 80 accept"))
+    #expect(!plan.nftables.contains("masquerade"))
 }
 
 @Test func routerPlanRejectsUnknownNetworksAndInvalidPorts() {

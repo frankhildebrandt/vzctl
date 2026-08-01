@@ -103,6 +103,8 @@ public struct NetworkRecord: Equatable, Sendable {
     public var mode: String
     /// Host NAT / Internet egress. When false, vmnet uses host-only mode.
     public var natEgress: Bool
+    /// `vmnet` (default) or `docker` (logical subnet; no vmnet handle).
+    public var backend: String
     public var labels: [String: String]
     public var project: String?
     public var stack: String?
@@ -110,11 +112,17 @@ public struct NetworkRecord: Equatable, Sendable {
     public var lastError: String?
     public var updatedAt: String
 
+    public static let backendVmnet = "vmnet"
+    public static let backendDocker = "docker"
+
+    public var isDockerBackend: Bool { backend == Self.backendDocker }
+
     public init(
         name: String,
         cidr: String,
         mode: String = "shared",
         natEgress: Bool = true,
+        backend: String = NetworkRecord.backendVmnet,
         labels: [String: String] = [:],
         project: String? = nil,
         stack: String? = nil,
@@ -126,6 +134,7 @@ public struct NetworkRecord: Equatable, Sendable {
         self.cidr = cidr
         self.mode = mode
         self.natEgress = natEgress
+        self.backend = backend
         self.labels = labels
         self.project = project
         self.stack = stack
@@ -145,6 +154,7 @@ public struct NetworkRecord: Equatable, Sendable {
             "cidr": .string(cidr),
             "mode": .string(mode),
             "nat_egress": .bool(natEgress),
+            "backend": .string(backend),
             "gateway": .string(guestGateway),
             "dns": .string(IPv4CIDR.gateway(for: cidr)),
             "host_gateway": .string(IPv4CIDR.gateway(for: cidr)),

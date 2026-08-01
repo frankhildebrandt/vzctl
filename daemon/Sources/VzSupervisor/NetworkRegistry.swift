@@ -170,6 +170,20 @@ struct NetworkSnapshot: Sendable {
     }
 }
 
+struct SerializedVmnetAttachment: Sendable {
+    let networkName: String
+    let ip: String
+    let blob: Data
+
+    var json: JSONValue {
+        .object([
+            "network": .string(networkName),
+            "ip": .string(ip),
+            "serialization": .string(VmnetSerialization.base64(from: blob)),
+        ])
+    }
+}
+
 struct VMNetworkSelection: Sendable {
     let network: NetworkRecord
     let attachment: NetworkAttachmentRecord
@@ -206,6 +220,7 @@ final class NetworkRegistry: @unchecked Sendable {
         cidr rawCIDR: String,
         mode: String,
         natEgress: Bool = true,
+        backend: String = NetworkRecord.backendVmnet,
         labels: [String: String],
         project: String?,
         stack: String?
@@ -217,6 +232,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 cidr: rawCIDR,
                 mode: mode,
                 natEgress: natEgress,
+                backend: backend,
                 labels: labels,
                 project: project,
                 stack: stack
@@ -247,10 +263,12 @@ final class NetworkRegistry: @unchecked Sendable {
             else {
                 throw NetworkRegistryError.notFound("network not found: \(networkName)")
             }
-            guard handles[networkName] != nil else {
-                throw NetworkRegistryError.runtime(
-                    "network \(networkName) is not active: \(network.lastError ?? "rebuild failed")"
-                )
+            if !network.isDockerBackend {
+                guard handles[networkName] != nil else {
+                    throw NetworkRegistryError.runtime(
+                        "network \(networkName) is not active: \(network.lastError ?? "rebuild failed")"
+                    )
+                }
             }
             let cidr = try IPv4CIDR(network.cidr)
             guard cidr.containsAttachment(ip) else {
@@ -535,6 +553,46 @@ final class NetworkRegistry: @unchecked Sendable {
         }
     }
 
+    /// Portable vmnet blobs for every attachment of `vmID` (supervisor-owned refs stay live).
+    /// Docker-backend attachments are logical (docker0) and are omitted from helper NICs.
+    func serializedAttachments(for vmID: String) throws -> [SerializedVmnetAttachment] {
+        try lock.withLock {
+            try requireRunning()
+            let networks = Dictionary(uniqueKeysWithValues: try database.networks().map { ($0.name, $0) })
+            let attachments = try database.attachments()
+                .filter { $0.vmID == vmID }
+                .sorted { lhs, rhs in
+                    if lhs.networkName != rhs.networkName {
+                        return lhs.networkName < rhs.networkName
+                    }
+                    return lhs.ip < rhs.ip
+                }
+            return try attachments.compactMap { attachment in
+                if networks[attachment.networkName]?.isDockerBackend == true {
+                    return nil
+                }
+                guard let handle = handles[attachment.networkName] as? NativeVmnetHandle else {
+                    throw NetworkRegistryError.runtime(
+                        "network \(attachment.networkName) is not active for helper attach"
+                    )
+                }
+                let blob: Data
+                do {
+                    blob = try VmnetSerialization.blob(from: handle.network)
+                } catch {
+                    throw NetworkRegistryError.runtime(
+                        "cannot serialize network \(attachment.networkName): \(error)"
+                    )
+                }
+                return SerializedVmnetAttachment(
+                    networkName: attachment.networkName,
+                    ip: attachment.ip,
+                    blob: blob
+                )
+            }
+        }
+    }
+
     func shutdown() {
         lock.withLock {
             // Required by G0: release every vmnet_network_ref, not only interfaces.
@@ -545,6 +603,10 @@ final class NetworkRegistry: @unchecked Sendable {
 
     private func rebuild() throws {
         for var record in try database.networks() {
+            if record.isDockerBackend {
+                try database.updateNetworkRuntime(name: record.name, state: "active", error: nil)
+                continue
+            }
             do {
                 let handle = try backend.reserve(record)
                 try database.updateNetworkRuntime(name: record.name, state: "active", error: nil)
@@ -590,6 +652,7 @@ final class NetworkRegistry: @unchecked Sendable {
         cidr rawCIDR: String,
         mode: String,
         natEgress: Bool = true,
+        backend: String = NetworkRecord.backendVmnet,
         labels: [String: String],
         project: String?,
         stack: String?
@@ -598,6 +661,19 @@ final class NetworkRegistry: @unchecked Sendable {
         guard mode == "shared" else {
             throw NetworkRegistryError.invalid(
                 "bridged mode is unsupported in v0.1; use --mode shared"
+            )
+        }
+        let normalizedBackend = backend.isEmpty ? NetworkRecord.backendVmnet : backend
+        guard normalizedBackend == NetworkRecord.backendVmnet
+            || normalizedBackend == NetworkRecord.backendDocker
+        else {
+            throw NetworkRegistryError.invalid(
+                "unsupported network backend \(backend); use vmnet or docker"
+            )
+        }
+        if normalizedBackend == NetworkRecord.backendDocker, natEgress {
+            throw NetworkRegistryError.invalid(
+                "docker backend networks must set nat_egress=false"
             )
         }
         try validateMetadata(labels: labels, project: project, stack: stack)
@@ -619,11 +695,21 @@ final class NetworkRegistry: @unchecked Sendable {
             cidr: cidr.canonical,
             mode: mode,
             natEgress: natEgress,
+            backend: normalizedBackend,
             labels: labels,
             project: project,
             stack: stack
         )
-        let handle = try backend.reserve(record)
+        if record.isDockerBackend {
+            do {
+                try database.insertNetwork(record)
+            } catch {
+                throw NetworkRegistryError.conflict("cannot persist network \(name): \(error)")
+            }
+            record.runtimeState = "active"
+            return record
+        }
+        let handle = try self.backend.reserve(record)
         do {
             try database.insertNetwork(record)
         } catch {

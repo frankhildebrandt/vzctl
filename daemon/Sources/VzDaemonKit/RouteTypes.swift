@@ -100,6 +100,63 @@ public struct ForwardPolicy: Equatable, Sendable {
     }
 }
 
+public enum DockerBackendRoutes {
+    /// Static routes so peer routers can reach docker-backend CIDRs via the
+    /// docker owner's parent (vmnet) IP.
+    public static func staticRoutes(
+        forRouter vmID: String,
+        networks: [NetworkRecord],
+        attachments: [NetworkAttachmentRecord]
+    ) -> [StaticRoute] {
+        let byName = Dictionary(uniqueKeysWithValues: networks.map { ($0.name, $0) })
+        let byVM = Dictionary(grouping: attachments, by: \.vmID)
+        var routes: [StaticRoute] = []
+        for network in networks where network.isDockerBackend {
+            guard let owner = attachments.first(where: { $0.networkName == network.name }) else {
+                continue
+            }
+            if owner.vmID == vmID {
+                continue
+            }
+            guard let ownerAttachments = byVM[owner.vmID] else { continue }
+            guard let routerAttachments = byVM[vmID] else { continue }
+            let ownerParents = ownerAttachments.filter {
+                byName[$0.networkName]?.isDockerBackend != true
+            }
+            let routerParents = Set(
+                routerAttachments
+                    .filter { byName[$0.networkName]?.isDockerBackend != true }
+                    .map(\.networkName)
+            )
+            for parent in ownerParents where routerParents.contains(parent.networkName) {
+                routes.append(StaticRoute(destination: network.cidr, via: parent.ip))
+            }
+        }
+        var seen = Set<String>()
+        return routes.filter { route in
+            let key = "\(route.destination)->\(route.via)"
+            return seen.insert(key).inserted
+        }
+    }
+}
+
+public struct StaticRoute: Equatable, Sendable {
+    public let destination: String
+    public let via: String
+
+    public init(destination: String, via: String) {
+        self.destination = destination
+        self.via = via
+    }
+
+    public var json: JSONValue {
+        .object([
+            "destination": .string(destination),
+            "via": .string(via),
+        ])
+    }
+}
+
 public struct ActiveForwardRule: Equatable, Sendable {
     public let policy: String
     public let from: String
@@ -129,15 +186,23 @@ public struct RouterPlan: Equatable, Sendable {
     public let vmID: String
     public let networks: [RouterNetwork]
     public let policies: [ForwardPolicy]
+    public let staticRoutes: [StaticRoute]
 
     public init(
         vmID: String,
         networks: [RouterNetwork],
-        policies: [ForwardPolicy] = []
+        policies: [ForwardPolicy] = [],
+        staticRoutes: [StaticRoute] = []
     ) throws {
         self.vmID = vmID
         self.networks = networks.sorted { $0.name < $1.name }
         self.policies = policies.sorted { $0.name < $1.name }
+        self.staticRoutes = staticRoutes.sorted {
+            if $0.destination != $1.destination {
+                return $0.destination < $1.destination
+            }
+            return $0.via < $1.via
+        }
         try validate()
     }
 
@@ -145,7 +210,8 @@ public struct RouterPlan: Equatable, Sendable {
         vmID: String,
         networkRecords: [NetworkRecord],
         attachments: [NetworkAttachmentRecord],
-        policies: [ForwardPolicy] = []
+        policies: [ForwardPolicy] = [],
+        staticRoutes: [StaticRoute] = []
     ) throws {
         let records = Dictionary(uniqueKeysWithValues: networkRecords.map { ($0.name, $0) })
         let selected = attachments
@@ -156,6 +222,9 @@ public struct RouterPlan: Equatable, Sendable {
                 "router VM \(vmID) requires at least two network attachments"
             )
         }
+        let isDockerRouter = selected.contains {
+            records[$0.networkName]?.isDockerBackend == true
+        }
         networks = try selected.map { attachment in
             guard let network = records[attachment.networkName] else {
                 throw RouteApplyError.invalid(
@@ -163,10 +232,12 @@ public struct RouterPlan: Equatable, Sendable {
                 )
             }
             let expected = IPv4CIDR.router(for: network.cidr)
-            guard attachment.ip == expected else {
-                throw RouteApplyError.invalid(
-                    "router VM \(vmID) must use \(expected) on \(network.name), got \(attachment.ip)"
-                )
+            if network.isDockerBackend || !isDockerRouter {
+                guard attachment.ip == expected else {
+                    throw RouteApplyError.invalid(
+                        "router VM \(vmID) must use \(expected) on \(network.name), got \(attachment.ip)"
+                    )
+                }
             }
             return RouterNetwork(
                 name: network.name,
@@ -177,6 +248,12 @@ public struct RouterPlan: Equatable, Sendable {
         }
         self.vmID = vmID
         self.policies = policies.sorted { $0.name < $1.name }
+        self.staticRoutes = staticRoutes.sorted {
+            if $0.destination != $1.destination {
+                return $0.destination < $1.destination
+            }
+            return $0.via < $1.via
+        }
         try validate()
     }
 
@@ -211,6 +288,7 @@ public struct RouterPlan: Equatable, Sendable {
             "forward_policy": .string("drop"),
             "policies": .array(policies.map(\.json)),
             "rules": .array(rules.map(\.json)),
+            "static_routes": .array(staticRoutes.map(\.json)),
         ])
     }
 
@@ -246,7 +324,8 @@ public struct RouterPlan: Equatable, Sendable {
         let internetSources = Array(
             Set(rules.filter(\.isInternet).map(\.sourceCIDR))
         ).sorted()
-        if !internetSources.isEmpty {
+        let hasNatEgress = networks.contains(where: \.natEgress)
+        if !internetSources.isEmpty, hasNatEgress {
             lines.append("  chain postrouting {")
             lines.append("    type nat hook postrouting priority srcnat; policy accept;")
             for cidr in internetSources {
@@ -270,9 +349,23 @@ public struct RouterPlan: Equatable, Sendable {
         }
         for network in networks {
             _ = try IPv4CIDR(network.cidr)
-            guard network.address == IPv4CIDR.router(for: network.cidr) else {
+        }
+        let routerOwned = networks.filter {
+            $0.address == IPv4CIDR.router(for: $0.cidr)
+        }
+        let parentOwned = networks.filter {
+            $0.address != IPv4CIDR.router(for: $0.cidr)
+        }
+        if parentOwned.isEmpty {
+            // Classic dual-homed router: every attachment is .2.
+            guard routerOwned.count == networks.count else {
+                throw RouteApplyError.invalid("router plan requires .2 on every network")
+            }
+        } else {
+            // Docker+router: docker bip is .2; parent NIC keeps the guest IP.
+            guard !routerOwned.isEmpty else {
                 throw RouteApplyError.invalid(
-                    "router address for \(network.name) must be \(IPv4CIDR.router(for: network.cidr))"
+                    "docker router plan requires at least one .2 attachment"
                 )
             }
         }
@@ -280,7 +373,6 @@ public struct RouterPlan: Equatable, Sendable {
             throw RouteApplyError.invalid("policy names must be unique")
         }
         let networkNames = Set(networks.map(\.name))
-        let hasNatEgress = networks.contains(where: \.natEgress)
         for policy in policies {
             guard !policy.name.isEmpty,
                   policy.name.utf8.allSatisfy({
@@ -306,11 +398,8 @@ public struct RouterPlan: Equatable, Sendable {
             }
             for allow in policy.allow {
                 if allow.to == internetPolicyTarget {
-                    guard hasNatEgress else {
-                        throw RouteApplyError.invalid(
-                            "policy \(policy.name) to internet requires a natEgress network on the router"
-                        )
-                    }
+                    // With natEgress: MASQUERADE. Without: forward-only (e.g. docker
+                    // router sending container traffic toward a peer router).
                 } else {
                     guard networkNames.contains(allow.to) else {
                         throw RouteApplyError.invalid(

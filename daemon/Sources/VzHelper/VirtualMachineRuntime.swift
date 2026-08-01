@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import VzDaemonKit
+import vmnet
 @preconcurrency import Virtualization
 
 enum VirtualMachineEvent: Sendable {
@@ -27,8 +28,10 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     private var consoleOwnsSocket = false
     private var consoleSocketPath: String?
     private var consoleClients: [Int32] = []
+    /// Keep process-local vmnet refs alive for the VM lifetime (ADR 0002 helper side).
+    private let vmnetNetworks: [vmnet_network_ref]
 
-    init(options: RunOptions) throws {
+    init(options: RunOptions, vmnetNICs: [HelperVmnetNIC] = []) throws {
         let logsDirectory = try StatePaths.logsDirectory()
         try FileManager.default.createDirectory(
             at: logsDirectory,
@@ -44,12 +47,17 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         bundleURL = options.bundleURL
         mounts = options.mounts
         queue = DispatchQueue(label: "vzctl.helper.\(StateFileName.component(options.vmID))")
+        vmnetNetworks = vmnetNICs.map(\.network)
 
         let pair = AsyncStream<VirtualMachineEvent>.makeStream()
         eventStream = pair.stream
         eventContinuation = pair.continuation
 
-        let resources = try Self.makeConfiguration(options: options, serialLogURL: serialLogURL)
+        let resources = try Self.makeConfiguration(
+            options: options,
+            serialLogURL: serialLogURL,
+            vmnetNICs: vmnetNICs
+        )
         virtualMachine = VZVirtualMachine(configuration: resources.configuration, queue: queue)
         serialInputWriter = resources.serialInputWriter
         serialOutputRead = resources.serialOutputRead
@@ -62,6 +70,9 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
     deinit {
         stopConsoleServer()
         serialOutputRead?.readabilityHandler = nil
+        for network in vmnetNetworks {
+            releaseOpaqueCF(network)
+        }
     }
 
     func start() async throws {
@@ -337,7 +348,8 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
 
     private static func makeConfiguration(
         options: RunOptions,
-        serialLogURL: URL
+        serialLogURL: URL,
+        vmnetNICs: [HelperVmnetNIC]
     ) throws -> ConfigurationResources {
         guard FileManager.default.fileExists(atPath: options.diskURL.path) else {
             throw HelperError.invalid("missing raw boot disk: \(options.diskURL.path)")
@@ -405,15 +417,33 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
         }
         configuration.storageDevices = storage
 
-        let network = VZVirtioNetworkDeviceConfiguration()
-        network.attachment = VZNATNetworkDeviceAttachment()
-        if let macString = options.macAddress {
-            guard let macAddress = VZMACAddress(string: macString) else {
-                throw HelperError.invalid("invalid MAC address: \(macString)")
+        if vmnetNICs.isEmpty {
+            // Standalone helper (no supervisor attachments): keep legacy NAT.
+            let network = VZVirtioNetworkDeviceConfiguration()
+            network.attachment = VZNATNetworkDeviceAttachment()
+            if let macString = options.macAddress {
+                guard let macAddress = VZMACAddress(string: macString) else {
+                    throw HelperError.invalid("invalid MAC address: \(macString)")
+                }
+                network.macAddress = macAddress
             }
-            network.macAddress = macAddress
+            configuration.networkDevices = [network]
+        } else {
+            var devices: [VZVirtioNetworkDeviceConfiguration] = []
+            devices.reserveCapacity(vmnetNICs.count)
+            for nic in vmnetNICs {
+                let device = VZVirtioNetworkDeviceConfiguration()
+                device.attachment = VZVmnetNetworkDeviceAttachment(network: nic.network)
+                guard let macAddress = VZMACAddress(string: nic.macAddress) else {
+                    throw HelperError.invalid(
+                        "invalid MAC address for \(nic.networkName): \(nic.macAddress)"
+                    )
+                }
+                device.macAddress = macAddress
+                devices.append(device)
+            }
+            configuration.networkDevices = devices
         }
-        configuration.networkDevices = [network]
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
@@ -524,4 +554,8 @@ private struct ConfigurationResources {
     let serialInputWriter: FileHandle
     let serialOutputRead: FileHandle
     let serialLogWriter: FileHandle
+}
+
+private func releaseOpaqueCF(_ pointer: OpaquePointer) {
+    Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(pointer)).release()
 }

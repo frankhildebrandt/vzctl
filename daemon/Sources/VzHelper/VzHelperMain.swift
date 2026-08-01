@@ -232,7 +232,28 @@ enum VzHelperMain {
             } else {
                 timeSyncToken = nil
             }
-            let created = try VirtualMachineRuntime(options: options)
+            let vmnetNICs: [HelperVmnetNIC]
+            if options.mock {
+                vmnetNICs = []
+            } else {
+                vmnetNICs = try HelperVmnetClient.fetchAttachments(
+                    vmID: options.vmID,
+                    socketPath: options.supervisorSocket,
+                    bundleURL: options.bundleURL
+                )
+            }
+            if vmnetNICs.isEmpty {
+                fputs(
+                    "vmnet attachments: none (NAT fallback for standalone helper)\n",
+                    stderr
+                )
+            } else {
+                let summary = vmnetNICs
+                    .map { "\($0.networkName)=\($0.ip)" }
+                    .joined(separator: ",")
+                fputs("vmnet attachments: \(summary)\n", stderr)
+            }
+            let created = try VirtualMachineRuntime(options: options, vmnetNICs: vmnetNICs)
             runtime = created
             try await created.start()
             try created.startConsoleServer(

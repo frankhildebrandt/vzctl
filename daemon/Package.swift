@@ -11,7 +11,12 @@ let package = Package(
         .library(name: "VzDaemonKit", targets: ["VzDaemonKit"]),
     ],
     targets: [
-        .target(name: "VzDaemonKit"),
+        .target(
+            name: "VzDaemonKit",
+            linkerSettings: [
+                .linkedFramework("vmnet"),
+            ]
+        ),
         .executableTarget(
             name: "VzSupervisor",
             dependencies: ["VzDaemonKit"],

@@ -59,6 +59,7 @@ final class StateDatabase {
                     cidr TEXT NOT NULL UNIQUE,
                     mode TEXT NOT NULL CHECK (mode = 'shared'),
                     nat_egress INTEGER NOT NULL DEFAULT 1,
+                    backend TEXT NOT NULL DEFAULT 'vmnet',
                     labels_json TEXT NOT NULL DEFAULT '{}',
                     project TEXT,
                     stack TEXT,
@@ -103,6 +104,10 @@ final class StateDatabase {
             _ = try? execute(
                 "ALTER TABLE networks ADD COLUMN nat_egress INTEGER NOT NULL DEFAULT 1;"
             )
+            // Older DBs: add backend if missing (vmnet | docker).
+            _ = try? execute(
+                "ALTER TABLE networks ADD COLUMN backend TEXT NOT NULL DEFAULT 'vmnet';"
+            )
             try quickCheck()
         } catch {
             sqlite3_close(handle)
@@ -143,20 +148,21 @@ final class StateDatabase {
         try withStatement(
             """
             INSERT INTO networks
-                (name, cidr, mode, nat_egress, labels_json, project, stack, runtime_state, last_error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (name, cidr, mode, nat_egress, backend, labels_json, project, stack, runtime_state, last_error, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
         ) { statement in
             try bind(record.name, at: 1, to: statement)
             try bind(record.cidr, at: 2, to: statement)
             try bind(record.mode, at: 3, to: statement)
             try bind(Int64(record.natEgress ? 1 : 0), at: 4, to: statement)
-            try bind(try labelsJSON(record.labels), at: 5, to: statement)
-            try bind(record.project, at: 6, to: statement)
-            try bind(record.stack, at: 7, to: statement)
-            try bind(record.runtimeState, at: 8, to: statement)
-            try bind(record.lastError, at: 9, to: statement)
-            try bind(record.updatedAt, at: 10, to: statement)
+            try bind(record.backend, at: 5, to: statement)
+            try bind(try labelsJSON(record.labels), at: 6, to: statement)
+            try bind(record.project, at: 7, to: statement)
+            try bind(record.stack, at: 8, to: statement)
+            try bind(record.runtimeState, at: 9, to: statement)
+            try bind(record.lastError, at: 10, to: statement)
+            try bind(record.updatedAt, at: 11, to: statement)
             try stepDone(statement)
         }
     }
@@ -186,7 +192,7 @@ final class StateDatabase {
     func networks() throws -> [NetworkRecord] {
         try withStatement(
             """
-            SELECT name, cidr, mode, nat_egress, labels_json, project, stack,
+            SELECT name, cidr, mode, nat_egress, backend, labels_json, project, stack,
                    runtime_state, last_error, updated_at
             FROM networks ORDER BY name;
             """
@@ -199,12 +205,13 @@ final class StateDatabase {
                         cidr: text(statement, 1),
                         mode: text(statement, 2),
                         natEgress: sqlite3_column_int(statement, 3) != 0,
-                        labels: try labels(from: text(statement, 4)),
-                        project: optionalText(statement, 5),
-                        stack: optionalText(statement, 6),
-                        runtimeState: text(statement, 7),
-                        lastError: optionalText(statement, 8),
-                        updatedAt: text(statement, 9)
+                        backend: text(statement, 4),
+                        labels: try labels(from: text(statement, 5)),
+                        project: optionalText(statement, 6),
+                        stack: optionalText(statement, 7),
+                        runtimeState: text(statement, 8),
+                        lastError: optionalText(statement, 9),
+                        updatedAt: text(statement, 10)
                     )
                 )
             }

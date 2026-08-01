@@ -22,8 +22,9 @@ public enum ApplyStep: String, Sendable, Codable, CaseIterable {
     case ensureNets = "ensure_nets"
     case ensureDns = "ensure_dns"
     case ensureImages = "ensure_images"
-    case ensureVms = "ensure_vms"
+    /// Attach desired IPs before VM create so cidata picks up static addresses.
     case attachNets = "attach_nets"
+    case ensureVms = "ensure_vms"
     case startHelpers = "start_helpers"
     case awaitAgents = "await_agents"
     case applyRoutesPolicies = "apply_routes_policies"

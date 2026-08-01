@@ -187,24 +187,53 @@ enum HelperArguments {
     }
 
     private static func manifestMACAddress(bundleURL: URL) throws -> String? {
+        let list = try manifestMACList(bundleURL: bundleURL)
+        return list.first
+    }
+
+    /// Ordered MAC list from `vm.json` identity.nics.
+    static func manifestMACList(bundleURL: URL) throws -> [String] {
         let manifestURL = bundleURL.appendingPathComponent("vm.json")
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return [] }
         do {
             let data = try Data(contentsOf: manifestURL)
             guard
                 let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let identity = root["identity"] as? [String: Any],
-                let nics = identity["nics"] as? [[String: Any]],
-                let mac = nics.first?["mac"] as? String,
-                !mac.isEmpty
+                let nics = identity["nics"] as? [[String: Any]]
             else {
-                throw HelperError.invalid(
-                    "VM manifest has no identity.nics[0].mac: \(manifestURL.path)"
-                )
+                return []
             }
-            return mac
-        } catch let error as HelperError {
-            throw error
+            return nics.compactMap { nic in
+                guard let mac = nic["mac"] as? String, !mac.isEmpty else { return nil }
+                return mac
+            }
+        } catch {
+            throw HelperError.invalid("cannot read VM identity from \(manifestURL.path): \(error)")
+        }
+    }
+
+    /// network name → MAC from `vm.json` identity.nics.
+    static func manifestNICs(bundleURL: URL) throws -> [String: String] {
+        let manifestURL = bundleURL.appendingPathComponent("vm.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return [:] }
+        do {
+            let data = try Data(contentsOf: manifestURL)
+            guard
+                let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let identity = root["identity"] as? [String: Any],
+                let nics = identity["nics"] as? [[String: Any]]
+            else {
+                return [:]
+            }
+            var mapped: [String: String] = [:]
+            for nic in nics {
+                guard let mac = nic["mac"] as? String, !mac.isEmpty else { continue }
+                if let network = nic["network"] as? String, !network.isEmpty {
+                    mapped[network] = mac
+                }
+            }
+            return mapped
         } catch {
             throw HelperError.invalid("cannot read VM identity from \(manifestURL.path): \(error)")
         }

@@ -363,11 +363,13 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try networkParams(request.params)
                 let natEgress = optionalBool("nat_egress", from: params) ?? true
+                let backend = try optionalString("backend", from: params) ?? NetworkRecord.backendVmnet
                 let record = try networkRegistry.create(
                     name: try requiredString("name", from: params),
                     cidr: try requiredString("cidr", from: params),
                     mode: try optionalString("mode", from: params) ?? "shared",
                     natEgress: natEgress,
+                    backend: backend,
                     labels: try labels(from: params),
                     project: try optionalString("project", from: params),
                     stack: try optionalString("stack", from: params)
@@ -869,15 +871,38 @@ final class SupervisorServer: @unchecked Sendable {
                         attachments: snapshot.attachments
                     )
                     let attached = Set(topology.networks.map(\.name))
+                    let hasNatEgress = topology.networks.contains(where: \.natEgress)
                     let selectedPolicies = policies.filter { policy in
                         guard attached.contains(policy.network) else { return false }
+                        var hasInternet = false
+                        var hasNonInternet = false
+                        for allow in policy.allow {
+                            if allow.to == internetPolicyTarget {
+                                hasInternet = true
+                                continue
+                            }
+                            hasNonInternet = true
+                            guard attached.contains(allow.to) else { return false }
+                        }
+                        // Internet-only policies bind to the NAT router; mixed
+                        // policies (e.g. lan→containers + lan→internet) bind to
+                        // the router that owns the non-internet destinations.
+                        if hasInternet, !hasNonInternet, !hasNatEgress {
+                            return false
+                        }
                         policyMatches[policy.name, default: 0] += 1
                         return true
                     }
+                    let staticRoutes = DockerBackendRoutes.staticRoutes(
+                        forRouter: router.vmID,
+                        networks: snapshot.networks,
+                        attachments: snapshot.attachments
+                    )
                     return try RouterPlan(
                         vmID: topology.vmID,
                         networks: topology.networks,
-                        policies: selectedPolicies
+                        policies: selectedPolicies,
+                        staticRoutes: staticRoutes
                     )
                 }
                 for policy in policies {
@@ -949,6 +974,21 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
             )
+        case "helper.networks":
+            do {
+                let params = try objectParams(request.params, context: "helper.networks")
+                let vmID = try requiredReconcileString("vm_id", from: params)
+                let attachments = try networkRegistry.serializedAttachments(for: vmID)
+                return JSONRPCResponse(
+                    result: .object([
+                        "vm_id": .string(vmID),
+                        "attachments": .array(attachments.map(\.json)),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "vm.clock_corrected":
             guard case let .object(params)? = request.params,
                   case .string? = params["vm_id"],
