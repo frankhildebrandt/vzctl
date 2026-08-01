@@ -1,11 +1,17 @@
 import type { StackInventory, StackPhase } from "@/lib/stackStatus";
 
 export function StackStatusCard({
+  title,
+  path,
+  openedAt,
   phase,
   label,
   inventory,
   loading,
 }: {
+  title: string;
+  path: string;
+  openedAt?: string | null;
   phase: StackPhase;
   label: string;
   inventory: StackInventory | null;
@@ -17,11 +23,16 @@ export function StackStatusCard({
   return (
     <div className={`card stack-status phase-${phase}`}>
       <div className="stack-status-head">
-        <div>
-          <p className="stack-status-kicker">Stack</p>
-          <h2 className="stack-status-label">{loading ? "…" : label}</h2>
+        <div className="stack-status-identity">
+          <h2 className="stack-status-title">{title}</h2>
+          <p className="path stack-status-path">{path}</p>
+          {openedAt ? (
+            <p className="muted stack-status-meta">Zuletzt geöffnet: {openedAt}</p>
+          ) : null}
         </div>
-        <span className={`stack-pill phase-${phase}`}>{loading ? "…" : label}</span>
+        <span className={`stack-pill phase-${phase}`}>
+          {loading ? "…" : label}
+        </span>
       </div>
 
       {vms ? (

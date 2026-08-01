@@ -91,6 +91,29 @@ async fn run_vzctl_argv(args: Vec<String>) -> Result<String, String> {
         .map_err(|e| format!("vzctl task failed: {e}"))?
 }
 
+/// Ask macOS to restart the host (standard System Events restart dialog).
+#[tauri::command]
+async fn request_host_reboot() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let status = Command::new("osascript")
+            .args([
+                "-e",
+                "tell application \"System Events\" to restart",
+            ])
+            .status()
+            .map_err(|e| format!("osascript restart failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Host-Neustart abgebrochen oder fehlgeschlagen (status {status})"
+            ))
+        }
+    })
+    .await
+    .map_err(|e| format!("reboot task failed: {e}"))?
+}
+
 fn run_vzctl_argv_blocking(args: Vec<String>) -> Result<String, String> {
     validate_vzctl_argv(&args)?;
     let mut owned = args;
@@ -103,6 +126,31 @@ fn run_vzctl_argv_blocking(args: Vec<String>) -> Result<String, String> {
     if output.status.success() {
         return Ok(pretty_or_raw(&stdout));
     }
+
+    // Privileged DNS bind-helper / resolver installs need Admin.
+    if needs_dns_elevation(&owned, &output) {
+        let elevated_args = bind_helper_elevated_args(&owned);
+        let elevated_refs: Vec<&str> = elevated_args.iter().map(String::as_str).collect();
+        match run_elevated(&vzctl, &elevated_refs) {
+            Ok(elevated) => {
+                if elevated.trim().is_empty() {
+                    return Ok(pretty_or_raw(&stdout));
+                }
+                return Ok(pretty_or_raw(&elevated));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Admin-Rechte nötig für `{}`.\n\
+                     Passwort-Dialog abgebrochen oder fehlgeschlagen: {error}\n\n\
+                     Alternativ:\n  sudo {} {}",
+                    elevated_args.join(" "),
+                    vzctl.display(),
+                    elevated_args.join(" ")
+                ));
+            }
+        }
+    }
+
     // Prefer JSON envelope when present (status may be fail).
     if let Ok(value) = serde_json::from_str::<Value>(stdout.trim()) {
         if value.get("status").and_then(|s| s.as_str()) == Some("fail")
@@ -132,33 +180,118 @@ fn run_vzctl_argv_blocking(args: Vec<String>) -> Result<String, String> {
     ))
 }
 
+fn needs_dns_elevation(args: &[String], output: &Output) -> bool {
+    let is_privileged_dns = matches!(
+        (
+            args.first().map(String::as_str),
+            args.get(1).map(String::as_str)
+        ),
+        (
+            Some("dns"),
+            Some(
+                "install-bind-helper"
+                    | "uninstall-bind-helper"
+                    | "install-resolver"
+                    | "uninstall-resolver"
+            )
+        )
+    );
+    is_privileged_dns && needs_resolver_elevation(output)
+}
+
+/// osascript elevation runs as root without SUDO_UID — pass the calling user's uid.
+fn bind_helper_elevated_args(args: &[String]) -> Vec<String> {
+    let mut out = args.to_vec();
+    if out.first().map(String::as_str) != Some("dns")
+        || out.get(1).map(String::as_str) != Some("install-bind-helper")
+    {
+        return out;
+    }
+    if out.windows(2).any(|pair| pair[0] == "--allow-uid") {
+        return out;
+    }
+    if let Some(uid) = current_uid() {
+        out.push("--allow-uid".into());
+        out.push(uid.to_string());
+    }
+    out
+}
+
+fn current_uid() -> Option<u32> {
+    let output = Command::new("id").arg("-u").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 fn validate_vzctl_argv(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         return Err("vzctl argv is empty".into());
     }
     let group = args[0].as_str();
-    if group != "vm" && group != "image" {
-        return Err(format!("unsupported argv group: {group}"));
-    }
-    if args.len() < 2 {
-        return Err(format!("{group} requires a subcommand"));
-    }
-    let sub = args[1].as_str();
-    let allowed_vm = [
-        "list", "start", "stop", "delete", "create", "modify", "inspect", "mount", "unmount",
-        "mounts", "logs", "exec", "services", "ps", "transfer",
-    ];
-    let allowed_image = ["pull", "bake", "seal"];
-    let allowed = if group == "vm" {
-        &allowed_vm[..]
-    } else {
-        &allowed_image[..]
-    };
-    if !allowed.contains(&sub) {
-        return Err(format!("unsupported {group} subcommand: {sub}"));
+    match group {
+        "doctor" => {
+            // `vzctl doctor [--format …] [--min-free-gib N]` — no subcommand.
+        }
+        "dns" => {
+            if args.len() < 2 {
+                return Err("dns requires a subcommand".into());
+            }
+            let allowed = [
+                "status",
+                "query",
+                "install-resolver",
+                "uninstall-resolver",
+                "install-bind-helper",
+                "uninstall-bind-helper",
+            ];
+            if !allowed.contains(&args[1].as_str()) {
+                return Err(format!("unsupported dns subcommand: {}", args[1]));
+            }
+        }
+        "certs" => {
+            if args.len() < 2 {
+                return Err("certs requires a subcommand".into());
+            }
+            match args[1].as_str() {
+                "fingerprint" => {}
+                "ca" => {
+                    let action = args.get(2).map(String::as_str);
+                    if !matches!(action, Some("init" | "install")) {
+                        return Err(
+                            "unsupported certs ca subcommand (allowed: init|install)".into(),
+                        );
+                    }
+                }
+                other => {
+                    return Err(format!("unsupported certs subcommand: {other}"));
+                }
+            }
+        }
+        "vm" | "image" => {
+            if args.len() < 2 {
+                return Err(format!("{group} requires a subcommand"));
+            }
+            let sub = args[1].as_str();
+            let allowed_vm = [
+                "list", "start", "stop", "delete", "create", "modify", "inspect", "mount",
+                "unmount", "mounts", "logs", "exec", "services", "ps", "transfer",
+            ];
+            let allowed_image = ["pull", "bake", "seal"];
+            let allowed = if group == "vm" {
+                &allowed_vm[..]
+            } else {
+                &allowed_image[..]
+            };
+            if !allowed.contains(&sub) {
+                return Err(format!("unsupported {group} subcommand: {sub}"));
+            }
+        }
+        other => return Err(format!("unsupported argv group: {other}")),
     }
     // Block interactive / streaming modes — use the terminal bridge instead.
-    for arg in args.iter().skip(2) {
+    for arg in args.iter().skip(1) {
         match arg.as_str() {
             "attach" | "-it" | "-i" | "--interactive" | "-t" | "--tty" | "-f" | "--follow" => {
                 return Err(format!("interactive/streaming flag not allowed via argv: {arg}"));
@@ -220,6 +353,13 @@ fn run_vzctl_blocking(
         ],
         "down" => vec![
             "down".into(),
+            "-C".into(),
+            path.clone(),
+            "--format".into(),
+            "json".into(),
+        ],
+        "validate" => vec![
+            "validate".into(),
             "-C".into(),
             path.clone(),
             "--format".into(),
@@ -617,6 +757,9 @@ fn needs_resolver_elevation(output: &Output) -> bool {
     text.contains("Permission denied")
         || text.contains("run this command with sudo")
         || text.contains("/etc/resolver")
+        || text.contains("/Library/LaunchDaemons")
+        || text.contains("launchctl bootstrap failed")
+        || text.contains("/usr/local/libexec/vzctl")
 }
 
 fn lease_wait(output: &Output) -> Option<Duration> {
@@ -780,6 +923,10 @@ fn status_bundle(vzctl: &PathBuf, path: &str) -> Result<String, String> {
         .cloned()
         .unwrap_or_default();
 
+    let project_name = config_path
+        .as_ref()
+        .and_then(|p| read_project_name(p));
+
     let mut items = Vec::new();
     let mut running = 0u32;
     let mut starting = 0u32;
@@ -788,8 +935,16 @@ fn status_bundle(vzctl: &PathBuf, path: &str) -> Result<String, String> {
     let mut missing = 0u32;
     let mut other = 0u32;
 
-    for id in &desired {
-        let found = all_vms.iter().find(|vm| vm.get("id").and_then(|v| v.as_str()) == Some(id.as_str()));
+    for short_id in &desired {
+        let runtime_id = project_name
+            .as_ref()
+            .map(|project| format!("{project}/{short_id}"))
+            .unwrap_or_else(|| short_id.clone());
+        let found = find_listed_vm(&all_vms, &runtime_id, short_id);
+        let resolved_id = found
+            .and_then(|vm| vm.get("id").and_then(|v| v.as_str()))
+            .unwrap_or(runtime_id.as_str())
+            .to_string();
         let state = found
             .and_then(|vm| vm.get("state"))
             .and_then(|v| v.as_str())
@@ -803,7 +958,8 @@ fn status_bundle(vzctl: &PathBuf, path: &str) -> Result<String, String> {
             _ => other += 1,
         }
         items.push(json!({
-            "id": id,
+            "id": resolved_id,
+            "name": short_id,
             "state": state,
             "present": found.is_some(),
         }));
@@ -825,9 +981,7 @@ fn status_bundle(vzctl: &PathBuf, path: &str) -> Result<String, String> {
                     .and_then(|d| d.get("stack_id"))
                     .cloned()
                     .unwrap_or(Value::Null),
-                "project": config_path
-                    .as_ref()
-                    .and_then(|p| read_project_name(p))
+                "project": project_name
                     .map(Value::String)
                     .unwrap_or(Value::Null),
                 "vms": {
@@ -878,6 +1032,33 @@ fn resolve_config_path(path: &str) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+fn find_listed_vm<'a>(
+    all_vms: &'a [Value],
+    runtime_id: &str,
+    short_id: &str,
+) -> Option<&'a Value> {
+    if let Some(vm) = all_vms
+        .iter()
+        .find(|vm| vm.get("id").and_then(|v| v.as_str()) == Some(runtime_id))
+    {
+        return Some(vm);
+    }
+    if runtime_id != short_id {
+        if let Some(vm) = all_vms
+            .iter()
+            .find(|vm| vm.get("id").and_then(|v| v.as_str()) == Some(short_id))
+        {
+            return Some(vm);
+        }
+    }
+    let suffix = format!("/{short_id}");
+    all_vms.iter().find(|vm| {
+        vm.get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id.ends_with(&suffix))
+    })
 }
 
 fn desired_vm_ids_from_config(config_path: &Path) -> Vec<String> {
@@ -1262,6 +1443,31 @@ spec:
     }
 }
 
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
+}
+
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        }
+    }
+    std::fs::write(&path, contents).map_err(|e| format!("write {path}: {e}"))
+}
+
+#[tauri::command]
+fn ensure_dir(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {path}: {e}"))
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> Result<bool, String> {
+    Ok(Path::new(&path).exists())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1273,8 +1479,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             run_vzctl,
             run_vzctl_argv,
+            request_host_reboot,
             subscribe_events,
             open_url,
+            read_text_file,
+            write_text_file,
+            ensure_dir,
+            path_exists,
             terminal::terminal_open_attach,
             terminal::terminal_open_exec,
             terminal::terminal_write,

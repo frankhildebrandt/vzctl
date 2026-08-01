@@ -1,11 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconButton, IconPlay, IconStop, IconTrash } from "@/components/IconButton";
 import { StackCardsSection } from "@/components/StackCard";
 import { VmForm } from "@/components/VmForm";
 import { listProjects, projectKeys } from "@/lib/projects";
+import { partitionStacksAndVms } from "@/lib/stackPartition";
 import {
   deleteVm,
   encodeVmIdParam,
@@ -17,7 +18,7 @@ import {
   type VmListItem,
 } from "@/lib/vms";
 import { listen } from "@tauri-apps/api/event";
-import type { VzctlEvent } from "@/lib/vzctl";
+import { queryKeys, runVzctl, type VzctlEvent } from "@/lib/vzctl";
 
 export function VmListPage() {
   const queryClient = useQueryClient();
@@ -35,6 +36,41 @@ export function VmListPage() {
     queryKey: projectKeys.all,
     queryFn: listProjects,
   });
+
+  const projects = projectsQuery.data ?? [];
+  const vms = listQuery.data ?? [];
+
+  const statusQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: queryKeys.status(project.path),
+      queryFn: () => runVzctl(project.path, "status"),
+      refetchInterval: 8000,
+      retry: false,
+    })),
+  });
+
+  const statusByPath = useMemo(() => {
+    const map: Record<string, string | undefined> = {};
+    projects.forEach((project, index) => {
+      map[project.path] = statusQueries[index]?.data;
+    });
+    return map;
+  }, [projects, statusQueries]);
+
+  const { activeStacks, standaloneVms } = useMemo(
+    () =>
+      partitionStacksAndVms({
+        projects,
+        vms,
+        statusByPath,
+      }),
+    [projects, vms, statusByPath],
+  );
+
+  const activeProjects = useMemo(
+    () => activeStacks.map((entry) => entry.project),
+    [activeStacks],
+  );
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -101,27 +137,20 @@ export function VmListPage() {
     onError: (err) => setError(String(err)),
   });
 
-  const vms = listQuery.data ?? [];
-  const projects = projectsQuery.data ?? [];
   const deleting = deleteMutation.isPending;
 
   return (
     <section>
-      <StackCardsSection
-        title="Stacks"
-        projects={projects}
-        emptyHint={
-          <>
-            Noch keine Stacks.{" "}
-            <Link to="/projects">Stack hinzufügen</Link> und gemeinsam starten.
-          </>
-        }
-      />
+      {activeProjects.length > 0 ? (
+        <StackCardsSection title="Stacks" projects={activeProjects} />
+      ) : null}
 
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div>
           <h2 className="section-title">VMs</h2>
-          <p className="muted">Einzelne Bundles und Runtime-State.</p>
+          <p className="muted">
+            Einzelne Bundles außerhalb von Stacks.
+          </p>
         </div>
         <button type="button" onClick={() => setShowCreate((v) => !v)}>
           {showCreate ? "Abbrechen" : "VM erstellen…"}
@@ -155,12 +184,18 @@ export function VmListPage() {
 
       {listQuery.isLoading ? (
         <p className="muted">Lade VMs…</p>
-      ) : vms.length === 0 ? (
+      ) : standaloneVms.length === 0 ? (
         <div className="card">
-          <h2>Keine VMs</h2>
+          <h2>Keine Einzel-VMs</h2>
           <p className="muted">
-            Erstelle eine VM oder starte einen{" "}
-            <Link to="/projects">Stack</Link>.
+            {activeProjects.length > 0
+              ? "Alle vorhandenen VMs stecken in den Stacks oben."
+              : (
+                <>
+                  Erstelle eine VM oder starte einen{" "}
+                  <Link to="/projects">Stack</Link>.
+                </>
+              )}
           </p>
         </div>
       ) : (
@@ -177,7 +212,7 @@ export function VmListPage() {
               </tr>
             </thead>
             <tbody>
-              {vms.map((vm) => (
+              {standaloneVms.map((vm) => (
                 <VmRow
                   key={vm.id}
                   vm={vm}

@@ -3,6 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, type ReactNode } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
+  VmnetOrphanDialog,
+  type VmnetOrphanChoice,
+} from "@/components/VmnetOrphanDialog";
+import {
   IconButton,
   IconPlay,
   IconPurge,
@@ -19,6 +23,15 @@ import {
   type StackPhase,
 } from "@/lib/stackStatus";
 import { queryKeys, runVzctl } from "@/lib/vzctl";
+import {
+  parseVmnetOrphanError,
+  suggestReplacementCidr,
+  type VmnetOrphanInfo,
+} from "@/lib/vmnetOrphan";
+import {
+  recoverOrphanByCidrChange,
+  requestHostReboot,
+} from "@/lib/vmnetOrphanRecovery";
 import { vmKeys } from "@/lib/vms";
 
 type ConfirmKind = "up" | "down" | "purge" | null;
@@ -32,6 +45,9 @@ export function StackCard({
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyMode, setBusyMode] = useState<"up" | "down" | null>(null);
+  const [orphan, setOrphan] = useState<VmnetOrphanInfo | null>(null);
+  const [orphanBusy, setOrphanBusy] = useState(false);
+  const [orphanError, setOrphanError] = useState<string | null>(null);
 
   const statusQuery = useQuery({
     queryKey: queryKeys.status(project.path),
@@ -56,6 +72,15 @@ export function StackCard({
     [inventory, busyMode],
   );
 
+  const suggestedCidr = useMemo(() => {
+    if (!orphan) return "";
+    try {
+      return suggestReplacementCidr(orphan.cidr, [orphan.cidr]);
+    } catch {
+      return "10.78.0.0/24";
+    }
+  }, [orphan]);
+
   const mutate = useMutation({
     mutationFn: async (opts: {
       command: "up" | "down";
@@ -64,10 +89,13 @@ export function StackCard({
     }) => runVzctl(project.path, opts.command, opts),
     onMutate: ({ command }) => {
       setError(null);
+      setOrphan(null);
+      setOrphanError(null);
       setBusyMode(command);
     },
     onSuccess: async () => {
       setConfirm(null);
+      setOrphan(null);
       setBusyMode(null);
       await queryClient.invalidateQueries({
         queryKey: queryKeys.status(project.path),
@@ -77,11 +105,18 @@ export function StackCard({
     },
     onError: (err) => {
       setBusyMode(null);
+      const info = parseVmnetOrphanError(err);
+      if (info) {
+        setConfirm(null);
+        setOrphan(info);
+        setError(null);
+        return;
+      }
       setError(String(err));
     },
   });
 
-  const busy = mutate.isPending;
+  const busy = mutate.isPending || orphanBusy;
   const phase: StackPhase = stack.phase;
   const vms = stack.inventory?.vms;
   const items = stack.inventory?.items ?? [];
@@ -134,6 +169,26 @@ export function StackCard({
     else if (confirm === "down") mutate.mutate({ command: "down" });
     else if (confirm === "purge")
       mutate.mutate({ command: "down", purge: true });
+  }
+
+  async function handleOrphanChoice(choice: VmnetOrphanChoice) {
+    if (!orphan) return;
+    setOrphanBusy(true);
+    setOrphanError(null);
+    try {
+      if (choice === "reboot") {
+        await requestHostReboot();
+        setOrphan(null);
+        return;
+      }
+      await recoverOrphanByCidrChange(project.path, orphan, suggestedCidr);
+      setOrphan(null);
+      mutate.mutate({ command: "up", force: true });
+    } catch (err) {
+      setOrphanError(String(err));
+    } finally {
+      setOrphanBusy(false);
+    }
   }
 
   const copy = confirmCopy();
@@ -190,7 +245,9 @@ export function StackCard({
           </ul>
         ) : null}
 
-        {error && confirm == null ? <p className="form-error">{error}</p> : null}
+        {error && confirm == null && orphan == null ? (
+          <p className="form-error">{error}</p>
+        ) : null}
 
         <div
           className="stack-card-actions"
@@ -258,6 +315,21 @@ export function StackCard({
           }
         }}
         onConfirm={runConfirmed}
+      />
+
+      <VmnetOrphanDialog
+        open={orphan != null}
+        orphanedCidr={orphan?.cidr ?? ""}
+        suggestedCidr={suggestedCidr}
+        busy={orphanBusy || mutate.isPending}
+        error={orphanError}
+        onCancel={() => {
+          if (!orphanBusy && !mutate.isPending) {
+            setOrphan(null);
+            setOrphanError(null);
+          }
+        }}
+        onChoose={(choice) => void handleOrphanChoice(choice)}
       />
     </>
   );

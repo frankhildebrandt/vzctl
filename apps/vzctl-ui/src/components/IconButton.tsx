@@ -85,6 +85,56 @@ export function IconPurge(props: IconProps) {
   );
 }
 
+export function IconSave(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 4h11l3 3v13H5z" />
+      <path d="M8 4v5h8V4" />
+      <path d="M8 20v-6h8v6" />
+    </Icon>
+  );
+}
+
+export function IconUndo(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h9a6 6 0 0 1 0 12h-2" />
+    </Icon>
+  );
+}
+
+export function IconRedo(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M15 14l5-5-5-5" />
+      <path d="M20 9H11a6 6 0 0 0 0 12h2" />
+    </Icon>
+  );
+}
+
+export function IconFit(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 9V4h5" />
+      <path d="M20 9V4h-5" />
+      <path d="M4 15v5h5" />
+      <path d="M20 15v5h-5" />
+    </Icon>
+  );
+}
+
+export function IconLayout(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="4" width="7" height="7" rx="1" />
+      <rect x="13" y="4" width="7" height="7" rx="1" />
+      <rect x="4" y="13" width="7" height="7" rx="1" />
+      <rect x="13" y="13" width="7" height="7" rx="1" />
+    </Icon>
+  );
+}
+
 export function IconButton({
   label,
   disabled,

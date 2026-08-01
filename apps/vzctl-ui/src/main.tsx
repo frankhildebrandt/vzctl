@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import {
+  doctorRoute,
   envRoute,
   imagesRoute,
   indexRoute,
@@ -21,6 +22,7 @@ const routeTree = rootRoute.addChildren([
   projectsRoute,
   networksRoute,
   imagesRoute,
+  doctorRoute,
   envRoute,
 ]);
 

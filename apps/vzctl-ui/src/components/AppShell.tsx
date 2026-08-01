@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import type { MouseEvent, ReactNode } from "react";
 
 const NAV: Array<{
-  to: "/" | "/vms" | "/projects" | "/networks" | "/images";
+  to: "/" | "/vms" | "/projects" | "/networks" | "/images" | "/doctor";
   label: string;
   exact?: boolean;
 }> = [
@@ -11,6 +11,7 @@ const NAV: Array<{
   { to: "/projects", label: "Stacks" },
   { to: "/networks", label: "Networks" },
   { to: "/images", label: "Images" },
+  { to: "/doctor", label: "Doctor" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

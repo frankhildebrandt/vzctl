@@ -10,6 +10,7 @@ export type StackPhase =
 
 export type StackVmItem = {
   id: string;
+  name?: string;
   state: string;
   present?: boolean;
 };

@@ -1,4 +1,4 @@
-export type VzctlCommand = "diff" | "up" | "apply" | "down" | "status";
+export type VzctlCommand = "diff" | "up" | "apply" | "down" | "status" | "validate";
 
 export type VzctlEvent = {
   v: number;

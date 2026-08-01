@@ -17,8 +17,20 @@ Set `VZCTL_BIN` if `vzctl` is not on `PATH`.
 
 ## Views
 
-- Open Environment (folder with `hypernetwork.config.yaml`)
-- Diff / Up / **Apply** / Down (Apply mit Bestätigung + `--force`)
+- **Stacks / Projekte:** öffnen oder neu anlegen (`hypernetwork.config.yaml`)
+- **Topologie-Editor** (AntV X6): Netze, VMs, Router, Attachments, Policies — speichert YAML + `.vzctl/diagram.json`
+- **Betrieb:** Diff / Up / **Apply** / Down (Apply mit Bestätigung + `--force`)
 - DNS / OIDC / CA status bundle
+- **Doctor:** `vzctl doctor` inkl. Local-CA Keychain-Trust + Install-Button,
+  DNS-Bind-Helper (`dns.bind_helper`) + Install mit Admin-Dialog
+- VMs-Liste / Detail (Runtime)
 
-See Epic [#47](https://github.com/frankhildebrandt/vzctl/issues/47).
+Siehe [docs/topology-editor.md](docs/topology-editor.md) und Epic [#47](https://github.com/frankhildebrandt/vzctl/issues/47).
+
+## Tests
+
+```bash
+npm test
+npx playwright install chromium   # einmalig
+npm run test:e2e
+```

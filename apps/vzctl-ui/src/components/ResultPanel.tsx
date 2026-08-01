@@ -1,4 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import {
+  assertEnvelopeOk,
+  parseEnvelope,
+  runVzctlArgv,
+} from "@/lib/vzctl";
 
 export type PanelKind = "diff" | "status" | "text" | "error" | "idle";
 
@@ -202,17 +207,49 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
               ? String(dnsInner.last_error)
               : dns?.stderr || undefined
           }
+          action={
+            needsDnsBindHelper(
+              dnsInner?.last_error != null ? String(dnsInner.last_error) : null,
+            ) ? (
+              <DnsBindHelperButton />
+            ) : undefined
+          }
+          hint={
+            needsDnsBindHelper(
+              dnsInner?.last_error != null ? String(dnsInner.last_error) : null,
+            )
+              ? "Guest-:53 braucht den DNS-Bind-Helper (Admin)."
+              : undefined
+          }
         />
         <StatusTile
           title="CA"
-          ok={Boolean(certs?.ok && certsData?.fingerprint)}
+          ok={Boolean(certs?.ok && certsData?.fingerprint && certsData?.trusted !== false)}
           rows={[
             [
               "Fingerprint",
               shortFp(certsData?.fingerprint != null ? String(certsData.fingerprint) : null),
             ],
+            [
+              "Keychain",
+              certsData?.trusted === true
+                ? "trusted"
+                : certsData?.trusted === false
+                  ? "nicht trusted"
+                  : "—",
+            ],
             ["Path", certsData?.path != null ? String(certsData.path) : "—"],
           ]}
+          action={
+            certsData?.present === true && certsData?.trusted === false ? (
+              <CaInstallButton />
+            ) : undefined
+          }
+          hint={
+            certsData?.trusted === false
+              ? "Browser melden SEC_ERROR_UNKNOWN_ISSUER, bis die CA in der Keychain liegt. Firefox/Zen: enterprise_roots oder manueller Import."
+              : undefined
+          }
         />
         <StatusTile
           title="OIDC"
@@ -265,11 +302,15 @@ function StatusTile({
   ok,
   rows,
   error,
+  action,
+  hint,
 }: {
   title: string;
   ok: boolean;
   rows: Array<[string, string]>;
   error?: string;
+  action?: ReactNode;
+  hint?: string;
 }) {
   return (
     <div className="card status-tile">
@@ -286,6 +327,97 @@ function StatusTile({
         ))}
       </dl>
       {error ? <p className="tile-error">{error}</p> : null}
+      {hint ? <p className="muted tile-hint">{hint}</p> : null}
+      {action ? <div className="tile-action">{action}</div> : null}
+    </div>
+  );
+}
+
+function CaInstallButton() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  return (
+    <div className="doctor-actions">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setMsg(null);
+          void (async () => {
+            try {
+              const raw = await runVzctlArgv([
+                "certs",
+                "ca",
+                "install",
+                "--format",
+                "json",
+              ]);
+              const envelope = parseEnvelope(raw);
+              assertEnvelopeOk(envelope, "CA-Installation fehlgeschlagen");
+              setMsg("Installiert — Status neu laden.");
+            } catch (err) {
+              setMsg(String(err));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+      >
+        {busy ? "Installiert…" : "CA in Keychain installieren"}
+      </button>
+      {msg ? <p className="muted">{msg}</p> : null}
+    </div>
+  );
+}
+
+function needsDnsBindHelper(lastError: string | null | undefined): boolean {
+  if (!lastError) return false;
+  return (
+    lastError.includes("Permission denied") ||
+    lastError.includes("dns-bind") ||
+    (lastError.includes("bind") && lastError.includes(":53"))
+  );
+}
+
+function DnsBindHelperButton() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  return (
+    <div className="doctor-actions">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setMsg(null);
+          void (async () => {
+            try {
+              const raw = await runVzctlArgv([
+                "dns",
+                "install-bind-helper",
+                "--format",
+                "json",
+              ]);
+              const envelope = parseEnvelope(raw);
+              assertEnvelopeOk(
+                envelope,
+                "DNS-Bind-Helper-Installation fehlgeschlagen",
+              );
+              setMsg("Installiert — Status neu laden.");
+            } catch (err) {
+              setMsg(String(err));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+      >
+        {busy ? "Installiert…" : "Bind-Helper installieren"}
+      </button>
+      {msg ? <p className="muted">{msg}</p> : null}
     </div>
   );
 }
