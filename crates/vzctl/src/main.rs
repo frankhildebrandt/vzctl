@@ -2407,7 +2407,8 @@ fn prepare_cloud_init_seed(
     })];
     append_virtiofs_bind_files(&mut write_files);
     append_router_apply_files(&mut write_files);
-    append_agent_privilege_files(&mut write_files);
+    let mut runcmd = Vec::new();
+    append_agent_privilege_files(&mut write_files, &mut runcmd);
     if let Ok(ca_files) = crate::certs::nocloud_ca_write_files(&state_dir()) {
         for file in ca_files {
             let path = file["path"].as_str().unwrap_or_default();
@@ -2449,8 +2450,6 @@ fn prepare_cloud_init_seed(
             map
         }));
     }
-
-    let mut runcmd = Vec::new();
 
     if roles.iter().any(|role| role == "router") {
         write_files.push(serde_yaml::Value::Mapping({
@@ -2710,7 +2709,15 @@ fn append_router_apply_files(write_files: &mut Vec<serde_yaml::Value>) {
 
 /// Passwordless sudo for `vzctl-agent` plus a unit refresh so clones pick up
 /// NoNewPrivileges=no without rebaking the sealed base.
-fn append_agent_privilege_files(write_files: &mut Vec<serde_yaml::Value>) {
+///
+/// systemd loads `vzctl-agent.service` before cloud-config `write_files` runs,
+/// so the first start can still inherit the sealed unit's `no_new_privs`.
+/// `daemon-reload` + `restart` in runcmd (cloud-final) restarts under the
+/// rewritten unit; later boots already read the on-disk unit.
+fn append_agent_privilege_files(
+    write_files: &mut Vec<serde_yaml::Value>,
+    runcmd: &mut Vec<serde_yaml::Value>,
+) {
     let unit = include_str!("../../../guest-agent/systemd/vzctl-agent.service");
     write_files.push(serde_yaml::Value::Mapping({
         let mut file = serde_yaml::Mapping::new();
@@ -2752,6 +2759,15 @@ fn append_agent_privilege_files(write_files: &mut Vec<serde_yaml::Value>) {
         );
         file
     }));
+    runcmd.push(serde_yaml::Value::Sequence(vec![
+        serde_yaml::Value::String("systemctl".into()),
+        serde_yaml::Value::String("daemon-reload".into()),
+    ]));
+    runcmd.push(serde_yaml::Value::Sequence(vec![
+        serde_yaml::Value::String("systemctl".into()),
+        serde_yaml::Value::String("restart".into()),
+        serde_yaml::Value::String("vzctl-agent.service".into()),
+    ]));
 }
 
 #[cfg(test)]
@@ -4987,6 +5003,9 @@ mod tests {
         assert!(user_data.contains("/etc/sudoers.d/vzctl-agent"));
         assert!(user_data.contains("vzctl-agent ALL=(ALL) NOPASSWD:ALL"));
         assert!(user_data.contains("NoNewPrivileges=no"));
+        assert!(user_data.contains("systemctl"));
+        assert!(user_data.contains("daemon-reload"));
+        assert!(user_data.contains("vzctl-agent.service"));
         let network_config = &backend.seeds()[0].1;
         assert!(network_config.contains("10.70.0.10/24"));
         assert!(network_config.contains("via: 10.70.0.0"));
