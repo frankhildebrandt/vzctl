@@ -59,7 +59,7 @@ import VzDaemonKit
         hostServices: ["auth.svc.edge-dmz.vz.test", "web.svc.edge-dmz.vz.test"]
     )
 
-    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["10.80.0.1"])
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["127.0.0.1"])
     #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.1"])
     #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
 }
@@ -93,7 +93,7 @@ import VzDaemonKit
     let hostIps = aRecords(in: server.response(for: query, horizon: .host))
     let guestIps = aRecords(in: server.response(for: query, horizon: .guest))
 
-    #expect(hostIps == ["10.80.0.1", "10.90.0.1"])
+    #expect(hostIps == ["127.0.0.1"])
     #expect(guestIps == ["10.80.0.1", "10.90.0.1"])
 }
 
@@ -136,8 +136,7 @@ import VzDaemonKit
     )
 
     #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .host) == [
-        "10.80.0.1",
-        "10.90.0.1",
+        "127.0.0.1",
     ])
     #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .guest) == [
         "10.80.0.1",

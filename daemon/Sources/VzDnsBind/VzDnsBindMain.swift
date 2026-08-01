@@ -252,7 +252,7 @@ enum VzDnsBindMain {
         guard descriptor >= 0 else { throw ServeError.system("socket", errno) }
         // SO_REUSEADDR is required to bind UDP :53 alongside mDNSResponder's *:53.
         // Guest answers must not rely on winning that race — ingress *.svc names use
-        // host-service `.1` on both horizons (see DNSZoneBuilder hostRecords).
+        // split horizon (host → 127.0.0.1, guest → host-service `.1`).
         var reuse: Int32 = 1
         setsockopt(
             descriptor,

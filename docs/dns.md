@@ -17,10 +17,11 @@ unprivilegierte LaunchAgent-Supervisor nutzt den Root-LaunchDaemon
   Bridge-`.0`).
 - **TCP** (`:80`/`:443`): Helper legt bei Bedarf Host-Service-Alias `.1` auf dem
   Bridge an, bindet+listens und streamt akzeptierte Client-FDs über dieselbe
-  UDS-Verbindung. Ingress-`*.svc` zeigt auf Host-Service-`.1` (nicht `.0` —
-  Guest-TCP zu `.0` wird auf macOS-vmnet verworfen; nicht `127.0.0.1`, weil
-  mDNSResponder auf `*:53` Guest-Queries stehlen und über den Host-Resolver
-  beantworten kann — Loopback wäre im Guest tot).
+  UDS-Verbindung. Ingress-`*.svc` ist Split-Horizon:
+  Host-Listener (`127.0.0.1:15353`) → `127.0.0.1` (Mac kann Bridge-`.1` nicht
+  dialen: `EHOSTDOWN`); Guest-Listener (`.0:53`) → Host-Service-`.1` (vmnet
+  verwirft Guest-TCP zu `.0`; Loopback wäre im Guest tot, falls mDNSResponder
+  die Query stiehlt).
 
 ```sh
 sudo vzctl dns install-bind-helper

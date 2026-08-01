@@ -8,7 +8,7 @@ private let dnsHeaderLength = 12
 struct DNSZone: Equatable, Sendable {
     /// Guest-horizon A records (and shared VM records).
     let records: [String: [String]]
-    /// Host-horizon A records for ingress/OIDC names (host-service `.1`, not loopback).
+    /// Host-horizon A records for ingress/OIDC names (loopback for Mac clients).
     let hostRecords: [String: [String]]
     let zones: Set<String>
     let ttl: UInt32
@@ -123,20 +123,17 @@ enum DNSZoneBuilder {
                 project = String(parts[parts.count - 3])
             }
 
-            // Prefer host-service `.1` everywhere for ingress names. On macOS,
-            // mDNSResponder's wildcard *:53 races our guest `.0:53` socket and
-            // re-resolves via the host listener — loopback answers then break guests.
-            // `.1` reaches HostGatewayIngressProxy from both host and guest.
+            // Split horizon: Mac `/etc/resolver` → loopback (host cannot dial its
+            // own bridge `.1` alias: EHOSTDOWN). Guests → host-service `.1`
+            // (vmnet drops guest TCP to `.0`; never 127.0.0.1 — that would be the
+            // guest's own loopback if mDNSResponder steals the query).
             if let project,
                let gateways = gatewayByProject[project],
                !gateways.isEmpty
             {
-                let sorted = gateways.sorted()
-                hostRecords[name] = sorted
                 guestHostServices[name] = gateways
-            } else {
-                hostRecords[name] = ["127.0.0.1"]
             }
+            hostRecords[name] = ["127.0.0.1"]
             zones.insert(zoneName(from: name))
         }
         for (name, gateways) in guestHostServices {
