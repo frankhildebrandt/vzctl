@@ -12,6 +12,34 @@ const EXIT_INVALID: u8 = 3;
 const EXIT_RUNTIME: u8 = 24;
 const DOCKER_USER: &str = "vzctl";
 
+/// Resolve the host `docker` CLI. LaunchAgent-spawned apply jobs often inherit a
+/// minimal PATH without Homebrew (`/opt/homebrew/bin`).
+fn resolve_docker_bin() -> Result<PathBuf, String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            candidates.push(dir.join("docker"));
+        }
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/docker"),
+        PathBuf::from("/usr/local/bin/docker"),
+    ]);
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(
+        "docker CLI not found (install Docker or ensure /opt/homebrew/bin is on PATH)"
+            .into(),
+    )
+}
+
+fn docker_command() -> Result<Command, String> {
+    Ok(Command::new(resolve_docker_bin()?))
+}
+
 pub(crate) fn context_name(project: &str) -> String {
     format!("vzctl-{project}")
 }
@@ -378,14 +406,15 @@ pub(crate) fn ensure_context(
         private_key.display()
     );
 
-    let existing = Command::new("docker")
+    let docker = resolve_docker_bin()?;
+    let existing = Command::new(&docker)
         .args(["context", "ls", "--format", "{{.Name}}"])
         .output();
     match existing {
         Ok(output) if output.status.success() => {
             let names = String::from_utf8_lossy(&output.stdout);
             if names.lines().any(|line| line.trim() == name) {
-                let status = Command::new("docker")
+                let status = Command::new(&docker)
                     .args(["context", "update", &name, "--docker"])
                     .arg(format!("host={docker_host}"))
                     .env("DOCKER_SSH_COMMAND", &ssh_command)
@@ -395,7 +424,7 @@ pub(crate) fn ensure_context(
                     .map_err(|error| format!("docker context update failed: {error}"))?;
                 if !status.success() {
                     // Older docker may lack update; recreate.
-                    let _ = Command::new("docker")
+                    let _ = Command::new(&docker)
                         .args(["context", "rm", "-f", &name])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -408,7 +437,7 @@ pub(crate) fn ensure_context(
         Ok(_) | Err(_) => {}
     }
 
-    let status = Command::new("docker")
+    let status = Command::new(&docker)
         .args(["context", "create", &name, "--docker"])
         .arg(format!("host={docker_host}"))
         .env("DOCKER_SSH_COMMAND", &ssh_command)
@@ -425,7 +454,10 @@ pub(crate) fn ensure_context(
 
 pub(crate) fn remove_context(project: &str) -> Result<(), String> {
     let name = context_name(project);
-    let status = Command::new("docker")
+    let Ok(docker) = resolve_docker_bin() else {
+        return Ok(());
+    };
+    let status = Command::new(&docker)
         .args(["context", "rm", "-f", &name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -440,7 +472,7 @@ pub(crate) fn remove_context(project: &str) -> Result<(), String> {
 
 pub(crate) fn context_ping(project: &str) -> Result<(), String> {
     let name = context_name(project);
-    let output = Command::new("docker")
+    let output = docker_command()?
         .args(["--context", &name, "info"])
         .output()
         .map_err(|error| format!("docker info failed: {error}"))?;
@@ -455,7 +487,10 @@ pub(crate) fn context_ping(project: &str) -> Result<(), String> {
 }
 
 pub(crate) fn docker_binary_available() -> bool {
-    Command::new("docker")
+    let Ok(docker) = resolve_docker_bin() else {
+        return false;
+    };
+    Command::new(docker)
         .arg("version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -790,12 +825,18 @@ pub(crate) fn command(
                 );
                 return ExitCode::from(EXIT_USAGE);
             }
-            let status = Command::new("docker")
-                .arg("--context")
-                .arg(&context)
-                .args(&passthrough)
-                .env("DOCKER_SSH_COMMAND", ssh_command)
-                .status();
+            let status = match docker_command() {
+                Ok(mut cmd) => cmd
+                    .arg("--context")
+                    .arg(&context)
+                    .args(&passthrough)
+                    .env("DOCKER_SSH_COMMAND", ssh_command)
+                    .status(),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(EXIT_RUNTIME);
+                }
+            };
             match status {
                 Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
                 Err(error) => {
@@ -819,7 +860,7 @@ fn docker_output(
     ssh_command: &str,
     args: &[String],
 ) -> Result<(u8, String, String), String> {
-    let output = Command::new("docker")
+    let output = docker_command()?
         .arg("--context")
         .arg(context)
         .args(args)
@@ -1536,5 +1577,20 @@ runcmd: [[systemctl, enable, --now, docker]]
         assert_eq!(value["command"], "docker.ps");
         assert_eq!(value["status"], "ok");
         assert_eq!(value["summary"]["containers"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn resolve_docker_bin_reports_missing_clearly_or_finds_binary() {
+        match resolve_docker_bin() {
+            Ok(path) => assert!(
+                path.file_name().and_then(|n| n.to_str()) == Some("docker"),
+                "unexpected docker path {}",
+                path.display()
+            ),
+            Err(message) => assert!(
+                message.contains("docker CLI not found"),
+                "unexpected error: {message}"
+            ),
+        }
     }
 }
