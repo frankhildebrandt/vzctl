@@ -2026,6 +2026,9 @@ fn prepare_vm_disks(
         options.project.as_deref(),
     )?;
 
+    // Identity / manifest NICs must align with helper virtio NICs (vmnet only).
+    // Docker-backend attachments are logical (bip) and must not occupy index 0
+    // when sorted ahead of the real NIC (e.g. containers before lan).
     let result = VmCreateResult {
         id: options.id.clone(),
         bundle_path,
@@ -2042,8 +2045,8 @@ fn prepare_vm_disks(
         clone_mode,
         filesystem,
         identity,
-        network: all_networks.first().cloned(),
-        networks: all_networks,
+        network: nic_networks.first().cloned(),
+        networks: nic_networks,
     };
     write_vm_manifest(&result)?;
     Ok(result)

@@ -525,7 +525,12 @@ pub(crate) fn list_vm_attachments(
         });
         selections.push(vm_network_selection(&wrapped)?);
     }
-    selections.sort_by(|left, right| left.network.cmp(&right.network));
+    // vmnet NICs first (helper attachment order), docker-backend last (logical only).
+    selections.sort_by(|left, right| {
+        left.is_docker_backend()
+            .cmp(&right.is_docker_backend())
+            .then_with(|| left.network.cmp(&right.network))
+    });
     Ok(selections)
 }
 
