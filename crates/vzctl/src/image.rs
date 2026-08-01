@@ -547,6 +547,192 @@ pub fn aliases() -> Vec<&'static str> {
         .collect()
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ListImage {
+    pub alias: String,
+    pub canonical_alias: String,
+    pub aliases: Vec<String>,
+    pub distribution: String,
+    pub release: String,
+    pub architecture: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub format: String,
+    pub baked: bool,
+    pub sealed: bool,
+    pub agent_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CatalogAlias {
+    pub alias: String,
+    pub aliases: Vec<String>,
+    pub distribution: String,
+    pub release: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ListResult {
+    pub images_dir: PathBuf,
+    pub images: Vec<ListImage>,
+    pub catalog: Vec<CatalogAlias>,
+}
+
+pub fn catalog() -> Vec<CatalogAlias> {
+    CATALOG
+        .iter()
+        .map(|entry| CatalogAlias {
+            alias: entry.canonical.to_string(),
+            aliases: entry
+                .aliases
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            distribution: entry.distribution.to_string(),
+            release: entry.release.to_string(),
+        })
+        .collect()
+}
+
+pub fn list(images_dir: &Path) -> Result<ListResult, PullFailure> {
+    let mut images = Vec::new();
+    let aliases_directory = images_dir.join("aliases");
+    if aliases_directory.is_dir() {
+        let mut entries: Vec<_> = fs::read_dir(&aliases_directory)
+            .map_err(state_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(state_error)?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let alias = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| is_safe_alias(value))
+                .ok_or_else(|| {
+                    PullFailure::new(
+                        EXIT_IMAGE_STATE,
+                        format!("invalid alias manifest name {}", path.display()),
+                    )
+                })?
+                .to_string();
+            images.push(list_image_from_manifest(images_dir, &alias, &path)?);
+        }
+    }
+    Ok(ListResult {
+        images_dir: images_dir.to_path_buf(),
+        images,
+        catalog: catalog(),
+    })
+}
+
+fn list_image_from_manifest(
+    images_dir: &Path,
+    alias: &str,
+    manifest_path: &Path,
+) -> Result<ListImage, PullFailure> {
+    let bytes = fs::read(manifest_path).map_err(state_error)?;
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        PullFailure::new(
+            EXIT_IMAGE_STATE,
+            format!(
+                "invalid alias manifest {}: {error}",
+                manifest_path.display()
+            ),
+        )
+    })?;
+    if manifest["apiVersion"] != "vzctl.dev/image-alias/v1" {
+        return Err(PullFailure::new(
+            EXIT_IMAGE_STATE,
+            format!("unsupported alias manifest {}", manifest_path.display()),
+        ));
+    }
+    let sealed = manifest["sealed"] == true;
+    let baked = manifest.get("baked") == Some(&Value::Bool(true));
+    let (relative, sha256, format) = if sealed {
+        (
+            safe_relative_image_path(&manifest, &["sealed_image", "path"], "sealed")?,
+            manifest["sealed_image"]["sha256"]
+                .as_str()
+                .ok_or_else(|| {
+                    PullFailure::new(EXIT_IMAGE_STATE, "alias manifest lacks sealed_image.sha256")
+                })?
+                .to_string(),
+            manifest["sealed_image"]["format"]
+                .as_str()
+                .unwrap_or("raw")
+                .to_string(),
+        )
+    } else if baked {
+        (
+            safe_relative_image_path(&manifest, &["baked_image", "path"], "baked")?,
+            manifest["baked_image"]["sha256"]
+                .as_str()
+                .ok_or_else(|| {
+                    PullFailure::new(EXIT_IMAGE_STATE, "alias manifest lacks baked_image.sha256")
+                })?
+                .to_string(),
+            manifest["baked_image"]["format"]
+                .as_str()
+                .unwrap_or("raw")
+                .to_string(),
+        )
+    } else {
+        (
+            safe_object_path(&manifest)?,
+            manifest["image"]["sha256"]
+                .as_str()
+                .ok_or_else(|| {
+                    PullFailure::new(EXIT_IMAGE_STATE, "alias manifest lacks image.sha256")
+                })?
+                .to_string(),
+            manifest["image"]["format"]
+                .as_str()
+                .unwrap_or("raw")
+                .to_string(),
+        )
+    };
+    let path = images_dir.join(&relative);
+    let aliases = manifest["aliases"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let agent_version = manifest["baked_image"]["agent_version"]
+        .as_str()
+        .map(str::to_string);
+    Ok(ListImage {
+        alias: alias.to_string(),
+        canonical_alias: manifest["canonical_alias"]
+            .as_str()
+            .unwrap_or(alias)
+            .to_string(),
+        aliases,
+        distribution: manifest["distribution"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+        release: manifest["release"].as_str().unwrap_or("").to_string(),
+        architecture: manifest["architecture"]
+            .as_str()
+            .unwrap_or("arm64")
+            .to_string(),
+        path,
+        sha256,
+        format,
+        baked,
+        sealed,
+        agent_version,
+    })
+}
+
 fn resolve_source(
     entry: &CatalogEntry,
     fetcher: &dyn Fetcher,
@@ -1743,6 +1929,93 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         hex(&hasher.finalize())
+    }
+
+    #[test]
+    fn list_empty_store_returns_catalog() {
+        let directory = std::env::temp_dir().join(format!(
+            "vzctl-image-list-empty-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let result = list(&directory).unwrap();
+        assert!(result.images.is_empty());
+        assert!(!result.catalog.is_empty());
+        assert_eq!(result.catalog.len(), CATALOG.len());
+        assert!(result
+            .catalog
+            .iter()
+            .any(|entry| entry.alias == "ubuntu-latest"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn list_reads_local_alias_manifests() {
+        let directory = std::env::temp_dir().join(format!(
+            "vzctl-image-list-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let aliases = directory.join("aliases");
+        fs::create_dir_all(&aliases).unwrap();
+        let object = directory.join("objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.raw");
+        fs::create_dir_all(object.parent().unwrap()).unwrap();
+        fs::write(&object, b"raw").unwrap();
+        let baked = directory.join("baked/ubuntu-latest.raw");
+        fs::create_dir_all(baked.parent().unwrap()).unwrap();
+        fs::write(&baked, b"baked").unwrap();
+        write_json_atomic(
+            &aliases.join("ubuntu-latest.json"),
+            &json!({
+                "apiVersion": "vzctl.dev/image-alias/v1",
+                "canonical_alias": "ubuntu-latest",
+                "aliases": ["ubuntu-latest"],
+                "distribution": "Ubuntu",
+                "release": "26.04 LTS",
+                "architecture": "arm64",
+                "sealed": false,
+                "baked": true,
+                "source": {
+                    "url": "https://example.test/ubuntu.img",
+                    "filename": "ubuntu.img",
+                    "format": "qcow2",
+                    "algorithm": "sha256",
+                    "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                },
+                "image": {
+                    "path": "objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.raw",
+                    "format": "raw",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                },
+                "baked_image": {
+                    "path": "baked/ubuntu-latest.raw",
+                    "format": "raw",
+                    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "agent_version": "1.2.3",
+                },
+            }),
+        )
+        .unwrap();
+
+        let result = list(&directory).unwrap();
+        assert_eq!(result.images.len(), 1);
+        let image = &result.images[0];
+        assert_eq!(image.alias, "ubuntu-latest");
+        assert!(image.baked);
+        assert!(!image.sealed);
+        assert_eq!(image.agent_version.as_deref(), Some("1.2.3"));
+        assert_eq!(image.path, baked);
+        assert_eq!(
+            image.sha256,
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+        assert!(!result.catalog.is_empty());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

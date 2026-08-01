@@ -387,6 +387,7 @@ Commands:
   certs mint <san> [--san alias...] [--format human|json]
   certs fingerprint [--format human|json]
   oidc status|clients [--project P] [--format human|json]
+  image list [--format human|json]
   image pull <alias> [--format human|json]
   image bake <alias> [--format human|json]
   image seal <name|path> [--format human|json]
@@ -473,6 +474,7 @@ fn version_json(version: &str) -> Value {
 
 fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
+        Some("list") => image_list_command(args.collect()),
         Some("pull") => image_pull_command(args.collect()),
         Some("bake") => image_bake_command(args.collect()),
         Some("seal") => image_seal_command(args.collect()),
@@ -482,12 +484,141 @@ fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         }
         None => {
             eprintln!(
-                "usage: vzctl image pull <alias> [--format human|json] | \
+                "usage: vzctl image list [--format human|json] | \
+                 image pull <alias> [--format human|json] | \
                  image bake <alias> [--format human|json] | \
                  image seal <name|path> [--format human|json]"
             );
             ExitCode::from(EXIT_USAGE)
         }
+    }
+}
+
+fn image_list_command(args: Vec<String>) -> ExitCode {
+    let requested_format = requested_output_format(&args);
+    let format = match parse_format_options(args.into_iter(), "image list") {
+        Ok(format) => format,
+        Err(message) => {
+            emit_image_list_failure(
+                requested_format,
+                &image::PullFailure {
+                    code: EXIT_USAGE,
+                    message,
+                },
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    match image::list(&images_dir()) {
+        Ok(result) => {
+            match format {
+                OutputFormat::Human => print_image_list_human(&result),
+                OutputFormat::Json => println!("{}", image_list_json(&result)),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            emit_image_list_failure(format, &failure);
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+fn print_image_list_human(result: &image::ListResult) {
+    println!("images_dir: {}", result.images_dir.display());
+    if result.images.is_empty() {
+        println!("(no local images)");
+    } else {
+        println!(
+            "{:<24} {:<10} {:<8} {:<8} {}",
+            "ALIAS", "STATE", "BAKED", "SEALED", "PATH"
+        );
+        for image in &result.images {
+            let state = if image.sealed {
+                "sealed"
+            } else if image.baked {
+                "baked"
+            } else {
+                "pulled"
+            };
+            println!(
+                "{:<24} {:<10} {:<8} {:<8} {}",
+                image.alias,
+                state,
+                if image.baked { "yes" } else { "no" },
+                if image.sealed { "yes" } else { "no" },
+                image.path.display()
+            );
+        }
+    }
+    println!();
+    println!("catalog ({} aliases):", result.catalog.len());
+    for entry in &result.catalog {
+        let aliases = if entry.aliases.len() > 1 {
+            format!(" ({})", entry.aliases.join(", "))
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}{} — {} {}",
+            entry.alias, aliases, entry.distribution, entry.release
+        );
+    }
+}
+
+fn image_list_json(result: &image::ListResult) -> Value {
+    json!({
+        "apiVersion": CLI_API_VERSION,
+        "command": "image.list",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": if result.images.is_empty() {
+                "no local images"
+            } else {
+                "image cache listed"
+            },
+            "count": result.images.len(),
+            "images_dir": result.images_dir,
+        },
+        "images": result.images.iter().map(|image| json!({
+            "alias": image.alias,
+            "canonical_alias": image.canonical_alias,
+            "aliases": image.aliases,
+            "distribution": image.distribution,
+            "release": image.release,
+            "architecture": image.architecture,
+            "path": image.path,
+            "format": image.format,
+            "sha256": image.sha256,
+            "baked": image.baked,
+            "sealed": image.sealed,
+            "agent_version": image.agent_version,
+        })).collect::<Vec<_>>(),
+        "catalog": result.catalog.iter().map(|entry| json!({
+            "alias": entry.alias,
+            "aliases": entry.aliases,
+            "distribution": entry.distribution,
+            "release": entry.release,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn emit_image_list_failure(format: OutputFormat, failure: &image::PullFailure) {
+    eprintln!("{}", failure.message);
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": CLI_API_VERSION,
+                "command": "image.list",
+                "status": "fail",
+                "exit_code": failure.code,
+                "summary": {
+                    "message": failure.message,
+                },
+            })
+        );
     }
 }
 

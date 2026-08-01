@@ -5,6 +5,7 @@ Upstream-Digest und normalisiert es als VZ-taugliches Raw-Image. Installer-ISOs
 und amd64-Images sind nicht Teil dieses Vertrags.
 
 ```bash
+vzctl image list
 vzctl image pull ubuntu-latest
 vzctl image pull coreos-latest --format json
 vzctl image seal ubuntu-latest
@@ -85,6 +86,15 @@ geladen.
   Das Pull-Objekt und sein SHA256 bleiben erhalten.
 - `vm create --from <alias>` löst nach dem Seal automatisch die Seal-Kopie
   auf. `vm create` verlangt weiterhin ein erfolgreich versiegeltes Raw.
+
+## List
+
+`vzctl image list` liest `aliases/*.json` und meldet den lokalen Cache plus den
+festen Pull-Katalog (ohne Netzwerk). Kanonischer JSON-Command: `image.list`.
+Payloads: `images[]` (Alias, Kanonik, Distribution/Release, Pfad, SHA256,
+`baked`/`sealed`, optional `agent_version`) und `catalog[]` (alle
+`CATALOG`-Einträge). `summary.count` / `summary.images_dir` beschreiben den
+Store. Leerer Cache ist Exit `0`.
 
 ## CLI-/JSON-Vertrag
 

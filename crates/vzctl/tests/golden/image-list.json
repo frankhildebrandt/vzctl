@@ -1,0 +1,35 @@
+{
+  "apiVersion": "vzctl.dev/v1",
+  "command": "image.list",
+  "status": "ok",
+  "exit_code": 0,
+  "summary": {
+    "message": "image cache listed",
+    "count": 1,
+    "images_dir": "/images"
+  },
+  "images": [
+    {
+      "alias": "ubuntu-latest",
+      "canonical_alias": "ubuntu-latest",
+      "aliases": ["ubuntu-latest"],
+      "distribution": "Ubuntu",
+      "release": "26.04 LTS",
+      "architecture": "arm64",
+      "path": "/images/baked/ubuntu-latest.raw",
+      "format": "raw",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "baked": true,
+      "sealed": false,
+      "agent_version": "1.2.3"
+    }
+  ],
+  "catalog": [
+    {
+      "alias": "ubuntu-latest",
+      "aliases": ["ubuntu-latest"],
+      "distribution": "Ubuntu",
+      "release": "26.04 LTS"
+    }
+  ]
+}

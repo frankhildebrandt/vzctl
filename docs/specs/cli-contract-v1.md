@@ -160,6 +160,15 @@ liefert Exit `0`, Config-/Schema-/Referenzfehler Exit `3`, Usage Exit `2`.
 `--schema` exportiert das Draft-7-Schema als reines JSON-Dokument nach stdout.
 Details: [hypernetwork/v1](hypernetwork-v1.md).
 
+### `vzctl image list --format json`
+
+Payloads: `images` (lokaler Cache) und `catalog` (alle Pull-Aliase);
+kanonischer Command ist `image.list`. `summary` enthält `count` und
+`images_dir`. Jede Cache-Zeile meldet Alias/Kanonik, Distribution/Release,
+aufgelösten Raw-Pfad, SHA256 sowie `baked`/`sealed` (und optional
+`agent_version`). Leerer Cache liefert Exit `0` mit `images=[]`. Usage `2`,
+Store-Fehler `15`. Details: [Image Pull Contract v1](../images/pull-contract-v1.md).
+
 ### `vzctl image pull <alias> --format json`
 
 Payloads: `image` und `source`; kanonischer Command ist `image.pull`.
