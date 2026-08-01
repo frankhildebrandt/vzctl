@@ -1,6 +1,9 @@
 .DS_Store
 .cursor/
 .vzctl/
+# Example diagram sidecar for topology editor docs/demo
+!examples/edge-dmz/.vzctl/
+!examples/edge-dmz/.vzctl/diagram.json
 
 # Tauri UI local/build artifacts (sources, lockfiles, icons stay tracked)
 apps/vzctl-ui/node_modules/
