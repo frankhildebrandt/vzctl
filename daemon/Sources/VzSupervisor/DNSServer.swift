@@ -8,17 +8,23 @@ private let dnsHeaderLength = 12
 struct DNSZone: Equatable, Sendable {
     /// Guest-horizon A records (and shared VM records).
     let records: [String: [String]]
-    /// Host-horizon overrides for ingress/OIDC service names → 127.0.0.1
+    /// Host-horizon A records for ingress/OIDC names (host-service `.1`, not loopback).
     let hostRecords: [String: [String]]
     let zones: Set<String>
     let ttl: UInt32
 
     func addresses(for name: String, horizon: DNSHorizon) -> [String]? {
         let canonical = DNSZoneBuilder.canonicalName(name)
-        if horizon == .host, let host = hostRecords[canonical] {
-            return host
+        switch horizon {
+        case .host:
+            if let host = hostRecords[canonical] {
+                return host
+            }
+            return records[canonical]
+        case .guest:
+            // Never serve host-loopback overrides to guests (split horizon).
+            return records[canonical]
         }
-        return records[canonical]
     }
 
     func isAuthoritative(for name: String) -> Bool {
@@ -28,9 +34,16 @@ struct DNSZone: Equatable, Sendable {
     }
 }
 
-enum DNSHorizon: Sendable {
+enum DNSHorizon: Sendable, CustomStringConvertible {
     case host
     case guest
+
+    var description: String {
+        switch self {
+        case .host: return "host"
+        case .guest: return "guest"
+        }
+    }
 }
 
 enum DNSZoneBuilder {
@@ -48,10 +61,13 @@ enum DNSZoneBuilder {
         var gatewayByProject: [String: Set<String>] = [:]
 
         for network in snapshot.networks where network.runtimeState == "active" {
+            // docker-backend CIDRs have no host bridge IP; skip for guest *.svc / ingress.
+            if network.isDockerBackend { continue }
             if let project = network.project.flatMap(dnsLabel) {
-                let gw = IPv4CIDR.gateway(for: network.cidr)
-                if !gw.isEmpty {
-                    gatewayByProject[project, default: []].insert(gw)
+                // Guest TCP cannot reach vmnet `.0`; advertise host-service `.1` instead.
+                let hostService = IPv4CIDR.hostService(for: network.cidr)
+                if !hostService.isEmpty {
+                    gatewayByProject[project, default: []].insert(hostService)
                 }
             }
         }
@@ -89,28 +105,37 @@ enum DNSZoneBuilder {
         for raw in hostServices {
             let name = canonicalName(raw)
             guard !name.isEmpty else { continue }
-            hostRecords[name] = ["127.0.0.1"]
-            // Guest horizon: map to all active gateway .0 addresses for matching project zone.
+            // Resolve project for split-horizon gateway mapping.
             let parts = name.split(separator: ".")
-            // expect short.svc.project.vz.test → project at index count-3
+            var project: String?
+            // short.svc.project.vz.test → project at count-3
             if parts.count >= 4,
                parts[parts.count - 2] == "vz",
                parts[parts.count - 1] == "test",
                parts[parts.count - 3] != "svc"
             {
-                let project = String(parts[parts.count - 3])
-                if let gateways = gatewayByProject[project] {
-                    guestHostServices[name, default: []].formUnion(gateways)
-                }
+                project = String(parts[parts.count - 3])
             } else if parts.count >= 5,
                       parts[parts.count - 2] == "vz",
                       parts[parts.count - 1] == "test",
                       parts[parts.count - 4] == "svc"
             {
-                let project = String(parts[parts.count - 3])
-                if let gateways = gatewayByProject[project] {
-                    guestHostServices[name, default: []].formUnion(gateways)
-                }
+                project = String(parts[parts.count - 3])
+            }
+
+            // Prefer host-service `.1` everywhere for ingress names. On macOS,
+            // mDNSResponder's wildcard *:53 races our guest `.0:53` socket and
+            // re-resolves via the host listener — loopback answers then break guests.
+            // `.1` reaches HostGatewayIngressProxy from both host and guest.
+            if let project,
+               let gateways = gatewayByProject[project],
+               !gateways.isEmpty
+            {
+                let sorted = gateways.sorted()
+                hostRecords[name] = sorted
+                guestHostServices[name] = gateways
+            } else {
+                hostRecords[name] = ["127.0.0.1"]
             }
             zones.insert(zoneName(from: name))
         }
@@ -210,6 +235,9 @@ struct DNSHealth: Sendable {
 private struct DNSListener {
     let descriptor: Int32
     let source: DispatchSourceRead
+    /// Fixed at bind time so concurrent DispatchSource handlers cannot mis-classify
+    /// guest `.0:53` sockets as the host horizon (which maps `*.svc` → 127.0.0.1).
+    let horizon: DNSHorizon
 }
 
 private struct DNSQuestion {
@@ -255,7 +283,7 @@ final class DNSServer: @unchecked Sendable {
             hostServices: services
         )
         let guestAddresses = snapshot.networks
-            .filter { $0.runtimeState == "active" }
+            .filter { $0.runtimeState == "active" && !$0.isDockerBackend }
             .map { IPv4CIDR.gateway(for: $0.cidr) }
             .filter { !$0.isEmpty }
         var desired = Set(guestAddresses.map { endpoint($0, configuration.guestPort) })
@@ -298,6 +326,15 @@ final class DNSServer: @unchecked Sendable {
         }
     }
 
+    /// Debug/resolve helper: return A-addresses for both horizons from the live zone.
+    func lookup(_ name: String) -> (host: [String]?, guest: [String]?) {
+        let snapshot = lock.withLock { zone }
+        return (
+            snapshot.addresses(for: name, horizon: .host),
+            snapshot.addresses(for: name, horizon: .guest)
+        )
+    }
+
     func shutdown() {
         let current: [DNSListener] = lock.withLock {
             guard !stopped else { return [] }
@@ -317,24 +354,34 @@ final class DNSServer: @unchecked Sendable {
         guard let parsed = parseEndpoint(value) else {
             throw DNSError.invalidEndpoint(value)
         }
+        let horizon: DNSHorizon =
+            parsed.address == configuration.hostAddress
+                && parsed.port == configuration.hostPort ? .host : .guest
         if DnsBind.needsPrivilege(port: parsed.port) {
             let descriptor = try DnsBindClient.bindUDP(
                 address: parsed.address,
                 port: parsed.port
             )
-            return try adoptListener(endpoint: value, descriptor: descriptor)
+            return try adoptListener(horizon: horizon, descriptor: descriptor)
         }
-        return try bindListenerLocally(endpoint: value, address: parsed.address, port: parsed.port)
+        return try bindListenerLocally(
+            endpoint: value,
+            address: parsed.address,
+            port: parsed.port,
+            horizon: horizon
+        )
     }
 
     private func bindListenerLocally(
         endpoint value: String,
         address: String,
-        port: UInt16
+        port: UInt16,
+        horizon: DNSHorizon
     ) throws -> DNSListener {
         let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard descriptor >= 0 else { throw DNSError.system("socket", errno) }
         do {
+            // SO_REUSEADDR required alongside mDNSResponder *:53 (see DnsBind UDP note).
             var reuse: Int32 = 1
             setsockopt(
                 descriptor,
@@ -356,23 +403,53 @@ final class DNSServer: @unchecked Sendable {
                 }
             }
             guard result == 0 else { throw DNSError.system("bind \(value)", errno) }
-            return try adoptListener(endpoint: value, descriptor: descriptor)
+            return try adoptListener(horizon: horizon, descriptor: descriptor)
         } catch {
             Darwin.close(descriptor)
             throw error
         }
     }
 
-    private func adoptListener(endpoint value: String, descriptor: Int32) throws -> DNSListener {
+    private func adoptListener(horizon: DNSHorizon, descriptor: Int32) throws -> DNSListener {
         let source = DispatchSource.makeReadSource(
             fileDescriptor: descriptor,
             queue: queue
         )
-        source.setEventHandler { [weak self] in
-            self?.receive(on: descriptor, endpoint: value)
+        // Capture horizon by value on the listener; do not re-derive from endpoint
+        // strings inside the concurrent handler.
+        source.setEventHandler { [weak self, horizon, descriptor] in
+            self?.receive(on: descriptor, horizon: horizon)
         }
         source.resume()
-        return DNSListener(descriptor: descriptor, source: source)
+        return DNSListener(descriptor: descriptor, source: source, horizon: horizon)
+    }
+
+    private func horizonFromSockname(_ descriptor: Int32) -> (DNSHorizon, String)? {
+        var addr = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let ok = withUnsafeMutablePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.getsockname(descriptor, $0, &length) == 0
+            }
+        }
+        guard ok else { return nil }
+        // Darwin sockaddr_in uses sin_len + sin_family; accept AF_INET via numeric compare.
+        let family = Int32(addr.sin_family)
+        guard family == AF_INET else { return nil }
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil
+        else {
+            return nil
+        }
+        let local = String(decoding: buffer.map { UInt8(bitPattern: $0) }.prefix { $0 != 0 }, as: UTF8.self)
+        let port = UInt16(bigEndian: addr.sin_port)
+        if local == configuration.hostAddress, port == configuration.hostPort {
+            return (.host, "\(local):\(port)")
+        }
+        if local == "0.0.0.0" {
+            return nil
+        }
+        return (.guest, "\(local):\(port)")
     }
 
     private func removeListenerLocked(_ key: String) {
@@ -381,7 +458,7 @@ final class DNSServer: @unchecked Sendable {
         Darwin.close(listener.descriptor)
     }
 
-    private func receive(on descriptor: Int32, endpoint: String) {
+    private func receive(on descriptor: Int32, horizon: DNSHorizon) {
         var buffer = [UInt8](repeating: 0, count: 65_535)
         var peer = sockaddr_storage()
         var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
@@ -392,17 +469,17 @@ final class DNSServer: @unchecked Sendable {
         }
         guard count > 0 else { return }
         let request = Data(buffer.prefix(Int(count)))
-        let horizon: DNSHorizon =
-            endpoint.hasPrefix("\(configuration.hostAddress):") ? .host : .guest
-        let response = response(for: request, horizon: horizon)
-        guard !response.isEmpty else { return }
-        response.withUnsafeBytes { bytes in
+        let sock = horizonFromSockname(descriptor)
+        let effectiveHorizon = sock?.0 ?? horizon
+        let responseData = makeResponse(for: request, horizon: effectiveHorizon)
+        guard !responseData.isEmpty else { return }
+        _ = responseData.withUnsafeBytes { bytes in
             withUnsafePointer(to: &peer) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    _ = Darwin.sendto(
+                    Darwin.sendto(
                         descriptor,
                         bytes.baseAddress,
-                        response.count,
+                        responseData.count,
                         0,
                         $0,
                         peerLength
@@ -410,6 +487,10 @@ final class DNSServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    func makeResponse(for request: Data, horizon: DNSHorizon = .host) -> Data {
+        response(for: request, horizon: horizon)
     }
 
     func response(for request: Data, horizon: DNSHorizon = .host) -> Data {

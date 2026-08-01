@@ -10,19 +10,21 @@ enum VzDnsBindMain {
         switch args.first {
         case "version", nil:
             print("vz-dns-bind \(VzDaemonKit.version)")
-            print("privilege: UDP bind helper for guest DNS :53 (ADR 0002)")
+            print("privilege: UDP/TCP bind helper for guest DNS :53 and ingress :80/:443 (ADR 0002)")
         case "help", "-h", "--help":
             print(
                 """
-                vz-dns-bind — privileged UDP bind helper
+                vz-dns-bind — privileged UDP/TCP bind helper
 
                 Commands:
                   version
                   serve --allow-uid <uid> [--socket <path>]
                   help
 
-                Binds AF_INET SOCK_DGRAM sockets on privileged ports and
-                returns them over UDS via SCM_RIGHTS. No DNS logic.
+                UDP: binds SOCK_DGRAM on privileged ports and returns the FD via SCM_RIGHTS.
+                TCP: binds+listens SOCK_STREAM, then streams accepted client FDs via SCM_RIGHTS
+                on the same UDS connection (macOS cannot reliably accept on handed-off listeners).
+                No DNS or proxy logic.
                 """
             )
         case "serve":
@@ -100,40 +102,36 @@ enum VzDnsBindMain {
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = options.socketPath.utf8CString
         guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-            throw ServeError.usage("socket path too long: \(options.socketPath)")
+            throw ServeError.usage("socket path too long")
         }
         withUnsafeMutableBytes(of: &address.sun_path) { buffer in
             pathBytes.withUnsafeBytes { source in
                 buffer.copyMemory(from: source)
             }
         }
-
         let bindResult = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard bindResult == 0 else { throw ServeError.system("bind", errno) }
-
-        // User supervisor must connect; root still accepts. Auth via getpeereid.
-        chown(options.socketPath, options.allowUID, options.allowUID)
-        chmod(options.socketPath, 0o600)
-
+        guard bindResult == 0 else {
+            throw ServeError.system("bind \(options.socketPath)", errno)
+        }
+        chmod(options.socketPath, 0o666)
         guard Darwin.listen(listener, 16) == 0 else {
             throw ServeError.system("listen", errno)
         }
 
         print("listening: \(options.socketPath) allow-uid=\(options.allowUID)")
-        fflush(stdout)
 
-        signal(SIGPIPE, SIG_IGN)
         while true {
             let client = Darwin.accept(listener, nil, nil)
             if client < 0 {
                 if errno == EINTR { continue }
                 throw ServeError.system("accept", errno)
             }
-            DispatchQueue.global().async {
+            // One request per connection; TCP accept streams hold the connection open.
+            DispatchQueue.global(qos: .userInitiated).async {
                 handle(client: client, allowUID: options.allowUID)
             }
         }
@@ -174,12 +172,61 @@ enum VzDnsBindMain {
                 return
             }
             let request = try DnsBind.parseRequest(Data(buffer.prefix(Int(count))))
-            let bound = try bindUDP(address: request.address, port: request.port)
-            defer { Darwin.close(bound) }
-            let response = try JSONEncoder().encode(DnsBind.BindResponse(ok: true))
-            var framed = response
-            framed.append(0x0A)
-            try UnixFDPassing.send(payload: framed, fileDescriptor: bound, on: client)
+            let proto = request.proto.lowercased()
+            let bound = try bindSocket(
+                address: request.address,
+                port: request.port,
+                proto: proto
+            )
+
+            if proto == DnsBind.protoTCP {
+                // Keep listening FD in-helper; stream accepted clients over this UDS.
+                defer { Darwin.close(bound) }
+                let listening = try JSONEncoder().encode(
+                    DnsBind.BindResponse(ok: true, event: "listening")
+                )
+                var framed = listening
+                framed.append(0x0A)
+                try UnixFDPassing.send(payload: framed, fileDescriptor: nil, on: client)
+
+                while true {
+                    let accepted = Darwin.accept(bound, nil, nil)
+                    if accepted < 0 {
+                        if errno == EINTR { continue }
+                        return
+                    }
+                    var noSigPipe: Int32 = 1
+                    setsockopt(
+                        accepted,
+                        SOL_SOCKET,
+                        SO_NOSIGPIPE,
+                        &noSigPipe,
+                        socklen_t(MemoryLayout<Int32>.size)
+                    )
+                    let payload = try JSONEncoder().encode(
+                        DnsBind.BindResponse(ok: true, event: "accept")
+                    )
+                    var acceptFrame = payload
+                    acceptFrame.append(0x0A)
+                    do {
+                        try UnixFDPassing.send(
+                            payload: acceptFrame,
+                            fileDescriptor: accepted,
+                            on: client
+                        )
+                    } catch {
+                        Darwin.close(accepted)
+                        return
+                    }
+                    Darwin.close(accepted)
+                }
+            } else {
+                defer { Darwin.close(bound) }
+                let response = try JSONEncoder().encode(DnsBind.BindResponse(ok: true))
+                var framed = response
+                framed.append(0x0A)
+                try UnixFDPassing.send(payload: framed, fileDescriptor: bound, on: client)
+            }
         } catch {
             try? sendFailure(on: client, "\(error)")
         }
@@ -192,9 +239,20 @@ enum VzDnsBindMain {
         try UnixFDPassing.send(payload: framed, fileDescriptor: nil, on: client)
     }
 
-    private static func bindUDP(address: String, port: UInt16) throws -> Int32 {
-        let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    private static func bindSocket(address: String, port: UInt16, proto: String) throws -> Int32 {
+        let isTCP = proto == DnsBind.protoTCP
+        if isTCP {
+            try ensureHostServiceAlias(address)
+        }
+        let descriptor = Darwin.socket(
+            AF_INET,
+            isTCP ? SOCK_STREAM : SOCK_DGRAM,
+            isTCP ? IPPROTO_TCP : IPPROTO_UDP
+        )
         guard descriptor >= 0 else { throw ServeError.system("socket", errno) }
+        // SO_REUSEADDR is required to bind UDP :53 alongside mDNSResponder's *:53.
+        // Guest answers must not rely on winning that race — ingress *.svc names use
+        // host-service `.1` on both horizons (see DNSZoneBuilder hostRecords).
         var reuse: Int32 = 1
         setsockopt(
             descriptor,
@@ -221,6 +279,63 @@ enum VzDnsBindMain {
             Darwin.close(descriptor)
             throw ServeError.system("bind \(address):\(port)", code)
         }
+        if isTCP {
+            guard Darwin.listen(descriptor, 32) == 0 else {
+                let code = errno
+                Darwin.close(descriptor)
+                throw ServeError.system("listen \(address):\(port)", code)
+            }
+        }
         return descriptor
+    }
+
+    /// Guest TCP cannot reach vmnet `.0`; ingress binds `.1`. Ensure that alias exists.
+    private static func ensureHostServiceAlias(_ address: String) throws {
+        if address == "127.0.0.1" || address == "0.0.0.0" { return }
+        var target = in_addr()
+        guard inet_pton(AF_INET, address, &target) == 1 else { return }
+        let targetHost = UInt32(bigEndian: target.s_addr)
+
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return }
+        defer { freeifaddrs(ifap) }
+
+        var interfaceName: String?
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            defer { cursor = current.pointee.ifa_next }
+            guard let raw = current.pointee.ifa_addr, raw.pointee.sa_family == sa_family_t(AF_INET)
+            else {
+                continue
+            }
+            let sin = UnsafeRawPointer(raw).assumingMemoryBound(to: sockaddr_in.self).pointee
+            let ip = UInt32(bigEndian: sin.sin_addr.s_addr)
+            if ip == targetHost {
+                return // already assigned
+            }
+            // Prefer the bridge that already owns the matching `.0` network address.
+            if (ip & 0xffff_ff00) == (targetHost & 0xffff_ff00), (ip & 0xff) == 0 {
+                interfaceName = String(cString: current.pointee.ifa_name)
+            }
+        }
+        guard let interfaceName else {
+            throw ServeError.usage("no vmnet bridge found for host-service alias \(address)")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        process.arguments = [interfaceName, "alias", address, "netmask", "255.255.255.0"]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+                ?? ""
+            throw ServeError.usage(
+                "ifconfig alias \(address) on \(interfaceName) failed: \(err.trimmingCharacters(in: .whitespacesAndNewlines))"
+            )
+        }
     }
 }

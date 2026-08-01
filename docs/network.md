@@ -58,9 +58,13 @@ Multi-NIC-Attachments, etwa für Router, bleiben erhalten.
 
 `shared` lässt NAT44 standardmäßig aktiv (`natEgress: true`) und bietet damit
 Zugriff auf Host und Internet. Mit `natEgress: false` wird das Netz als
-host-only (`VMNET_HOST_MODE`) angelegt: Host und DNS `.0` bleiben erreichbar,
-Internet-NAT entfällt. Gäste nutzen dann Router `.2` als Default-Gateway;
-Internet-Egress nur über Policy `to: internet` auf dem Router.
+host-only (`VMNET_HOST_MODE`) angelegt: ICMP zum Host-Gateway `.0` bleibt
+erreichbar, **Gast-DNS UDP `.0:53` ist auf Host-Mode derzeit unzuverlässig**
+(Shared-Mode-Netze sind davon nicht betroffen). Internet-NAT entfällt; Gäste
+nutzen dann Router `.2` als Default-Gateway und brauchen Policy `to: internet`
+auf dem Router. Für Stacks, die Gast-DNS brauchen (cloud-init/`apt`), `lan`
+daher mit `natEgress: true` belassen und Router-Zuordnung über `policies.*.via`
+steuern.
 DHCP und vmnet-DNS-Proxy bleiben deaktiviert; die VM erhält ihre
 statische Adresse, Default-Route `via .0 on-link` (bzw. `via .2` ohne NAT) und
 ausschließlich `.0` als DNS über den pro Clone erzeugten NoCloud-Seed. Bei einem

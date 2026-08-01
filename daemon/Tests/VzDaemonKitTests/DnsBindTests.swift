@@ -20,6 +20,17 @@ import VzDaemonKit
     let ok = try DnsBind.parseRequest(Data(#"{"op":"bind","address":"10.80.0.0","port":53}"#.utf8))
     #expect(ok.address == "10.80.0.0")
     #expect(ok.port == 53)
+    #expect(ok.proto == DnsBind.protoUDP)
+
+    let tcp = try DnsBind.parseRequest(
+        Data(#"{"op":"bind","address":"10.80.0.0","port":443,"proto":"tcp"}"#.utf8)
+    )
+    #expect(tcp.proto == DnsBind.protoTCP)
+    #expect(tcp.port == 443)
+
+    #expect(throws: DnsBind.ValidationError.invalidProto("sctp")) {
+        try DnsBind.validate(DnsBind.BindRequest(address: "10.80.0.0", port: 80, proto: "sctp"))
+    }
 
     #expect(throws: DnsBind.ValidationError.invalidJSON) {
         try DnsBind.parseRequest(Data(#"{"op":"nope"}"#.utf8))

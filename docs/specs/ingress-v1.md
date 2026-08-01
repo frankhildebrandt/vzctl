@@ -15,8 +15,18 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
 - Host: `127.0.0.1:80` / `:443` (ports configurable via `httpPort` / `httpsPort`)
 - Guests reach the same Caddy via Split-Horizon DNS + Host Gateway Proxy:
   - Host DNS (`127.0.0.1:15353`): Ingress hosts → `127.0.0.1`
-  - Guest DNS (bridge `.0:53`): Ingress hosts → gateway `.0`
-  - Supervisor `HostGatewayIngressProxy`: `.0:80/:443` → `127.0.0.1:80/:443`
+  - Guest DNS (bridge `.0:53`): Ingress hosts → vmnet host-service `.1` addresses
+    (not `.0` — guest TCP to `.0` is blackholed on macOS vmnet; docker-backend
+    CIDRs are omitted)
+  - Supervisor `HostGatewayIngressProxy`: public `:80/:443` on vmnet `.1` **and**
+    `ingress.bind` (default `127.0.0.1`) → Caddy on unprivileged loopback ports
+    (`http_port+18000` / `https_port+18000`, e.g. `18080`/`18443`)
+  - Privileged TCP: `vz-dns-bind` aliases `.1` on the bridge if needed, listens,
+    and streams accepted client FDs to the supervisor (UDP `:53` still hands back
+    the bound socket FD on `.0`)
+  - Caddy itself binds only `ingress.bind` on those unprivileged ports so the
+    user-level process does not need root for `:80/:443`
+- Direct guest→VM traffic uses `{vm}.{net}.{project}.vz.test`, not `*.svc`
 
 ## Routes
 

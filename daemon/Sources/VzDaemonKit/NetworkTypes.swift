@@ -296,8 +296,15 @@ public struct PortForwardRecord: Equatable, Sendable {
 }
 
 public extension IPv4CIDR {
+    /// Host bridge address used for UDP DNS / gateway identity (network `.0`).
     static func gateway(for cidr: String) -> String {
         (try? IPv4CIDR(cidr)).map { string($0.network) } ?? ""
+    }
+
+    /// Host TCP service address for guest ingress (network `.1`).
+    /// Guest TCP to `.0` is blackholed on macOS vmnet; `.1` is reachable once aliased.
+    static func hostService(for cidr: String) -> String {
+        (try? IPv4CIDR(cidr)).map { string($0.network + 1) } ?? ""
     }
 
     static func router(for cidr: String) -> String {

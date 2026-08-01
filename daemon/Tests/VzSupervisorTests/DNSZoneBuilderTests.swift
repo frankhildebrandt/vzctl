@@ -59,9 +59,90 @@ import VzDaemonKit
         hostServices: ["auth.svc.edge-dmz.vz.test", "web.svc.edge-dmz.vz.test"]
     )
 
-    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["127.0.0.1"])
-    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.0"])
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .host) == ["10.80.0.1"])
+    #expect(zone.addresses(for: "auth.svc.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.1"])
     #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: .guest) == ["10.80.0.10"])
+}
+
+@Test func hostServiceWireResponseHonorsHorizonParameter() {
+    let server = DNSServer(configuration: DNSConfiguration(
+        hostAddress: "127.0.0.1",
+        hostPort: 0,
+        guestPort: 0,
+        ttl: 15,
+        upstream: "127.0.0.1:9"
+    ))
+    defer { server.shutdown() }
+    server.setHostServices(["web.svc.edge-dmz.vz.test"])
+    _ = server.reload(snapshot: NetworkSnapshot(
+        networks: [
+            NetworkRecord(name: "dmz", cidr: "10.80.0.0/24", project: "edge-dmz"),
+            NetworkRecord(name: "lan", cidr: "10.90.0.0/24", natEgress: false, project: "edge-dmz"),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "web",
+                networkName: "dmz",
+                ip: "10.80.0.10",
+                project: "edge-dmz"
+            ),
+        ]
+    ))
+    let query = dnsQuery("web.svc.edge-dmz.vz.test")
+
+    let hostIps = aRecords(in: server.response(for: query, horizon: .host))
+    let guestIps = aRecords(in: server.response(for: query, horizon: .guest))
+
+    #expect(hostIps == ["10.80.0.1", "10.90.0.1"])
+    #expect(guestIps == ["10.80.0.1", "10.90.0.1"])
+}
+
+@Test func hostServicesSkipDockerBackendGateways() {
+    let snapshot = NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "dmz",
+                cidr: "10.80.0.0/24",
+                project: "edge-dmz"
+            ),
+            NetworkRecord(
+                name: "lan",
+                cidr: "10.90.0.0/24",
+                natEgress: false,
+                project: "edge-dmz"
+            ),
+            NetworkRecord(
+                name: "containers",
+                cidr: "10.95.0.0/24",
+                natEgress: false,
+                backend: NetworkRecord.backendDocker,
+                project: "edge-dmz"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "web",
+                networkName: "dmz",
+                ip: "10.80.0.10",
+                project: "edge-dmz"
+            ),
+        ]
+    )
+
+    let zone = DNSZoneBuilder.build(
+        snapshot: snapshot,
+        ttl: 15,
+        hostServices: ["web.svc.edge-dmz.vz.test"]
+    )
+
+    #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .host) == [
+        "10.80.0.1",
+        "10.90.0.1",
+    ])
+    #expect(zone.addresses(for: "web.svc.edge-dmz.vz.test", horizon: .guest) == [
+        "10.80.0.1",
+        "10.90.0.1",
+    ])
 }
 
 @Test func zoneBuilderCreatesVMARecordFromActualAttachments() {
@@ -337,6 +418,50 @@ private func dnsQuery(_ name: String) -> Data {
     data.append(0)
     data.append(contentsOf: [0, 1, 0, 1])
     return data
+}
+
+/// Extract A RDATA from an authoritative response (skips the question section).
+private func aRecords(in response: Data) -> [String] {
+    guard response.count >= 12 else { return [] }
+    let questionCount = Int(read16(response, 4))
+    let answerCount = Int(read16(response, 6))
+    var offset = 12
+    for _ in 0..<questionCount {
+        while offset < response.count, response[offset] != 0 {
+            let length = Int(response[offset])
+            guard length < 0xC0 else {
+                offset += 2
+                break
+            }
+            offset += 1 + length
+        }
+        if offset < response.count, response[offset] == 0 { offset += 1 }
+        offset += 4 // type + class
+    }
+    var ips: [String] = []
+    for _ in 0..<answerCount {
+        guard offset + 12 <= response.count else { break }
+        if response[offset] & 0xC0 == 0xC0 {
+            offset += 2
+        } else {
+            while offset < response.count, response[offset] != 0 {
+                let length = Int(response[offset])
+                offset += 1 + length
+            }
+            offset += 1
+        }
+        guard offset + 10 <= response.count else { break }
+        let type = read16(response, offset)
+        let rdlen = Int(read16(response, offset + 8))
+        offset += 10
+        guard offset + rdlen <= response.count else { break }
+        if type == 1, rdlen == 4 {
+            let bytes = Array(response[offset..<(offset + 4)])
+            ips.append(bytes.map(String.init).joined(separator: "."))
+        }
+        offset += rdlen
+    }
+    return ips
 }
 
 private func read16(_ data: Data, _ offset: Int) -> UInt16 {

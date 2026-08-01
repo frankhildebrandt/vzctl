@@ -1,13 +1,16 @@
 import Darwin
 import Foundation
 
-/// Privileged UDP bind helper protocol (SCM_RIGHTS over UDS).
+/// Privileged bind helper protocol (SCM_RIGHTS over UDS).
+/// Binds UDP (guest DNS :53) or TCP (ingress gateway :80/:443) on privileged ports.
 public enum DnsBind {
     public static let defaultSocketPath = "/var/run/vzctl/dns-bind.sock"
     public static let label = "com.vzctl.dns-bind"
     public static let libexecBinary = "/usr/local/libexec/vzctl/vz-dns-bind"
     public static let launchDaemonPlist = "/Library/LaunchDaemons/com.vzctl.dns-bind.plist"
     public static let privilegedPortLimit: UInt16 = 1024
+    public static let protoUDP = "udp"
+    public static let protoTCP = "tcp"
 
     public static func socketPath(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -23,21 +26,39 @@ public enum DnsBind {
         public var op: String
         public var address: String
         public var port: UInt16
+        /// `"udp"` (default) or `"tcp"`.
+        public var proto: String
 
-        public init(address: String, port: UInt16) {
+        public init(address: String, port: UInt16, proto: String = DnsBind.protoUDP) {
             self.op = "bind"
             self.address = address
             self.port = port
+            self.proto = proto
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case op, address, port, proto
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            op = try container.decode(String.self, forKey: .op)
+            address = try container.decode(String.self, forKey: .address)
+            port = try container.decode(UInt16.self, forKey: .port)
+            proto = try container.decodeIfPresent(String.self, forKey: .proto) ?? DnsBind.protoUDP
         }
     }
 
     public struct BindResponse: Codable, Equatable, Sendable {
         public var ok: Bool
         public var error: String?
+        /// TCP stream: `"listening"` then `"accept"` (with SCM_RIGHTS client FD).
+        public var event: String?
 
-        public init(ok: Bool, error: String? = nil) {
+        public init(ok: Bool, error: String? = nil, event: String? = nil) {
             self.ok = ok
             self.error = error
+            self.event = event
         }
     }
 
@@ -45,6 +66,7 @@ public enum DnsBind {
         case invalidJSON
         case unsupportedOp(String)
         case invalidAddress(String)
+        case invalidProto(String)
         case portNotPrivileged(UInt16)
         case portInvalid
 
@@ -56,6 +78,8 @@ public enum DnsBind {
                 return "unsupported dns-bind op: \(op)"
             case let .invalidAddress(address):
                 return "invalid IPv4 address: \(address)"
+            case let .invalidProto(proto):
+                return "invalid proto \(proto); use udp or tcp"
             case let .portNotPrivileged(port):
                 return "port \(port) is not privileged (< \(privilegedPortLimit))"
             case .portInvalid:
@@ -82,6 +106,10 @@ public enum DnsBind {
         }
         guard needsPrivilege(port: request.port) else {
             throw ValidationError.portNotPrivileged(request.port)
+        }
+        let proto = request.proto.lowercased()
+        guard proto == protoUDP || proto == protoTCP else {
+            throw ValidationError.invalidProto(request.proto)
         }
         var addr = in_addr()
         guard inet_pton(AF_INET, request.address, &addr) == 1 else {

@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 import VzDaemonKit
 
-/// TCP proxy: guest-facing gateway `.0:80/:443` → host loopback Caddy.
+/// TCP proxy: guest-facing gateway `.0:80/:443` (+ loopback) → Caddy on unprivileged ports.
 final class HostGatewayIngressProxy: @unchecked Sendable {
     struct Binding: Equatable, Sendable {
         let gatewayIP: String
@@ -14,12 +14,17 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var key: String { "\(gatewayIP):\(port)" }
     }
 
+    struct EnsureResult: Sendable {
+        let active: [Binding]
+        let skipped: [(Binding, String)]
+    }
+
     private let lock = NSLock()
     private var listeners: [String: Listener] = [:]
 
     /// Ensures gateway listeners. Per-binding bind failures are skipped
     /// (same soft-fail pattern as DNS `.0:53`) so host loopback Caddy still starts.
-    func ensure(_ desired: [Binding]) -> [Binding] {
+    func ensure(_ desired: [Binding]) -> EnsureResult {
         lock.lock()
         defer { lock.unlock() }
 
@@ -29,6 +34,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         }
 
         var active: [Binding] = []
+        var skipped: [(Binding, String)] = []
         for binding in desired {
             if let existing = listeners[binding.key], existing.matches(binding) {
                 active.append(binding)
@@ -40,11 +46,13 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
                 listeners[binding.key] = listener
                 active.append(binding)
             } catch {
-                // EADDRNOTAVAIL until host bridge is up; collision; etc.
-                continue
+                skipped.append((binding, "\(error)"))
             }
         }
-        return active.sorted { $0.key < $1.key }
+        return EnsureResult(
+            active: active.sorted { $0.key < $1.key },
+            skipped: skipped.sorted { $0.0.key < $1.0.key }
+        )
     }
 
     func list() -> [Binding] {
@@ -67,17 +75,40 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
 
     private final class Listener: @unchecked Sendable {
         let binding: Binding
-        private let fd: Int32
         private let queue: DispatchQueue
-        private var source: DispatchSourceRead?
         private var sessions: [UUID: Session] = [:]
         private let sessionLock = NSLock()
+        private var stopped = false
+        private var localFD: Int32 = -1
+        private var acceptStream: DnsBindClient.TCPAcceptStream?
 
         init(binding: Binding) throws {
             self.binding = binding
+            queue = DispatchQueue(label: "vzctl.ingress.gw.\(binding.key)")
+            if DnsBind.needsPrivilege(port: binding.port) {
+                // Helper owns listen()+accept(); we receive client FDs over UDS.
+                acceptStream = try DnsBindClient.openTCPAcceptStream(
+                    address: binding.gatewayIP,
+                    port: binding.port
+                )
+            } else {
+                let sock = try Self.bindLocally(address: binding.gatewayIP, port: binding.port)
+                guard Darwin.listen(sock, 32) == 0 else {
+                    let code = errno
+                    Darwin.close(sock)
+                    throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
+                }
+                localFD = sock
+            }
+            queue.async { [self] in
+                self.acceptLoop()
+            }
+        }
+
+        private static func bindLocally(address: String, port: UInt16) throws -> Int32 {
             let sock = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
             guard sock >= 0 else {
-                throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, errno)
+                throw PortProxyError.bindFailed(address, port, errno)
             }
             var yes: Int32 = 1
             setsockopt(
@@ -90,10 +121,10 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             var addr = sockaddr_in()
             addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
             addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = binding.port.bigEndian
-            guard inet_pton(AF_INET, binding.gatewayIP, &addr.sin_addr) == 1 else {
+            addr.sin_port = port.bigEndian
+            guard inet_pton(AF_INET, address, &addr.sin_addr) == 1 else {
                 Darwin.close(sock)
-                throw PortProxyError.invalidAddress(binding.gatewayIP)
+                throw PortProxyError.invalidAddress(address)
             }
             let bindResult = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -104,26 +135,11 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
                 let code = errno
                 Darwin.close(sock)
                 if code == EADDRINUSE {
-                    throw PortProxyError.collision(binding.gatewayIP, binding.port)
+                    throw PortProxyError.collision(address, port)
                 }
-                throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
+                throw PortProxyError.bindFailed(address, port, code)
             }
-            guard Darwin.listen(sock, 32) == 0 else {
-                let code = errno
-                Darwin.close(sock)
-                throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
-            }
-            fd = sock
-            queue = DispatchQueue(label: "vzctl.ingress.gw.\(binding.key)")
-            let source = DispatchSource.makeReadSource(fileDescriptor: sock, queue: queue)
-            source.setEventHandler { [weak self] in
-                self?.acceptOne()
-            }
-            source.setCancelHandler {
-                Darwin.close(sock)
-            }
-            self.source = source
-            source.resume()
+            return sock
         }
 
         func matches(_ other: Binding) -> Bool {
@@ -131,8 +147,14 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         }
 
         func close() {
-            source?.cancel()
-            source = nil
+            stopped = true
+            acceptStream?.close()
+            acceptStream = nil
+            if localFD >= 0 {
+                Darwin.shutdown(localFD, SHUT_RDWR)
+                Darwin.close(localFD)
+                localFD = -1
+            }
             sessionLock.lock()
             let values = Array(sessions.values)
             sessions.removeAll()
@@ -142,30 +164,47 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             }
         }
 
-        private func acceptOne() {
-            let client = Darwin.accept(fd, nil, nil)
-            guard client >= 0 else { return }
-            var noSigPipe: Int32 = 1
-            setsockopt(
-                client,
-                SOL_SOCKET,
-                SO_NOSIGPIPE,
-                &noSigPipe,
-                socklen_t(MemoryLayout<Int32>.size)
-            )
-            do {
-                let backend = try connectBackend()
-                let session = Session(client: client, backend: backend) { [weak self] id in
-                    self?.sessionLock.lock()
-                    self?.sessions.removeValue(forKey: id)
-                    self?.sessionLock.unlock()
+        private func acceptLoop() {
+            while !stopped {
+                let client: Int32
+                do {
+                    if let stream = acceptStream {
+                        client = try stream.accept()
+                    } else if localFD >= 0 {
+                        let accepted = Darwin.accept(localFD, nil, nil)
+                        if accepted < 0 {
+                            if errno == EINTR { continue }
+                            return
+                        }
+                        client = accepted
+                    } else {
+                        return
+                    }
+                } catch {
+                    return
                 }
-                sessionLock.lock()
-                sessions[session.id] = session
-                sessionLock.unlock()
-                session.start()
-            } catch {
-                Darwin.close(client)
+                var noSigPipe: Int32 = 1
+                setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_NOSIGPIPE,
+                    &noSigPipe,
+                    socklen_t(MemoryLayout<Int32>.size)
+                )
+                do {
+                    let backend = try connectBackend()
+                    let session = Session(client: client, backend: backend) { [weak self] id in
+                        self?.sessionLock.lock()
+                        self?.sessions.removeValue(forKey: id)
+                        self?.sessionLock.unlock()
+                    }
+                    sessionLock.lock()
+                    sessions[session.id] = session
+                    sessionLock.unlock()
+                    session.start()
+                } catch {
+                    Darwin.close(client)
+                }
             }
         }
 
@@ -206,9 +245,6 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         let id = UUID()
         private let client: Int32
         private let backend: Int32
-        private let queue: DispatchQueue
-        private var clientSource: DispatchSourceRead?
-        private var backendSource: DispatchSourceRead?
         private let onClose: (UUID) -> Void
         private let lock = NSLock()
         private var closed = false
@@ -217,46 +253,52 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             self.client = client
             self.backend = backend
             self.onClose = onClose
-            queue = DispatchQueue(label: "vzctl.ingress.session.\(UUID().uuidString)")
         }
 
         func start() {
-            let clientSource = DispatchSource.makeReadSource(fileDescriptor: client, queue: queue)
-            clientSource.setEventHandler { [weak self] in
-                self?.pump(from: self?.client ?? -1, to: self?.backend ?? -1)
+            let clientFD = client
+            let backendFD = backend
+            let group = DispatchGroup()
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                Self.relay(from: clientFD, to: backendFD)
+                Darwin.shutdown(backendFD, SHUT_WR)
+                Darwin.shutdown(clientFD, SHUT_RD)
+                group.leave()
             }
-            clientSource.setCancelHandler { [weak self] in
-                if let fd = self?.client { Darwin.close(fd) }
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                Self.relay(from: backendFD, to: clientFD)
+                Darwin.shutdown(clientFD, SHUT_WR)
+                Darwin.shutdown(backendFD, SHUT_RD)
+                group.leave()
             }
-            let backendSource = DispatchSource.makeReadSource(fileDescriptor: backend, queue: queue)
-            backendSource.setEventHandler { [weak self] in
-                self?.pump(from: self?.backend ?? -1, to: self?.client ?? -1)
+            let onClose = self.onClose
+            let id = self.id
+            group.notify(queue: .global(qos: .utility)) {
+                Darwin.close(clientFD)
+                Darwin.close(backendFD)
+                onClose(id)
             }
-            backendSource.setCancelHandler { [weak self] in
-                if let fd = self?.backend { Darwin.close(fd) }
-            }
-            self.clientSource = clientSource
-            self.backendSource = backendSource
-            clientSource.resume()
-            backendSource.resume()
         }
 
-        private func pump(from: Int32, to: Int32) {
-            guard from >= 0, to >= 0 else { return }
+        private static func relay(from: Int32, to: Int32) {
             var buffer = [UInt8](repeating: 0, count: 65_536)
-            let count = Darwin.read(from, &buffer, buffer.count)
-            if count <= 0 {
-                close()
-                return
-            }
-            var offset = 0
-            while offset < count {
-                let written = Darwin.write(to, &buffer[offset], count - offset)
-                if written <= 0 {
-                    close()
-                    return
+            while true {
+                let count: Int = buffer.withUnsafeMutableBytes { raw in
+                    guard let base = raw.baseAddress else { return -1 }
+                    return Darwin.read(from, base, raw.count)
                 }
-                offset += written
+                if count <= 0 { return }
+                var offset = 0
+                while offset < count {
+                    let written: Int = buffer.withUnsafeBytes { raw in
+                        guard let base = raw.baseAddress else { return -1 }
+                        return Darwin.write(to, base.advanced(by: offset), count - offset)
+                    }
+                    if written <= 0 { return }
+                    offset += written
+                }
             }
         }
 
@@ -265,10 +307,8 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             defer { lock.unlock() }
             guard !closed else { return }
             closed = true
-            clientSource?.cancel()
-            backendSource?.cancel()
-            clientSource = nil
-            backendSource = nil
+            Darwin.shutdown(client, SHUT_RDWR)
+            Darwin.shutdown(backend, SHUT_RDWR)
             onClose(id)
         }
     }

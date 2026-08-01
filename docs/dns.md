@@ -9,15 +9,26 @@ den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 | Host | `127.0.0.1:15353` | macOS `/etc/resolver` |
 | Guest | Bridge-`.0:53` | Standard-DNS der Guests |
 
-Port 53 ist privilegiert. Der unprivilegierte LaunchAgent-Supervisor holt
-gebundene UDP-FDs vom Root-LaunchDaemon `vz-dns-bind` (SCM_RIGHTS):
+Port 53 (UDP) und Ingress-Ports 80/443 (TCP) sind privilegiert. Der
+unprivilegierte LaunchAgent-Supervisor nutzt den Root-LaunchDaemon
+`vz-dns-bind` (SCM_RIGHTS):
+
+- **UDP** (`:53`): Helper bindet und gibt den Socket-FD zurück (Guest-DNS auf
+  Bridge-`.0`).
+- **TCP** (`:80`/`:443`): Helper legt bei Bedarf Host-Service-Alias `.1` auf dem
+  Bridge an, bindet+listens und streamt akzeptierte Client-FDs über dieselbe
+  UDS-Verbindung. Ingress-`*.svc` zeigt auf Host-Service-`.1` (nicht `.0` —
+  Guest-TCP zu `.0` wird auf macOS-vmnet verworfen; nicht `127.0.0.1`, weil
+  mDNSResponder auf `*:53` Guest-Queries stehlen und über den Host-Resolver
+  beantworten kann — Loopback wäre im Guest tot).
 
 ```sh
 sudo vzctl dns install-bind-helper
 sudo vzctl dns uninstall-bind-helper
 ```
 
-Ohne Helper schlägt `.0:53` mit `Permission denied` fehl (`dns_ok=false`).
+Ohne Helper schlägt `.0:53` mit `Permission denied` fehl (`dns_ok=false`);
+Guest-Ingress über `.0:80/:443` bleibt dann ebenfalls ohne Proxy-Listener.
 Für unprivilegierte Dev-Läufe ohne Helper:
 
 ```sh
@@ -25,7 +36,8 @@ VZCTL_DNS_GUEST_PORT=15353
 ```
 
 Der produktive Guest-Pfad setzt Port 53 voraus (Guest-`nameserver` ist
-Bridge-`.0` ohne Port-Override).
+Bridge-`.0` ohne Port-Override). Netze mit `backend: docker` haben keine
+Host-Bridge-IP und bekommen weder Guest-DNS-Listener noch `*.svc`-Gateway-Records.
 
 ## Autoritative Zone
 

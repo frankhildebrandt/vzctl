@@ -23,7 +23,7 @@ enum DnsBindClient {
         }
     }
 
-    /// Ask the privileged helper to bind `address:port` and return the UDP FD.
+    /// Ask the privileged helper to bind `address:port` (UDP) and return the FD.
     /// Caller owns the returned descriptor.
     static func bindUDP(
         address: String,
@@ -31,12 +31,128 @@ enum DnsBindClient {
         socketPath: String = DnsBind.socketPath(),
         timeoutSeconds: Int = 2
     ) throws -> Int32 {
-        let request = DnsBind.BindRequest(address: address, port: port)
-        try DnsBind.validate(request)
+        let client = try connect(
+            socketPath: socketPath,
+            timeoutSeconds: timeoutSeconds
+        )
+        defer { Darwin.close(client) }
+        try sendRequest(
+            DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoUDP),
+            on: client
+        )
+        let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
+        let response = try decodeResponse(responseData)
+        guard response.ok else {
+            throw Error.helper(response.error ?? "bind failed")
+        }
+        guard let fileDescriptor else {
+            throw Error.response("missing file descriptor")
+        }
+        return fileDescriptor
+    }
 
+    /// Open a privileged TCP accept stream: helper listens and forwards accepted clients.
+    static func openTCPAcceptStream(
+        address: String,
+        port: UInt16,
+        socketPath: String = DnsBind.socketPath(),
+        timeoutSeconds: Int = 2
+    ) throws -> TCPAcceptStream {
+        let client = try connect(
+            socketPath: socketPath,
+            timeoutSeconds: timeoutSeconds
+        )
+        do {
+            try sendRequest(
+                DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoTCP),
+                on: client
+            )
+            let (responseData, fd) = try UnixFDPassing.receive(on: client)
+            if let fd { Darwin.close(fd) }
+            let response = try decodeResponse(responseData)
+            guard response.ok else {
+                Darwin.close(client)
+                throw Error.helper(response.error ?? "bind failed")
+            }
+            guard response.event == "listening" else {
+                Darwin.close(client)
+                throw Error.response("expected listening event, got \(response.event ?? "nil")")
+            }
+            // Accept stream stays open indefinitely; clear the connect-phase timeouts.
+            var clear = timeval(tv_sec: 0, tv_usec: 0)
+            setsockopt(
+                client,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                &clear,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+            setsockopt(
+                client,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                &clear,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+            return TCPAcceptStream(socket: client)
+        } catch {
+            Darwin.close(client)
+            throw error
+        }
+    }
+
+    /// Long-lived UDS session that yields accepted client FDs from the helper.
+    final class TCPAcceptStream: @unchecked Sendable {
+        private let socket: Int32
+        private let lock = NSLock()
+        private var closed = false
+
+        init(socket: Int32) {
+            self.socket = socket
+        }
+
+        /// Blocks until the helper accepts a TCP client. Returns owned client FD.
+        func accept() throws -> Int32 {
+            lock.lock()
+            if closed {
+                lock.unlock()
+                throw Error.response("accept stream closed")
+            }
+            let socket = self.socket
+            lock.unlock()
+
+            let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: socket)
+            let response = try decodeResponse(responseData)
+            guard response.ok else {
+                throw Error.helper(response.error ?? "accept failed")
+            }
+            guard response.event == "accept" else {
+                if let fileDescriptor { Darwin.close(fileDescriptor) }
+                throw Error.response("expected accept event, got \(response.event ?? "nil")")
+            }
+            guard let fileDescriptor else {
+                throw Error.response("missing accepted file descriptor")
+            }
+            return fileDescriptor
+        }
+
+        func close() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closed else { return }
+            closed = true
+            Darwin.shutdown(socket, SHUT_RDWR)
+            Darwin.close(socket)
+        }
+
+        deinit {
+            close()
+        }
+    }
+
+    private static func connect(socketPath: String, timeoutSeconds: Int) throws -> Int32 {
         let client = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard client >= 0 else { throw Error.system("socket", errno) }
-        defer { Darwin.close(client) }
 
         var timeval = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         setsockopt(
@@ -58,6 +174,7 @@ enum DnsBindClient {
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = socketPath.utf8CString
         guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+            Darwin.close(client)
             throw Error.connect("socket path too long")
         }
         withUnsafeMutableBytes(of: &addr.sun_path) { buffer in
@@ -71,9 +188,15 @@ enum DnsBindClient {
             }
         }
         guard connected == 0 else {
-            throw Error.connect(String(cString: strerror(errno)))
+            let code = errno
+            Darwin.close(client)
+            throw Error.connect(String(cString: strerror(code)))
         }
+        return client
+    }
 
+    private static func sendRequest(_ request: DnsBind.BindRequest, on client: Int32) throws {
+        try DnsBind.validate(request)
         var payload = try JSONEncoder().encode(request)
         payload.append(0x0A)
         let sent = payload.withUnsafeBytes { raw in
@@ -82,20 +205,15 @@ enum DnsBindClient {
         guard sent == payload.count else {
             throw Error.system("send", errno)
         }
+    }
 
-        let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
-        let trimmed = responseData.trimmingASCIINewlinesPublic()
+    fileprivate static func decodeResponse(_ data: Data) throws -> DnsBind.BindResponse {
+        let trimmed = data.trimmingASCIINewlinesPublic()
         guard let response = try? JSONDecoder().decode(DnsBind.BindResponse.self, from: trimmed)
         else {
             throw Error.response("invalid JSON")
         }
-        guard response.ok else {
-            throw Error.helper(response.error ?? "bind failed")
-        }
-        guard let fileDescriptor else {
-            throw Error.response("missing file descriptor")
-        }
-        return fileDescriptor
+        return response
     }
 }
 

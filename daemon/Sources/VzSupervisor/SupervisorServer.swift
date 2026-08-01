@@ -217,6 +217,22 @@ final class SupervisorServer: @unchecked Sendable {
                 result: dnsServer.health().json,
                 id: request.id ?? .null
             )
+        case "dns.lookup":
+            do {
+                let params = try networkParams(request.params)
+                let name = try requiredString("name", from: params)
+                let result = dnsServer.lookup(name)
+                return JSONRPCResponse(
+                    result: .object([
+                        "name": .string(DNSZoneBuilder.canonicalName(name)),
+                        "host": result.host.map { .array($0.map(JSONValue.string)) } ?? .null,
+                        "guest": result.guest.map { .array($0.map(JSONValue.string)) } ?? .null,
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "daemon.version":
             return JSONRPCResponse(result: .string(VzDaemonKit.version), id: request.id ?? .null)
         case "vm.list":
@@ -618,36 +634,16 @@ final class SupervisorServer: @unchecked Sendable {
                     ?? stateDirectory.appendingPathComponent("bin/caddy").path
                 let httpPort = try optionalPort("http_port", from: params) ?? 80
                 let httpsPort = try optionalPort("https_port", from: params) ?? 443
+                let backendHttpPort = try optionalPort("backend_http_port", from: params) ?? httpPort
+                let backendHttpsPort =
+                    try optionalPort("backend_https_port", from: params) ?? httpsPort
                 let workDir = stateDirectory
                     .appendingPathComponent("runtime/ingress/\(project)", isDirectory: true)
                 try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
                 let configPath = workDir.appendingPathComponent("Caddyfile").path
                 try caddyfile.write(toFile: configPath, atomically: true, encoding: .utf8)
 
-                var bindings: [HostGatewayIngressProxy.Binding] = []
-                if case let .array(gateways) = params["gateways"] {
-                    for item in gateways {
-                        guard case let .string(ip) = item else { continue }
-                        bindings.append(
-                            .init(
-                                gatewayIP: ip,
-                                port: httpPort,
-                                backendHost: "127.0.0.1",
-                                backendPort: httpPort
-                            )
-                        )
-                        bindings.append(
-                            .init(
-                                gatewayIP: ip,
-                                port: httpsPort,
-                                backendHost: "127.0.0.1",
-                                backendPort: httpsPort
-                            )
-                        )
-                    }
-                }
-                let activeBindings = gatewayIngressProxy.ensure(bindings)
-
+                // Start Caddy on unprivileged backend ports before binding public proxies.
                 let status = try embeddedProcesses.ensure(
                     EmbeddedProcessManager.Spec(
                         name: "caddy-\(project)",
@@ -658,11 +654,38 @@ final class SupervisorServer: @unchecked Sendable {
                         env: [:]
                     )
                 )
+
+                var bindings: [HostGatewayIngressProxy.Binding] = []
+                if case let .array(gateways) = params["gateways"] {
+                    for item in gateways {
+                        guard case let .string(ip) = item else { continue }
+                        bindings.append(
+                            .init(
+                                gatewayIP: ip,
+                                port: httpPort,
+                                backendHost: "127.0.0.1",
+                                backendPort: backendHttpPort
+                            )
+                        )
+                        bindings.append(
+                            .init(
+                                gatewayIP: ip,
+                                port: httpsPort,
+                                backendHost: "127.0.0.1",
+                                backendPort: backendHttpsPort
+                            )
+                        )
+                    }
+                }
+                let ensureResult = gatewayIngressProxy.ensure(bindings)
+                let activeBindings = ensureResult.active
+
                 emit(
                     type: "ingress.ensured",
                     data: [
                         "project": .string(project),
                         "bindings": .number(Double(activeBindings.count)),
+                        "skipped": .number(Double(ensureResult.skipped.count)),
                     ]
                 )
                 return JSONRPCResponse(
@@ -673,6 +696,13 @@ final class SupervisorServer: @unchecked Sendable {
                             .object([
                                 "gateway": .string($0.gatewayIP),
                                 "port": .number(Double($0.port)),
+                            ])
+                        }),
+                        "skipped": .array(ensureResult.skipped.map { binding, error in
+                            .object([
+                                "gateway": .string(binding.gatewayIP),
+                                "port": .number(Double(binding.port)),
+                                "error": .string(error),
                             ])
                         }),
                     ]),
