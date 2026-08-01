@@ -2304,6 +2304,76 @@ fn helper_is_running(vm_id: &str, socket_path: &Path) -> Result<bool, Failure> {
     }
 }
 
+fn guest_mount_unsupported(failure: &Failure) -> bool {
+    let message = failure.message.to_ascii_lowercase();
+    message.contains("unsupported") && message.contains("method")
+}
+
+/// Bind a virtiofs share into PID 1's mount namespace (visible to Docker).
+///
+/// After a live share swap, previous guest mounts may show `//deleted` in
+/// mountinfo until cleared. Always clear + remount in the init mount ns.
+fn guest_virtiofs_bind_mount(
+    id: &str,
+    mount: &crate::mounts::ResolvedMount,
+    socket_path: &Path,
+) -> Result<(), Failure> {
+    // Deploy the current helper (PrivateTmp hides /tmp from PID 1) then bind.
+    let script = include_str!("../../../guest-agent/scripts/virtiofs-bind");
+    let deploy_and_bind = format!(
+        r#"set -eu
+helper=/usr/local/lib/vzctl/virtiofs-bind
+cat >"$helper.new" <<'VZCTL_VIRTIOFS_BIND_EOF'
+{script}
+VZCTL_VIRTIOFS_BIND_EOF
+chmod 0755 "$helper.new"
+mv -f "$helper.new" "$helper"
+nsenter -t 1 -m -- "$helper" mount {name} {target}{mode_arg}
+"#,
+        script = script,
+        name = sh_escape(&mount.name),
+        target = sh_escape(&mount.target),
+        mode_arg = if mount.read_only { " ro" } else { "" },
+    );
+    let args = vec![
+        "sudo".into(),
+        "-n".into(),
+        "sh".into(),
+        "-c".into(),
+        deploy_and_bind,
+    ];
+    let result = exec_vm(id, &args, None, &BTreeMap::new(), 60_000, socket_path)?;
+    let exit = result["exit_code"].as_u64().unwrap_or(1);
+    if exit != 0 {
+        let stderr = result
+            .pointer("/exec/stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let stdout = result
+            .pointer("/exec/stdout")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "virtiofs-bind failed"
+        };
+        return Err(Failure::new(
+            EXIT_GUEST,
+            format!("guest virtiofs bind {}: {detail}", mount.target),
+        ));
+    }
+    Ok(())
+}
+
+fn sh_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn mount_vm(
     id: &str,
     source: &Path,
@@ -2357,7 +2427,7 @@ fn mount_vm(
         .map_err(|message| Failure::new(EXIT_VM_DISK, message))?;
 
     if helper_is_running(id, socket_path)? {
-        let result = rpc(
+        let rpc_result = rpc(
             socket_path,
             "vm.mount.add",
             json!({
@@ -2367,7 +2437,19 @@ fn mount_vm(
                 "target": mount.target,
                 "read_only": mount.read_only,
             }),
-        )?;
+        );
+        let result = match rpc_result {
+            Ok(value) => value,
+            Err(failure) if guest_mount_unsupported(&failure) => {
+                // Helper applies the share before agent fs.mount; old agents
+                // lack fs.mount — guest_virtiofs_bind_mount below still binds.
+                json!({ "mounts": mounts.iter().map(crate::mounts::ResolvedMount::to_json).collect::<Vec<_>>() })
+            }
+            Err(failure) => return Err(failure),
+        };
+        // Agent may run under PrivateTmp (own mount ns). Docker uses PID 1's
+        // namespace — always ensure the bind there (clears //deleted after share swap).
+        guest_virtiofs_bind_mount(id, &mount, socket_path)?;
         return Ok(json!({
             "apiVersion": API_VERSION,
             "command": "vm.mount",

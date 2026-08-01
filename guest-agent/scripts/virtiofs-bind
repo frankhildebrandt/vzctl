@@ -13,18 +13,69 @@ die() {
   exit 1
 }
 
+# PrivateTmp=yes gives vzctl-agent its own mount namespace. Docker and other
+# host services use PID 1's namespace — re-exec there so binds are visible.
+ensure_host_mount_ns() {
+  [ -r /proc/1/ns/mnt ] && [ -r /proc/self/ns/mnt ] || return 0
+  self_ns=$(readlink /proc/self/ns/mnt 2>/dev/null || true)
+  init_ns=$(readlink /proc/1/ns/mnt 2>/dev/null || true)
+  [ -n "$self_ns" ] && [ -n "$init_ns" ] || return 0
+  [ "$self_ns" = "$init_ns" ] && return 0
+  command -v nsenter >/dev/null 2>&1 || die "nsenter required to apply mounts in host namespace"
+  exec nsenter -t 1 -m -- "$0" "$@"
+}
+
 valid_name() {
   name=$1
   [ "$name" != "$DEVICE_TAG" ] || return 1
   printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]{0,35}$'
 }
 
-ensure_virtiofs_root() {
-  mkdir -p "$GUEST_ROOT"
-  if ! mountpoint -q "$GUEST_ROOT" 2>/dev/null; then
-    mount -t virtiofs "$DEVICE_TAG" "$GUEST_ROOT" || die "cannot mount virtiofs tag $DEVICE_TAG"
+# mkdir -p with 755 on every missing component (default umask would be 700 under agent).
+mkdir_p_755() {
+  dest=$1
+  case "$dest" in
+    /*) ;;
+    *) die "path must be absolute" ;;
+  esac
+  path=
+  old_ifs=$IFS
+  IFS=/
+  # shellcheck disable=SC2086
+  set -- $dest
+  IFS=$old_ifs
+  for part; do
+    [ -n "$part" ] || continue
+    path="$path/$part"
+    if [ ! -e "$path" ]; then
+      mkdir -m 755 "$path" || die "mkdir $path failed"
+    elif [ -d "$path" ]; then
+      # Parents created earlier under umask 077 block non-root traversal.
+      chmod a+rx "$path" 2>/dev/null || true
+    fi
+  done
+}
+
+# Drop stale binds left after a virtiofs share swap (mountinfo shows //deleted).
+clear_stale_mount() {
+  dest=$1
+  if grep -F " $dest " /proc/self/mountinfo 2>/dev/null | grep -q '//deleted'; then
+    umount -l "$dest" 2>/dev/null || umount "$dest" 2>/dev/null || true
   fi
 }
+
+ensure_virtiofs_root() {
+  mkdir_p_755 "$GUEST_ROOT"
+  clear_stale_mount "$GUEST_ROOT"
+  if ! mountpoint -q "$GUEST_ROOT" 2>/dev/null; then
+    mount -t virtiofs "$DEVICE_TAG" "$GUEST_ROOT" || die "cannot mount virtiofs tag $DEVICE_TAG"
+  elif ! [ -d "$GUEST_ROOT" ]; then
+    umount -l "$GUEST_ROOT" 2>/dev/null || umount "$GUEST_ROOT" 2>/dev/null || true
+    mount -t virtiofs "$DEVICE_TAG" "$GUEST_ROOT" || die "cannot remount virtiofs tag $DEVICE_TAG"
+  fi
+}
+
+ensure_host_mount_ns "$@"
 
 cmd=${1:-}
 case "$cmd" in
@@ -42,9 +93,15 @@ case "$cmd" in
     ensure_virtiofs_root
     source="$GUEST_ROOT/$name"
     [ -d "$source" ] || die "share $name is not visible under $GUEST_ROOT"
-    mkdir -p "$target"
+    clear_stale_mount "$target"
+    mkdir_p_755 "$target"
     if mountpoint -q "$target" 2>/dev/null; then
-      exit 0
+      # Healthy bind already present.
+      if [ -d "$target" ] && ls "$target" >/dev/null 2>&1; then
+        exit 0
+      fi
+      umount -l "$target" 2>/dev/null || umount "$target" 2>/dev/null || true
+      mkdir_p_755 "$target"
     fi
     if [ "$mode" = ro ]; then
       mount --bind -o ro "$source" "$target" || die "bind mount failed"
@@ -55,8 +112,11 @@ case "$cmd" in
   unmount)
     name=${2:-}
     target=${3:-}
-    if [ -n "$target" ] && mountpoint -q "$target" 2>/dev/null; then
-      umount "$target" || die "umount $target failed"
+    if [ -n "$target" ]; then
+      clear_stale_mount "$target"
+      if mountpoint -q "$target" 2>/dev/null; then
+        umount "$target" || die "umount $target failed"
+      fi
     fi
     ;;
   *)

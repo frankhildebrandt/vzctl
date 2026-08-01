@@ -55,7 +55,9 @@ System NoCloud installs:
 - `/etc/sudoers.d/vzctl-virtiofs` for `vzctl-agent`
 
 The Guest-Agent capability is `fs_mount`. The agent process itself stays without
-`CAP_SYS_ADMIN`.
+`CAP_SYS_ADMIN`. `virtiofs-bind` re-enters PID 1's mount namespace (`nsenter`)
+so binds remain visible to Docker and other host services when the agent runs
+with `PrivateTmp=yes`.
 
 ## Coherence / edge cases
 
