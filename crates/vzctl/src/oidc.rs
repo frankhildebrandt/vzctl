@@ -549,6 +549,7 @@ pub(crate) fn write_clients(state_dir: &Path, project: &str, data: &Value) -> Re
 }
 
 /// Persist host uplink YAML (no secret inline) under Application Support.
+#[cfg(test)]
 pub(crate) fn write_host_uplink(state_dir: &Path, uplink: &OidcUplink) -> Result<PathBuf, String> {
     let path = host_uplink_path(state_dir);
     if let Some(parent) = path.parent() {
@@ -576,6 +577,7 @@ pub(crate) fn write_host_uplink(state_dir: &Path, uplink: &OidcUplink) -> Result
 }
 
 /// Write host client secret (0600).
+#[cfg(test)]
 pub(crate) fn write_host_secret(state_dir: &Path, secret: &str) -> Result<PathBuf, String> {
     let dir = host_oidc_dir(state_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
