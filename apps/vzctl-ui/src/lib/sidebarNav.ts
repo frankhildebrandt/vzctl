@@ -155,7 +155,8 @@ function buildSettings(): SidebarNavModel {
     context: "settings",
     contextKey: "settings",
     title: "Settings",
-    back: { label: "Zurück", to: "/" },
+    // Kein Zurück: Escape ist bereits „← Dashboard“ in der Brand-Zeile.
+    back: null,
     showDashboard: true,
     items: [
       {

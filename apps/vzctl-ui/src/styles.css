@@ -214,6 +214,22 @@ button.secondary:hover:not(:disabled) {
   padding: 0 0.65rem 0.35rem;
 }
 
+.sidebar-brand-link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius);
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.sidebar-brand-link:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+
+.sidebar-brand-link:hover .sidebar-logo {
+  color: var(--sidebar-text);
+}
+
 .sidebar-logo {
   font-size: clamp(1.2rem, 1.6vw, 1.45rem);
   font-weight: 700;

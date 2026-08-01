@@ -61,10 +61,10 @@ describe("resolveSidebarNav", () => {
     expect(nav.items.map((i) => i.id)).toEqual(["overview"]);
   });
 
-  it("builds settings with back and dashboard", () => {
+  it("builds settings with dashboard escape and no redundant back", () => {
     const nav = resolveSidebarNav({ pathname: "/settings", search: {} });
     expect(nav.context).toBe("settings");
-    expect(nav.back?.to).toBe("/");
+    expect(nav.back).toBeNull();
     expect(nav.showDashboard).toBe(true);
     expect(nav.showSettingsBottom).toBe(false);
   });

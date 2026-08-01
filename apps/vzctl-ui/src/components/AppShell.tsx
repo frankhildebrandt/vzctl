@@ -16,14 +16,25 @@ export function AppShell({ children }: { children: ReactNode }) {
           onMouseDown={startWindowDrag}
         >
           <div className="traffic-spacer" data-tauri-drag-region aria-hidden />
-          <div className="sidebar-brand" data-tauri-drag-region>
-            <span className="sidebar-logo" data-tauri-drag-region>
-              vzctl
-            </span>
-            <span className="sidebar-tag" data-tauri-drag-region>
-              hypervisor
-            </span>
-          </div>
+          {nav.showDashboard ? (
+            <Link
+              to="/"
+              className="sidebar-brand sidebar-brand-link"
+              aria-label="Zum Dashboard"
+            >
+              <span className="sidebar-logo">← Dashboard</span>
+              <span className="sidebar-tag">vzctl</span>
+            </Link>
+          ) : (
+            <div className="sidebar-brand" data-tauri-drag-region>
+              <span className="sidebar-logo" data-tauri-drag-region>
+                vzctl
+              </span>
+              <span className="sidebar-tag" data-tauri-drag-region>
+                hypervisor
+              </span>
+            </div>
+          )}
         </div>
 
         <nav className="sidebar-nav" aria-label="Hauptnavigation">
@@ -36,17 +47,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className="sidebar-link sidebar-back"
               >
                 ← {nav.back.label}
-              </Link>
-            ) : null}
-
-            {nav.showDashboard ? (
-              <Link
-                to="/"
-                className="sidebar-link"
-                activeOptions={{ exact: true }}
-                activeProps={{ className: "sidebar-link active" }}
-              >
-                Dashboard
               </Link>
             ) : null}
 
