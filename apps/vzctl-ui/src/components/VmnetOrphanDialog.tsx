@@ -72,9 +72,9 @@ export function VmnetOrphanDialog({
       >
         <h3 id={titleId}>vmnet-CIDR verwaist</h3>
         <p>
-          <code>{orphanedCidr}</code> ist nach einem unclean Exit auf dem Host
-          blockiert (Status 1002). Bis zum Reboot oder einer neuen CIDR schlägt
-          der Netz-Reserve fehl.
+          <code>{orphanedCidr}</code> ist nach einem unclean Exit von{" "}
+          <code>vz-net</code> auf dem Host blockiert (Status 1001). Bis zum Reboot
+          oder einer neuen CIDR schlägt der Netz-Reserve fehl.
         </p>
         <ul className="vmnet-orphan-options">
           <li>

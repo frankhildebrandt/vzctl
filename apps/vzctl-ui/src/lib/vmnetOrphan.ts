@@ -10,14 +10,14 @@ export type VmnetOrphanInfo = {
 };
 
 const ORPHAN_RE =
-  /vmnet reserve\s+(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})\s+failed\s*\(1002\)/i;
+  /vmnet reserve\s+(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})\s+failed\s*\((1001|1002)\)/i;
 const ORPHAN_HINT_RE = /orphaned until reboot/i;
 
 export function parseVmnetOrphanError(error: unknown): VmnetOrphanInfo | null {
   const message = String(error ?? "");
   const match = message.match(ORPHAN_RE);
   if (!match?.[1]) return null;
-  if (!ORPHAN_HINT_RE.test(message) && !/\(1002\)/.test(message)) return null;
+  if (!ORPHAN_HINT_RE.test(message) && !/\(100[12]\)/.test(message)) return null;
   return { cidr: match[1], message };
 }
 

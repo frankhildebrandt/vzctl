@@ -35,9 +35,11 @@ import { IngressLinksCard } from "@/components/IngressLinks";
 import { SettingsPage } from "@/components/SettingsPage";
 import { ProjectOidcUplinkSection } from "@/components/ProjectOidcUplinkSection";
 import { StackStatusCard } from "@/components/StackStatus";
-import { DashboardPage, PlaceholderPage } from "@/components/pages";
+import { DashboardPage } from "@/components/pages";
 import { ContainerDetailPage } from "@/components/ContainerDetailPage";
 import { ContainersPage } from "@/components/ContainersPage";
+import { ImagesPage } from "@/components/ImagesPage";
+import { NetworksPage } from "@/components/NetworksPage";
 import { VmDetailPage } from "@/components/VmDetailPage";
 import { VmListPage } from "@/components/VmListPage";
 import { parseIngressInfo } from "@/lib/ingress";
@@ -173,12 +175,7 @@ export const projectsRoute = createRoute({
 export const networksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/networks",
-  component: () => (
-    <PlaceholderPage
-      title="Networks"
-      hint="Hier erscheint die Netzwerk-Übersicht. Noch nicht angebunden."
-    />
-  ),
+  component: NetworksPage,
 });
 
 export const doctorRoute = createRoute({
@@ -209,12 +206,7 @@ export const demoRoute = createRoute({
 export const imagesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/images",
-  component: () => (
-    <PlaceholderPage
-      title="Images"
-      hint="Hier erscheint der Image-Cache (vzctl image …). Noch nicht angebunden."
-    />
-  ),
+  component: ImagesPage,
 });
 
 export const envRoute = createRoute({
@@ -690,7 +682,7 @@ function ProjectDetailPage() {
         return {
           title: "Stack entfernen",
           message:
-            "Stack stoppen und löschen (VMs, Netze, Ports, Ingress, OIDC, DNS-Einträge)? Das Projektverzeichnis und die Config bleiben erhalten.",
+            "Stack hart stoppen und löschen (VMs inkl. Disks, Netze, Ports, Ingress, OIDC, DNS)? Kein graceful Shutdown — Datenverlust ist egal. Das Projektverzeichnis bleibt erhalten.",
           confirmLabel: "Stack entfernen",
           tone: "danger",
         };
@@ -971,7 +963,19 @@ function ProjectDetailPage() {
       ) : null}
 
       {!progress.state.active ? (
-        <ResultPanel result={result} busyLabel={busyLabel} />
+        <ResultPanel
+          result={result}
+          busyLabel={busyLabel}
+          stackPath={path}
+          onJournalRecovered={() => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.diff(path) });
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.status(path),
+            });
+            setResult({ kind: "idle", raw: "" });
+            setLogOpen(false);
+          }}
+        />
       ) : null}
         </>
       )}

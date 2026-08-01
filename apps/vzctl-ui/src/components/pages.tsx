@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { listImages, imageKeys } from "@/lib/images";
 import { formatOpenedAt, listProjects, projectKeys } from "@/lib/projects";
 import { listVms, vmKeys } from "@/lib/vms";
 
@@ -13,8 +14,14 @@ export function DashboardPage() {
     queryFn: listVms,
     retry: false,
   });
+  const imagesQuery = useQuery({
+    queryKey: imageKeys.list(),
+    queryFn: listImages,
+    retry: false,
+  });
   const projects = projectsQuery.data ?? [];
   const vms = vmsQuery.data ?? [];
+  const images = imagesQuery.data?.images ?? [];
   const running = vms.filter((vm) => vm.state === "running" || vm.state === "starting").length;
   const recent = projects.slice(0, 5);
 
@@ -48,7 +55,9 @@ export function DashboardPage() {
         </div>
         <div className="card">
           <h2>Images</h2>
-          <p className="muted">Image-Cache folgt.</p>
+          <p className="dash-stat">
+            {imagesQuery.isError ? "—" : images.length}
+          </p>
           <Link to="/images">Zu Images →</Link>
         </div>
       </div>

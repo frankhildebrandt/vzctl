@@ -151,7 +151,7 @@ export function StackCard({
       case "purge":
         return {
           title: "Stack löschen",
-          message: `„${project.name}“ stoppen und löschen (VMs, Netze, Ports, Ingress, OIDC, DNS)? Das Verzeichnis bleibt erhalten.`,
+          message: `„${project.name}“ hart stoppen und löschen (VMs inkl. Disks, Netze, Ports, Ingress, OIDC, DNS)? Kein graceful Shutdown. Das Verzeichnis bleibt erhalten.`,
           confirmLabel: "Löschen",
           tone: "danger",
         };
