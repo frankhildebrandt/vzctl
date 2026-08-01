@@ -12,30 +12,32 @@ jobs:
   release:
     name: Build and publish
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/vzctl-ui/package-lock.json
+
       - name: CI
         run: make ci
 
-      - name: Build release
+      - name: Build release binaries
         run: make release
 
-      - name: Package
+      - name: Build UI app
+        run: make ui-build
+
+      - name: Package tar.gz / pkg / dmg
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          package_dir="dist/vzctl-${RELEASE_TAG}-darwin-arm64"
-          mkdir -p "${package_dir}"
-          cp target/release/vzctl "${package_dir}/"
-          cp daemon/.build/release/vz-helper "${package_dir}/"
-          cp daemon/.build/release/vz-supervisor "${package_dir}/"
-          cp README.md "${package_dir}/"
-          tar -C dist -czf "dist/vzctl-${RELEASE_TAG}-darwin-arm64.tar.gz" "vzctl-${RELEASE_TAG}-darwin-arm64"
-          shasum -a 256 "dist/vzctl-${RELEASE_TAG}-darwin-arm64.tar.gz" > "dist/vzctl-${RELEASE_TAG}-darwin-arm64.tar.gz.sha256"
+        run: ./scripts/package-macos.sh
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
@@ -43,6 +45,8 @@ jobs:
           name: vzctl-${{ github.ref_name }}-darwin-arm64
           path: |
             dist/*.tar.gz
+            dist/*.pkg
+            dist/*.dmg
             dist/*.sha256
           if-no-files-found: error
 
@@ -52,6 +56,8 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             dist/*.tar.gz \
+            dist/*.pkg \
+            dist/*.dmg \
             dist/*.sha256 \
             --generate-notes \
             --title "${GITHUB_REF_NAME}"

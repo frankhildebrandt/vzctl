@@ -59,7 +59,9 @@ pub(crate) fn render(
             continue;
         }
         if let Some(ip) = item["ip"].as_str() {
-            vm_ips.entry(vm.to_string()).or_insert_with(|| ip.to_string());
+            vm_ips
+                .entry(vm.to_string())
+                .or_insert_with(|| ip.to_string());
             if let Some(network) = item["network"].as_str() {
                 if let Some(net) = environment.spec.networks.get(network) {
                     if matches!(net.backend, crate::config::NetworkBackend::Docker) {

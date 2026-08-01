@@ -890,11 +890,7 @@ fn parse_image_bake_options(
         code: EXIT_USAGE,
         message: "image bake requires --tag <tag>".to_string(),
     })?;
-    Ok(ImageBakeOptions {
-        alias,
-        tag,
-        format,
-    })
+    Ok(ImageBakeOptions { alias, tag, format })
 }
 
 fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailure> {
@@ -1195,9 +1191,9 @@ fn parse_image_seal_options(
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--tag" => {
-                let value = args.next().ok_or_else(|| {
-                    SealFailure::new(EXIT_USAGE, "--tag requires a value")
-                })?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| SealFailure::new(EXIT_USAGE, "--tag requires a value"))?;
                 if !image::valid_image_tag(&value) {
                     return Err(SealFailure::new(
                         EXIT_USAGE,
@@ -1251,9 +1247,7 @@ fn parse_image_seal_options(
             "usage: vzctl image seal <name|path> --tag <tag> [--format human|json]",
         )
     })?;
-    let tag = tag.ok_or_else(|| {
-        SealFailure::new(EXIT_USAGE, "image seal requires --tag <tag>")
-    })?;
+    let tag = tag.ok_or_else(|| SealFailure::new(EXIT_USAGE, "image seal requires --tag <tag>"))?;
     Ok(ImageSealOptions {
         input,
         tag: Some(tag),
@@ -1275,7 +1269,10 @@ fn seal_image_in_dir(
     images_dir: &Path,
 ) -> Result<ImageSealResult, SealFailure> {
     let tag = options.tag.clone().ok_or_else(|| {
-        SealFailure::new(EXIT_USAGE, "image seal requires --tag <tag> for alias inputs")
+        SealFailure::new(
+            EXIT_USAGE,
+            "image seal requires --tag <tag> for alias inputs",
+        )
     })?;
 
     let source_path = match image::prepare_alias_for_seal(images_dir, &options.input, &tag)
@@ -1963,9 +1960,8 @@ fn parse_vm_create_options(
     if roles.iter().any(|role| role == "docker") && project.is_none() {
         project = Some("default".to_string());
     }
-    let id = resolve_create_vm_id(&id, project.as_deref()).map_err(|message| {
-        VmCreateFailure::new(EXIT_INVALID_INPUT, message)
-    })?;
+    let id = resolve_create_vm_id(&id, project.as_deref())
+        .map_err(|message| VmCreateFailure::new(EXIT_INVALID_INPUT, message))?;
 
     Ok(VmCreateOptions {
         id,
@@ -2519,7 +2515,13 @@ fn new_vm_identity(vm_id: &str, nic_count: usize) -> Result<VmIdentity, VmCreate
     for index in 0..count {
         let offset = 17 + (index % 3) * 5;
         // Refresh entropy for additional NICs beyond the first buffer window.
-        let mut bytes = [random[offset % 32], random[(offset + 1) % 32], random[(offset + 2) % 32], random[(offset + 3) % 32], random[(offset + 4) % 32]];
+        let mut bytes = [
+            random[offset % 32],
+            random[(offset + 1) % 32],
+            random[(offset + 2) % 32],
+            random[(offset + 3) % 32],
+            random[(offset + 4) % 32],
+        ];
         if index > 0 {
             File::open("/dev/urandom")
                 .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
@@ -3099,9 +3101,12 @@ fn render_cloud_init_network_config(
             .get(index)
             .unwrap_or(&identity.mac_addresses[0]);
         let iface = format!("enp0s{}", index + 1);
-        let search = network.project.as_ref().map_or_else(String::new, |project| {
-            format!("      search:\n        - {project}.vz.test\n")
-        });
+        let search = network
+            .project
+            .as_ref()
+            .map_or_else(String::new, |project| {
+                format!("      search:\n        - {project}.vz.test\n")
+            });
         // Only the primary NIC gets a default route; extra NICs stay link-local.
         let routes = if index == 0 {
             format!(

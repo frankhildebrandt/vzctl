@@ -509,9 +509,11 @@ pub(crate) fn list_vm_attachments(
             .get("network")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("attachment missing network"))?;
-        let network = network_by_name
-            .get(network_name)
-            .ok_or_else(|| invalid(format!("attachment references unknown network {network_name}")))?;
+        let network = network_by_name.get(network_name).ok_or_else(|| {
+            invalid(format!(
+                "attachment references unknown network {network_name}"
+            ))
+        })?;
         let wrapped = json!({
             "network": network,
             "attachment": attachment,

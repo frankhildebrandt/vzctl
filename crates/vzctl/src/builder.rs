@@ -1014,7 +1014,9 @@ mod tests {
             "vzctl-builder login: VZCTL_BUILDER_RESULT {\"ok\":false,\"phase\":\"bake\",\"exit\":13}"
         ));
         assert!(should_emit_builder_serial_line("target root /dev/vdb1"));
-        assert!(should_emit_builder_serial_line("cloud-init: running modules"));
+        assert!(should_emit_builder_serial_line(
+            "cloud-init: running modules"
+        ));
     }
 
     #[test]

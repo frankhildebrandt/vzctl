@@ -186,10 +186,7 @@ pub async fn run(config: ProviderConfig, work_dir: Option<PathBuf>) -> Result<()
     };
 
     let app = Router::new()
-        .route(
-            "/.well-known/openid-configuration",
-            get(discovery),
-        )
+        .route("/.well-known/openid-configuration", get(discovery))
         .route("/jwks", get(jwks_handler))
         .route("/authorize", get(authorize))
         .route("/auth", get(authorize))
@@ -221,8 +218,8 @@ fn load_or_create_keys(work_dir: &Path) -> Result<(EncodingKey, Value, String), 
             .map_err(|e| format!("read {}: {e}", key_path.display()))?
     } else {
         let mut rng = OsRng;
-        let private = RsaPrivateKey::new(&mut rng, 2048)
-            .map_err(|e| format!("generate rsa key: {e}"))?;
+        let private =
+            RsaPrivateKey::new(&mut rng, 2048).map_err(|e| format!("generate rsa key: {e}"))?;
         let pem = private
             .to_pkcs1_pem(LineEnding::LF)
             .map_err(|e| format!("encode pem: {e}"))?
@@ -431,15 +428,13 @@ async fn authorize(
         let mut store = state.inner.lock().await;
         if let Some(session) = store.sessions.get(&sid).cloned() {
             if session.expires_at > now() && find_user(&state.config, &session.username).is_some() {
-                let code = issue_code(
-                    &mut store,
-                    &session.username,
-                    client_id,
+                let code = issue_code(&mut store, &session.username, client_id, redirect_uri, &q);
+                return Redirect::temporary(&build_redirect(
                     redirect_uri,
-                    &q,
-                );
-                return Redirect::temporary(&build_redirect(redirect_uri, &code, q.state.as_deref()))
-                    .into_response();
+                    &code,
+                    q.state.as_deref(),
+                ))
+                .into_response();
             }
             store.sessions.remove(&sid);
         }
@@ -511,11 +506,7 @@ async fn login(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Re
     let Some(client) = find_client(&state.config, &form.client_id) else {
         return (StatusCode::BAD_REQUEST, "unknown client_id").into_response();
     };
-    if !client
-        .redirect_uris
-        .iter()
-        .any(|u| u == &form.redirect_uri)
-    {
+    if !client.redirect_uris.iter().any(|u| u == &form.redirect_uri) {
         return (StatusCode::BAD_REQUEST, "redirect_uri not registered").into_response();
     }
     if find_user(&state.config, &form.username).is_none() {
@@ -761,7 +752,10 @@ async fn end_session(
             return false;
         }
         // Dev mode: accept any http(s) logout redirect.
-        let _ = q.client_id.as_deref().and_then(|id| find_client(&state.config, id));
+        let _ = q
+            .client_id
+            .as_deref()
+            .and_then(|id| find_client(&state.config, id));
         true
     });
 
