@@ -1,0 +1,46 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: docker-backend
+spec:
+  project: docker-backend
+  domain: docker-backend.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base:
+      from: ubuntu-latest
+      role: base
+  networks:
+    lan:
+      cidr: 10.90.0.0/24
+      mode: shared
+      natEgress: false
+    containers:
+      cidr: 10.95.0.0/24
+      mode: shared
+      natEgress: false
+      backend: docker
+  routes:
+    - name: lan-to-containers
+      from: lan
+      to: containers
+      via: docker
+  policies:
+    - name: lan-to-containers
+      network: lan
+      forward: deny-all
+      allow:
+        - { to: containers, proto: tcp, ports: [80] }
+  vms:
+    docker:
+      from: ubuntu-base
+      clone: linked
+      dataDisk: 40G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+        - { name: containers, ip: 10.95.0.2 }
+      roles: [docker, router]

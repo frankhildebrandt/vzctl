@@ -276,6 +276,18 @@ pub(crate) struct NetworkConfig {
     /// only via a router + `policies.allow` with `to: internet`.
     #[serde(default = "default_true", rename = "natEgress")]
     pub(crate) nat_egress: bool,
+    /// `vmnet` (default): real custom-vmnet. `docker`: logical subnet on a
+    /// Docker+Router VM (`docker0` bip = `.2`); no vmnet handle.
+    #[serde(default, rename = "backend")]
+    pub(crate) backend: NetworkBackend,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum NetworkBackend {
+    #[default]
+    Vmnet,
+    Docker,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
@@ -549,7 +561,8 @@ fn validate_references(
     validate_volume_keys(&environment.spec.volumes, config_dir, &mut issues);
 
     for (name, network) in &environment.spec.networks {
-        let path = format!("{}.cidr", json_path_key("$.spec.networks", name));
+        let base = json_path_key("$.spec.networks", name);
+        let path = format!("{base}.cidr");
         match network.cidr.parse::<Ipv4Net>() {
             Ok(cidr) => {
                 let canonical = cidr.trunc();
@@ -567,6 +580,22 @@ fn validate_references(
                 format!("invalid IPv4 CIDR: {error}"),
                 "semantic",
             )),
+        }
+        if network.backend == NetworkBackend::Docker {
+            if network.dhcp {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.dhcp"),
+                    "backend docker networks must not enable DHCP".to_string(),
+                    "semantic",
+                ));
+            }
+            if network.nat_egress {
+                issues.push(ValidationIssue::new(
+                    format!("{base}.natEgress"),
+                    "backend docker networks must set natEgress: false".to_string(),
+                    "semantic",
+                ));
+            }
         }
     }
 
@@ -639,6 +668,11 @@ fn validate_references(
             let allow_base = format!("{base}.allow[{allow_index}]");
             if allow.to == "internet" {
                 let source = &policy.network;
+                let source_is_docker = environment
+                    .spec
+                    .networks
+                    .get(source)
+                    .is_some_and(|network| network.backend == NetworkBackend::Docker);
                 let has_router = environment.spec.vms.values().any(|vm| {
                     vm.roles.iter().any(|r| r == "router")
                         && vm.networks.iter().any(|n| n.name == *source)
@@ -650,7 +684,9 @@ fn validate_references(
                                 .is_some_and(|net| net.nat_egress)
                         })
                 });
-                if !has_router {
+                // Docker-backend sources may forward to internet without local
+                // MASQUERADE; peer routers on parent nets provide NAT.
+                if !has_router && !source_is_docker {
                     issues.push(ValidationIssue::new(
                         format!("{allow_base}.to"),
                         format!(
@@ -758,6 +794,7 @@ fn validate_references(
             }
         }
         let mut attachments = BTreeSet::new();
+        let mut has_vmnet_attachment = false;
         for (index, attachment) in vm.networks.iter().enumerate() {
             let base = format!("{vm_base}.networks[{index}]");
             if !attachments.insert(attachment.name.as_str()) {
@@ -775,6 +812,14 @@ fn validate_references(
                 ));
                 continue;
             };
+            let is_docker_backend = environment
+                .spec
+                .networks
+                .get(&attachment.name)
+                .is_some_and(|network| network.backend == NetworkBackend::Docker);
+            if !is_docker_backend {
+                has_vmnet_attachment = true;
+            }
             match attachment.ip.parse::<Ipv4Addr>() {
                 Err(error) => issues.push(ValidationIssue::new(
                     format!("{base}.ip"),
@@ -799,6 +844,16 @@ fn validate_references(
                     "semantic",
                 )),
                 Ok(ip) => {
+                    if is_docker_backend && host_offset(*cidr, ip) != 2 {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.ip"),
+                            format!(
+                                "backend docker network {:?} requires router IP .2, got {ip}",
+                                attachment.name
+                            ),
+                            "semantic",
+                        ));
+                    }
                     if let Some((other_vm, other_index)) =
                         assigned_ips.insert((attachment.name.as_str(), ip), (vm_name, index))
                     {
@@ -829,6 +884,33 @@ fn validate_references(
                 }
             }
         }
+        let attaches_docker_backend = vm.networks.iter().any(|attachment| {
+            environment
+                .spec
+                .networks
+                .get(&attachment.name)
+                .is_some_and(|network| network.backend == NetworkBackend::Docker)
+        });
+        if attaches_docker_backend {
+            if !has_vmnet_attachment {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.networks"),
+                    "VM attached to a backend docker network also needs a vmnet attachment"
+                        .to_string(),
+                    "semantic",
+                ));
+            }
+            let has_docker = vm.roles.iter().any(|role| role == "docker");
+            let has_router = vm.roles.iter().any(|role| role == "router");
+            if !has_docker || !has_router {
+                issues.push(ValidationIssue::new(
+                    format!("{vm_base}.roles"),
+                    "VM attached to a backend docker network requires roles [docker, router]"
+                        .to_string(),
+                    "semantic",
+                ));
+            }
+        }
         let mut dependencies = BTreeSet::new();
         for (index, dependency) in vm.depends_on.iter().enumerate() {
             let path = format!("{vm_base}.dependsOn[{index}]");
@@ -853,6 +935,31 @@ fn validate_references(
             }
         }
     }
+
+    for (name, network) in &environment.spec.networks {
+        if network.backend != NetworkBackend::Docker {
+            continue;
+        }
+        let owners = environment
+            .spec
+            .vms
+            .iter()
+            .filter(|(_, vm)| vm.networks.iter().any(|attachment| attachment.name == *name))
+            .map(|(vm_name, _)| vm_name.as_str())
+            .collect::<Vec<_>>();
+        if owners.len() != 1 {
+            issues.push(ValidationIssue::new(
+                format!("{}.backend", json_path_key("$.spec.networks", name)),
+                format!(
+                    "backend docker network {:?} requires exactly one attached VM, found {}",
+                    name,
+                    owners.len()
+                ),
+                "semantic",
+            ));
+        }
+    }
+
     detect_dependency_cycles(&environment.spec.vms, &mut issues);
     validate_certs_ingress_oidc(environment, &mut issues);
     sort_and_deduplicate(&mut issues);
@@ -1662,6 +1769,51 @@ mod tests {
             .roles
             .iter()
             .any(|role| role == "docker"));
+    }
+
+    #[test]
+    fn docker_backend_fixture_validates() {
+        let environment = validate_source(include_str!(
+            "../tests/fixtures/validate/valid-docker-backend.yaml"
+        ))
+        .unwrap();
+        assert_eq!(
+            environment.spec.networks["containers"].backend,
+            NetworkBackend::Docker
+        );
+        assert!(environment.spec.vms["docker"]
+            .roles
+            .iter()
+            .any(|role| role == "router"));
+    }
+
+    #[test]
+    fn docker_backend_rejects_missing_router_role() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: bad }
+spec:
+  project: bad
+  domain: bad.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  networks:
+    lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
+    containers: { cidr: 10.95.0.0/24, mode: shared, natEgress: false, backend: docker }
+  routes: []
+  policies: []
+  vms:
+    docker:
+      from: ubuntu-base
+      dataDisk: 40G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+        - { name: containers, ip: 10.95.0.2 }
+      roles: [docker]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| issue.message.contains("docker, router")));
     }
 
     #[test]

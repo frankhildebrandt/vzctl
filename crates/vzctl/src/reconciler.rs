@@ -25,8 +25,10 @@ const APPLY_STEPS: &[&str] = &[
     "ensure_nets",
     "ensure_dns",
     "ensure_images",
-    "ensure_vms",
+    // Attach desired IPs before create so ensure_vm_network / cidata reuse them
+    // instead of auto-allocating .10+ that later diverge from DB attachments.
     "attach_nets",
+    "ensure_vms",
     "start_helpers",
     "await_agents",
     "ensure_ca",
@@ -383,9 +385,15 @@ fn ensure_networks(
                 .unwrap_or("shared")
                 .to_string();
             let existing_nat = existing["nat_egress"].as_bool().unwrap_or(true);
+            let existing_backend = existing["backend"].as_str().unwrap_or("vmnet");
+            let desired_backend = match network.backend {
+                config::NetworkBackend::Vmnet => "vmnet",
+                config::NetworkBackend::Docker => "docker",
+            };
             if existing["cidr"] != network.cidr
                 || existing["mode"] != mode
                 || existing_nat != network.nat_egress
+                || existing_backend != desired_backend
             {
                 if !force {
                     return Err(Failure::new(
@@ -421,6 +429,10 @@ fn ensure_networks(
                 "cidr": network.cidr,
                 "mode": "shared",
                 "nat_egress": network.nat_egress,
+                "backend": match network.backend {
+                    config::NetworkBackend::Vmnet => "vmnet",
+                    config::NetworkBackend::Docker => "docker",
+                },
                 "labels": {"managed-by": "vzctl"},
                 "project": environment.spec.project,
                 "stack": stack_id(environment),
@@ -650,7 +662,12 @@ fn ensure_attachments(
                 // lists the old row; treat same vm+network as needing attach.
                 let mut labels = serde_json::Map::new();
                 labels.insert("managed-by".into(), json!("vzctl"));
-                if vm.roles.iter().any(|role| role == "docker") {
+                let is_docker_backend = environment
+                    .spec
+                    .networks
+                    .get(&attachment.name)
+                    .is_some_and(|network| network.backend == config::NetworkBackend::Docker);
+                if vm.roles.iter().any(|role| role == "docker") && !is_docker_backend {
                     labels.insert("vzctl.dev/dns-services".into(), json!("docker"));
                 }
                 rpc(

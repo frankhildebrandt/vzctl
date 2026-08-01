@@ -113,6 +113,8 @@ struct VmCreateOptions {
     roles: Vec<String>,
     requested_network: Option<String>,
     network: Option<network::VmNetworkSelection>,
+    /// All NIC attachments (multi-homed router). When empty, falls back to `network`.
+    networks: Vec<network::VmNetworkSelection>,
     root_password: Option<String>,
     cloud_init: Option<PathBuf>,
     project: Option<String>,
@@ -153,6 +155,7 @@ struct VmCreateResult {
     filesystem: String,
     identity: VmIdentity,
     network: Option<network::VmNetworkSelection>,
+    networks: Vec<network::VmNetworkSelection>,
 }
 
 #[derive(Debug)]
@@ -1486,6 +1489,17 @@ fn vm_create_command(args: Vec<String>) -> ExitCode {
         }
     };
     options.network = Some(selection.clone());
+    // Prefer all DB attachments (attach_nets runs before create) so routers get
+    // every NIC; fall back to the ensure selection for single-homed VMs.
+    options.networks = match network::list_vm_attachments(&socket_path, &options.id) {
+        Ok(list) if !list.is_empty() => list,
+        Ok(_) => vec![selection.clone()],
+        Err(failure) => {
+            let failure = VmCreateFailure::new(failure.code, failure.message);
+            emit_vm_create_failure(options.format, &failure);
+            return ExitCode::from(failure.code);
+        }
+    };
 
     match create_vm_bundle(&options, &NativeVmDiskBackend) {
         Ok(result) => {
@@ -1722,6 +1736,7 @@ fn parse_vm_create_options(
         roles,
         requested_network,
         network: None,
+        networks: Vec::new(),
         root_password,
         cloud_init,
         project,
@@ -1981,7 +1996,22 @@ fn prepare_vm_disks(
             )
         })?;
 
-    let identity = new_vm_identity(&options.id)?;
+    let all_networks = if options.networks.is_empty() {
+        options.network.iter().cloned().collect::<Vec<_>>()
+    } else {
+        options.networks.clone()
+    };
+    let nic_networks = all_networks
+        .iter()
+        .filter(|network| !network.is_docker_backend())
+        .cloned()
+        .collect::<Vec<_>>();
+    let docker_bip = all_networks
+        .iter()
+        .find(|network| network.is_docker_backend())
+        .map(|network| format!("{}/{}", network.ip, network.prefix));
+    let nic_count = nic_networks.len().max(1);
+    let identity = new_vm_identity(&options.id, nic_count)?;
     prepare_cloud_init_seed(
         backend,
         &bundle_path,
@@ -1989,7 +2019,8 @@ fn prepare_vm_disks(
         &agent_token_path,
         &identity,
         &options.roles,
-        options.network.as_ref(),
+        &nic_networks,
+        docker_bip.as_deref(),
         options.root_password.as_deref(),
         options.cloud_init.as_deref(),
         options.project.as_deref(),
@@ -2011,7 +2042,8 @@ fn prepare_vm_disks(
         clone_mode,
         filesystem,
         identity,
-        network: options.network.clone(),
+        network: all_networks.first().cloned(),
+        networks: all_networks,
     };
     write_vm_manifest(&result)?;
     Ok(result)
@@ -2054,7 +2086,7 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
             "hostname": result.identity.hostname,
             "fqdn": result.identity.fqdn,
             "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
-                let network = result.network.as_ref();
+                let network = result.networks.get(index).or(result.network.as_ref());
                 json!({
                     "index": index,
                     "mac": mac,
@@ -2198,7 +2230,7 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
             "hostname": result.identity.hostname,
             "fqdn": result.identity.fqdn,
             "nics": result.identity.mac_addresses.iter().enumerate().map(|(index, mac)| {
-                let network = result.network.as_ref();
+                let network = result.networks.get(index).or(result.network.as_ref());
                 json!({
                     "index": index,
                     "mac": mac,
@@ -2215,8 +2247,8 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
     })
 }
 
-fn new_vm_identity(vm_id: &str) -> Result<VmIdentity, VmCreateFailure> {
-    let mut random = [0_u8; 22];
+fn new_vm_identity(vm_id: &str, nic_count: usize) -> Result<VmIdentity, VmCreateFailure> {
+    let mut random = [0_u8; 32];
     File::open("/dev/urandom")
         .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut random))
         .map_err(|error| {
@@ -2235,17 +2267,34 @@ fn new_vm_identity(vm_id: &str) -> Result<VmIdentity, VmCreateFailure> {
         random[8], random[9], random[10], random[11],
         random[12], random[13], random[14], random[15],
     );
-    let mac = format!(
-        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        random[17], random[18], random[19], random[20], random[21]
-    );
+    let count = nic_count.max(1);
+    let mut mac_addresses = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = 17 + (index % 3) * 5;
+        // Refresh entropy for additional NICs beyond the first buffer window.
+        let mut bytes = [random[offset % 32], random[(offset + 1) % 32], random[(offset + 2) % 32], random[(offset + 3) % 32], random[(offset + 4) % 32]];
+        if index > 0 {
+            File::open("/dev/urandom")
+                .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
+                .map_err(|error| {
+                    VmCreateFailure::new(
+                        EXIT_VM_DISK_PREP_FAILED,
+                        format!("cannot generate NIC MAC: {error}"),
+                    )
+                })?;
+        }
+        mac_addresses.push(format!(
+            "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]
+        ));
+    }
     let fqdn = cloud_init_fqdn(vm_id);
     let hostname = fqdn.split('.').next().unwrap_or("vm").to_string();
     Ok(VmIdentity {
         instance_id,
         hostname,
         fqdn,
-        mac_addresses: vec![mac],
+        mac_addresses,
     })
 }
 
@@ -2273,7 +2322,8 @@ fn prepare_cloud_init_seed(
     agent_token_path: &Path,
     identity: &VmIdentity,
     roles: &[String],
-    network: Option<&network::VmNetworkSelection>,
+    networks: &[network::VmNetworkSelection],
+    docker_bip: Option<&str>,
     root_password: Option<&str>,
     cloud_init: Option<&Path>,
     project: Option<&str>,
@@ -2314,7 +2364,7 @@ fn prepare_cloud_init_seed(
         "instance-id: {}\nlocal-hostname: {}\n",
         identity.instance_id, identity.hostname
     );
-    let network_config = render_cloud_init_network_config(identity, network);
+    let network_config = render_cloud_init_network_config(identity, networks);
 
     let mut system = serde_yaml::Mapping::new();
     system.insert(
@@ -2487,13 +2537,17 @@ fn prepare_cloud_init_seed(
         let (_, pubkey) = docker::ensure_ssh_keypair(&state_dir(), project)
             .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
         let include_engine = cloud_init.is_none();
-        let docker_cfg = docker::docker_role_cloud_config(&pubkey, include_engine);
+        let docker_cfg = docker::docker_role_cloud_config(&pubkey, include_engine, docker_bip);
         let system_value = serde_yaml::Value::Mapping(system.clone());
         let mut merged = docker::merge_cloud_config(system_value, Some(docker_cfg));
         if let Some(path) = cloud_init {
             let user = docker::load_user_cloud_init(path)
                 .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
             merged = docker::merge_cloud_config(merged, Some(user));
+        }
+        if let Some(bip) = docker_bip {
+            // User cloud-init may omit daemon.json; ensure bip after merge.
+            merged = docker::ensure_docker_daemon_bip(merged, bip);
         }
         if let serde_yaml::Value::Mapping(ref mut map) = merged {
             let existing_files = map
@@ -2783,28 +2837,47 @@ fn cloud_init_root_password_snippet(password: &str) -> String {
 
 fn render_cloud_init_network_config(
     identity: &VmIdentity,
-    network: Option<&network::VmNetworkSelection>,
+    networks: &[network::VmNetworkSelection],
 ) -> String {
-    match network {
-        Some(network) => {
-            let search = network.project.as_ref().map_or_else(String::new, |project| {
-                format!("      search:\n        - {project}.vz.test\n")
-            });
-            format!(
-                "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    set-name: enp0s1\n    dhcp4: false\n    dhcp6: false\n    addresses:\n      - {}/{}\n    routes:\n      - to: default\n        via: {}\n        on-link: true\n    nameservers:\n      addresses:\n        - {}\n{}",
-                identity.mac_addresses[0],
-                network.ip,
-                network.prefix,
-                network.gateway,
-                network.dns,
-                search
-            )
-        }
-        None => format!(
+    if networks.is_empty() {
+        return format!(
             "version: 2\nethernets:\n  nic0:\n    match:\n      macaddress: \"{}\"\n    set-name: enp0s1\n    dhcp4: true\n    dhcp6: false\n",
             identity.mac_addresses[0]
-        ),
+        );
     }
+    let mut body = String::from("version: 2\nethernets:\n");
+    for (index, network) in networks.iter().enumerate() {
+        let mac = identity
+            .mac_addresses
+            .get(index)
+            .unwrap_or(&identity.mac_addresses[0]);
+        let iface = format!("enp0s{}", index + 1);
+        let search = network.project.as_ref().map_or_else(String::new, |project| {
+            format!("      search:\n        - {project}.vz.test\n")
+        });
+        // Only the primary NIC gets a default route; extra NICs stay link-local.
+        let routes = if index == 0 {
+            format!(
+                "    routes:\n      - to: default\n        via: {}\n        on-link: true\n",
+                network.gateway
+            )
+        } else {
+            String::new()
+        };
+        let nameservers = if index == 0 {
+            format!(
+                "    nameservers:\n      addresses:\n        - {}\n{}",
+                network.dns, search
+            )
+        } else {
+            String::new()
+        };
+        body.push_str(&format!(
+            "  nic{index}:\n    match:\n      macaddress: \"{mac}\"\n    set-name: {iface}\n    dhcp4: false\n    dhcp6: false\n    addresses:\n      - {}/{}\n{routes}{nameservers}",
+            network.ip, network.prefix
+        ));
+    }
+    body
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), VmCreateFailure> {
@@ -4404,6 +4477,7 @@ mod tests {
                 roles: vec!["router".to_string()],
                 requested_network: Some("lan".to_string()),
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -4618,6 +4692,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -4657,6 +4732,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -4712,6 +4788,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: Some("pass:word".to_string()),
                 cloud_init: None,
                 project: None,
@@ -4763,6 +4840,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: Some("edge-dmz".to_string()),
@@ -4803,10 +4881,11 @@ mod tests {
             prefix: 24,
             automatic: true,
             created: true,
+            backend: "vmnet".to_string(),
         };
 
         assert_eq!(
-            render_cloud_init_network_config(&identity, Some(&network)),
+            render_cloud_init_network_config(&identity, std::slice::from_ref(&network)),
             concat!(
                 "version: 2\n",
                 "ethernets:\n",
@@ -4849,9 +4928,10 @@ mod tests {
             prefix: 24,
             automatic: true,
             created: true,
+            backend: "vmnet".to_string(),
         };
 
-        let config = render_cloud_init_network_config(&identity, Some(&network));
+        let config = render_cloud_init_network_config(&identity, std::slice::from_ref(&network));
         assert!(config.contains("addresses:\n        - 10.70.0.0"));
         assert!(!config.contains("search:"));
         assert!(!config.contains("nameserver 127.0.0.1"));
@@ -4889,6 +4969,7 @@ mod tests {
                     roles: Vec::new(),
                     requested_network: None,
                     network: None,
+                    networks: Vec::new(),
                     root_password: None,
                     cloud_init: None,
                     project: None,
@@ -4969,6 +5050,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -5013,7 +5095,9 @@ mod tests {
                     prefix: 24,
                     automatic: false,
                     created: true,
+                    backend: "vmnet".to_string(),
                 }),
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -5070,6 +5154,7 @@ mod tests {
                 roles: Vec::new(),
                 requested_network: None,
                 network: None,
+                networks: Vec::new(),
                 root_password: None,
                 cloud_init: None,
                 project: None,
@@ -5129,6 +5214,7 @@ mod tests {
                     roles: Vec::new(),
                     requested_network: None,
                     network: None,
+                    networks: Vec::new(),
                     root_password: None,
                     cloud_init: None,
                     project: None,
@@ -5219,7 +5305,9 @@ mod tests {
                 prefix: 24,
                 automatic: true,
                 created: true,
+                backend: "vmnet".to_string(),
             }),
+            networks: Vec::new(),
         };
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/vm-create.json")).unwrap();

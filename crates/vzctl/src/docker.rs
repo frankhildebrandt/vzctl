@@ -99,7 +99,11 @@ pub(crate) fn ssh_config_path(state_dir: &Path, project: &str) -> PathBuf {
     project_docker_dir(state_dir, project).join("ssh_config")
 }
 
-pub(crate) fn docker_role_cloud_config(pubkey: &str, include_engine: bool) -> YamlValue {
+pub(crate) fn docker_role_cloud_config(
+    pubkey: &str,
+    include_engine: bool,
+    docker_bip: Option<&str>,
+) -> YamlValue {
     let mut map = serde_yaml::Mapping::new();
     let mut users = Vec::new();
     let mut user = serde_yaml::Mapping::new();
@@ -141,7 +145,7 @@ pub(crate) fn docker_role_cloud_config(pubkey: &str, include_engine: bool) -> Ya
             YamlValue::String("packages".into()),
             YamlValue::Sequence(vec![YamlValue::String("docker.io".into())]),
         );
-        let runcmd = vec![
+        let mut runcmd = vec![
             YamlValue::Sequence(vec![
                 YamlValue::String("systemctl".into()),
                 YamlValue::String("enable".into()),
@@ -163,13 +167,74 @@ pub(crate) fn docker_role_cloud_config(pubkey: &str, include_engine: bool) -> Ya
                 ),
             ]),
         ];
+        if docker_bip.is_some() {
+            // daemon.json is written via write_files; restart after first boot packages.
+            runcmd.push(YamlValue::Sequence(vec![
+                YamlValue::String("systemctl".into()),
+                YamlValue::String("restart".into()),
+                YamlValue::String("docker".into()),
+            ]));
+        }
         map.insert(
             YamlValue::String("runcmd".into()),
             YamlValue::Sequence(runcmd),
         );
     }
 
+    if let Some(bip) = docker_bip {
+        map.insert(
+            YamlValue::String("write_files".into()),
+            YamlValue::Sequence(vec![docker_daemon_json_write_file(bip)]),
+        );
+    }
+
     YamlValue::Mapping(map)
+}
+
+fn docker_daemon_json_write_file(bip: &str) -> YamlValue {
+    let content = format!(
+        "{{\n  \"bip\": \"{bip}\",\n  \"iptables\": false\n}}\n"
+    );
+    let mut file = serde_yaml::Mapping::new();
+    file.insert(
+        YamlValue::String("path".into()),
+        YamlValue::String("/etc/docker/daemon.json".into()),
+    );
+    file.insert(
+        YamlValue::String("owner".into()),
+        YamlValue::String("root:root".into()),
+    );
+    file.insert(
+        YamlValue::String("permissions".into()),
+        YamlValue::String("0644".into()),
+    );
+    file.insert(
+        YamlValue::String("content".into()),
+        YamlValue::String(content),
+    );
+    YamlValue::Mapping(file)
+}
+
+/// Ensure `/etc/docker/daemon.json` carries the hypernetwork docker bip.
+pub(crate) fn ensure_docker_daemon_bip(mut config: YamlValue, bip: &str) -> YamlValue {
+    let YamlValue::Mapping(ref mut map) = config else {
+        return config;
+    };
+    let key = YamlValue::String("write_files".into());
+    let mut files = match map.remove(&key) {
+        Some(YamlValue::Sequence(items)) => items,
+        _ => Vec::new(),
+    };
+    let path = "/etc/docker/daemon.json";
+    files.retain(|item| {
+        item.as_mapping()
+            .and_then(|mapping| mapping.get(YamlValue::String("path".into())))
+            .and_then(YamlValue::as_str)
+            != Some(path)
+    });
+    files.push(docker_daemon_json_write_file(bip));
+    map.insert(key, YamlValue::Sequence(files));
+    config
 }
 
 /// Deep-merge cloud-config YAML. System scalars win; sequences are concatenated

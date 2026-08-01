@@ -79,6 +79,14 @@ pub(crate) struct VmNetworkSelection {
     pub(crate) prefix: u8,
     pub(crate) automatic: bool,
     pub(crate) created: bool,
+    /// `vmnet` or `docker` (logical; no helper NIC).
+    pub(crate) backend: String,
+}
+
+impl VmNetworkSelection {
+    pub(crate) fn is_docker_backend(&self) -> bool {
+        self.backend == "docker"
+    }
 }
 
 pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
@@ -469,6 +477,58 @@ pub(crate) fn ensure_vm_network(
     vm_network_selection(&result)
 }
 
+/// All current attachments for a VM (used after attach_nets so create can seed multi-NIC).
+pub(crate) fn list_vm_attachments(
+    socket_path: &Path,
+    vm_id: &str,
+) -> Result<Vec<VmNetworkSelection>, Failure> {
+    let result = rpc(socket_path, "net.list", json!({}))?;
+    let networks = result
+        .get("networks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let network_by_name = networks
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?;
+            Some((name.to_string(), item.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut selections = Vec::new();
+    for attachment in result
+        .get("attachments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if attachment.get("vm_id").and_then(Value::as_str) != Some(vm_id) {
+            continue;
+        }
+        let network_name = attachment
+            .get("network")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("attachment missing network"))?;
+        let network = network_by_name
+            .get(network_name)
+            .ok_or_else(|| invalid(format!("attachment references unknown network {network_name}")))?;
+        let wrapped = json!({
+            "network": network,
+            "attachment": attachment,
+            "automatic": false,
+            "created": false,
+            "prefix": network
+                .get("cidr")
+                .and_then(Value::as_str)
+                .and_then(|cidr| cidr.split_once('/').and_then(|(_, prefix)| prefix.parse::<u8>().ok()))
+                .unwrap_or(24),
+        });
+        selections.push(vm_network_selection(&wrapped)?);
+    }
+    selections.sort_by(|left, right| left.network.cmp(&right.network));
+    Ok(selections)
+}
+
 fn vm_network_selection(result: &Value) -> Result<VmNetworkSelection, Failure> {
     let network = result
         .get("network")
@@ -509,6 +569,11 @@ fn vm_network_selection(result: &Value) -> Result<VmNetworkSelection, Failure> {
             .get("created")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        backend: network
+            .get("backend")
+            .and_then(Value::as_str)
+            .unwrap_or("vmnet")
+            .to_string(),
     })
 }
 
