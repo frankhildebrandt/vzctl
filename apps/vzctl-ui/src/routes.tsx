@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { ApplyProgress, ConsoleLog, useApplyProgress } from "@/components/ApplyProgress";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   VmnetOrphanDialog,
@@ -97,9 +98,21 @@ export const vmsRoute = createRoute({
 export const vmDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/vms/$vmId",
+  validateSearch: (search: Record<string, unknown>): { stackPath?: string } => ({
+    stackPath:
+      typeof search.stackPath === "string" && search.stackPath.length > 0
+        ? search.stackPath
+        : undefined,
+  }),
   component: function VmDetailRoute() {
     const { vmId: rawVmId } = vmDetailRoute.useParams();
-    return <VmDetailPage vmId={decodeVmIdParam(rawVmId)} />;
+    const { stackPath } = vmDetailRoute.useSearch();
+    return (
+      <VmDetailPage
+        vmId={decodeVmIdParam(rawVmId)}
+        stackPath={stackPath}
+      />
+    );
   },
 });
 
@@ -662,9 +675,19 @@ function ProjectDetailPage() {
     <section className={`detail${tab === "topology" ? " detail-topology" : ""}`}>
       <header className="detail-header">
         <div className="detail-heading">
-          <Link to="/projects" className="crumb-link">
-            ← Stacks
-          </Link>
+          <Breadcrumbs
+            items={[
+              {
+                label: "Stacks",
+                node: (
+                  <Link to="/projects" className="crumb-link">
+                    Stacks
+                  </Link>
+                ),
+              },
+              { label: title },
+            ]}
+          />
           {tab === "topology" ? (
             <>
               <h2 className="detail-title">{title}</h2>

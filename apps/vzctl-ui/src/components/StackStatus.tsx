@@ -1,3 +1,4 @@
+import { StackVmList } from "@/components/StackVmList";
 import type { StackInventory, StackPhase } from "@/lib/stackStatus";
 
 export function StackStatusCard({
@@ -49,16 +50,7 @@ export function StackStatusCard({
         </p>
       )}
 
-      {items.length > 0 ? (
-        <ul className="stack-vm-list">
-          {items.map((item) => (
-            <li key={item.id} className={`stack-vm state-${item.state}`}>
-              <span className="stack-vm-id">{item.id}</span>
-              <span className="stack-vm-state">{item.state}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <StackVmList items={items} stackPath={path} />
     </div>
   );
 }

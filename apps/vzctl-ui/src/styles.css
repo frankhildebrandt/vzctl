@@ -220,13 +220,37 @@ button.secondary:hover:not(:disabled) {
 }
 
 .crumb {
-  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
 }
 
 .crumb a,
 .crumb-link {
   color: var(--muted);
   font-weight: 500;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.crumb a:hover,
+.crumb-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: var(--muted);
+  font-size: 0.85rem;
+  opacity: 0.7;
+  user-select: none;
+}
+
+.crumb-current {
+  color: var(--ink);
+  font-weight: 600;
   font-size: 0.9rem;
 }
 
@@ -994,17 +1018,35 @@ button.secondary:hover:not(:disabled) {
 
 .stack-vm {
   display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.4rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: #fcfaf5;
   font-size: 0.82rem;
+  overflow: hidden;
+}
+
+.stack-vm-link,
+.stack-vm-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.stack-vm-link:hover {
+  background: #f5f1e8;
 }
 
 .stack-vm-id {
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stack-vm-state {

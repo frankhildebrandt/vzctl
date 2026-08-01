@@ -1,10 +1,12 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
 import { VmForm } from "@/components/VmForm";
 import { VmMountForm } from "@/components/VmMountForm";
+import { getProject } from "@/lib/projects";
 import {
   createVm,
   deleteVm,
@@ -19,6 +21,7 @@ import {
   type CreateVmInput,
   type VmMount,
 } from "@/lib/vms";
+import { basename } from "@/lib/vzctl";
 
 type Panel =
   | null
@@ -34,7 +37,13 @@ type PendingConfirm =
   | { kind: "replace"; input: CreateVmInput }
   | null;
 
-export function VmDetailPage({ vmId }: { vmId: string }) {
+export function VmDetailPage({
+  vmId,
+  stackPath,
+}: {
+  vmId: string;
+  stackPath?: string;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [panel, setPanel] = useState<Panel>(null);
@@ -44,6 +53,11 @@ export function VmDetailPage({ vmId }: { vmId: string }) {
   const [cpus, setCpus] = useState(2);
   const [memory, setMemory] = useState("1024");
   const [pending, setPending] = useState<PendingConfirm>(null);
+
+  const stackName = useMemo(() => {
+    if (!stackPath) return null;
+    return getProject(stackPath)?.name ?? basename(stackPath);
+  }, [stackPath]);
 
   const detailQuery = useQuery({
     queryKey: vmKeys.detail(vmId),
@@ -106,7 +120,11 @@ export function VmDetailPage({ vmId }: { vmId: string }) {
     },
     onSuccess: () => {
       setPending(null);
-      void navigate({ to: "/vms" });
+      if (stackPath) {
+        void navigate({ to: "/env", search: { path: stackPath, tab: "ops" } });
+      } else {
+        void navigate({ to: "/vms" });
+      }
     },
     onError: (err) => setError(String(err)),
     onSettled: () => setBusy(null),
@@ -177,13 +195,48 @@ export function VmDetailPage({ vmId }: { vmId: string }) {
     }
   }
 
+  const crumbs =
+    stackPath && stackName
+      ? [
+          {
+            label: "Stacks",
+            node: (
+              <Link to="/projects" className="crumb-link">
+                Stacks
+              </Link>
+            ),
+          },
+          {
+            label: stackName,
+            node: (
+              <Link
+                to="/env"
+                search={{ path: stackPath, tab: "ops" as const }}
+                className="crumb-link"
+              >
+                {stackName}
+              </Link>
+            ),
+          },
+          { label: vmId },
+        ]
+      : [
+          {
+            label: "VMs",
+            node: (
+              <Link to="/vms" className="crumb-link">
+                VMs
+              </Link>
+            ),
+          },
+          { label: vmId },
+        ];
+
   return (
     <section>
       <div className="row" style={{ justifyContent: "space-between", gap: "1rem" }}>
         <div>
-          <p className="muted">
-            <Link to="/vms">← VMs</Link>
-          </p>
+          <Breadcrumbs items={crumbs} />
           <h2 className="section-title">{vmId}</h2>
           {vm ? (
             <p className="muted">

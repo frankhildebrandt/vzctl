@@ -12,6 +12,7 @@ import {
   IconPurge,
   IconStop,
 } from "@/components/IconButton";
+import { StackVmList } from "@/components/StackVmList";
 import {
   formatOpenedAt,
   type Project,
@@ -234,16 +235,7 @@ export function StackCard({
           </p>
         )}
 
-        {items.length > 0 ? (
-          <ul className="stack-vm-list">
-            {items.map((item) => (
-              <li key={item.id} className={`stack-vm state-${item.state}`}>
-                <span className="stack-vm-id">{item.id}</span>
-                <span className="stack-vm-state">{item.state}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        <StackVmList items={items} stackPath={project.path} />
 
         {error && confirm == null && orphan == null ? (
           <p className="form-error">{error}</p>
