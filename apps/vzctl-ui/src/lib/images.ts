@@ -3,8 +3,12 @@ import {
   assertEnvelopeOk,
   parseEnvelope,
   waitForJob,
+  type JobResponse,
   type VzctlEnvelope,
+  type WaitForJobOptions,
 } from "@/lib/vzctl";
+
+export type ImageJobOptions = WaitForJobOptions;
 
 export type ImageListItem = {
   alias: string;
@@ -111,6 +115,14 @@ export function imageStateLabel(image: ImageListItem): "sealed" | "baked" | "pul
   return "pulled";
 }
 
+/** Matches CLI/REST: 1–64 `[A-Za-z0-9][A-Za-z0-9._-]*`. */
+export function validImageTag(tag: string): boolean {
+  if (tag.length < 1 || tag.length > 64) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(tag);
+}
+
+export const DEFAULT_IMAGE_TAG = "v1";
+
 export async function listImages(): Promise<ImageListResult> {
   const envelope = parseEnvelope(await api.get("/v1/images"));
   assertEnvelopeOk(envelope, "image list failed");
@@ -126,26 +138,55 @@ export async function listImages(): Promise<ImageListResult> {
   };
 }
 
-async function imageJob(alias: string, action: "pull" | "bake" | "seal"): Promise<VzctlEnvelope> {
+async function imageJob(
+  alias: string,
+  action: "pull" | "bake" | "seal",
+  tag?: string,
+  options: ImageJobOptions = {},
+): Promise<VzctlEnvelope> {
+  const body =
+    action === "bake" || action === "seal"
+      ? { tag: (tag ?? "").trim() }
+      : undefined;
+  if (body && !validImageTag(body.tag)) {
+    throw new Error(
+      `invalid image tag ${body.tag || "(empty)"}; expected 1-64 [A-Za-z0-9][A-Za-z0-9._-]*`,
+    );
+  }
   const accepted = await api.post<{ jobId: string }>(
     `/v1/images/${encodeId(alias)}/${action}`,
+    body,
   );
-  const envelope = await waitForJob(accepted.jobId);
+  const envelope = await waitForJob(accepted.jobId, options);
   assertEnvelopeOk(envelope, `image ${action} ${alias} failed`);
   return envelope;
 }
 
-export async function pullImage(alias: string): Promise<VzctlEnvelope> {
-  return imageJob(alias, "pull");
+export async function pullImage(
+  alias: string,
+  options: ImageJobOptions = {},
+): Promise<VzctlEnvelope> {
+  return imageJob(alias, "pull", undefined, options);
 }
 
-export async function bakeImage(alias: string): Promise<VzctlEnvelope> {
-  return imageJob(alias, "bake");
+export async function bakeImage(
+  alias: string,
+  tag: string,
+  options: ImageJobOptions = {},
+): Promise<VzctlEnvelope> {
+  return imageJob(alias, "bake", tag, options);
 }
 
-export async function sealImage(target: string): Promise<VzctlEnvelope> {
-  return imageJob(target, "seal");
+export async function sealImage(
+  target: string,
+  tag: string,
+  options: ImageJobOptions = {},
+): Promise<VzctlEnvelope> {
+  return imageJob(target, "seal", tag, options);
 }
+
+/** Re-export for callers that map job polls into UI. */
+export type { JobResponse };
 
 export function catalogAliasOptions(catalog: ImageCatalogEntry[]): string[] {
   if (catalog.length === 0) return [...IMAGE_ALIAS_HINTS];

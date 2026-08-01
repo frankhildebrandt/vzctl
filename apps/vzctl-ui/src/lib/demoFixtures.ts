@@ -104,7 +104,7 @@ const DEMO_IMAGES = [
     distribution: "Ubuntu",
     release: "26.04 LTS",
     architecture: "arm64",
-    path: "/Users/demo/Library/Application Support/vzctl/images/sealed/ubuntu-latest.raw",
+    path: "/Users/demo/Library/Application Support/vzctl/images/sealed/ubuntu-latest@v1.raw",
     format: "raw",
     sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     baked: true,
@@ -118,7 +118,7 @@ const DEMO_IMAGES = [
     distribution: "Debian",
     release: "13 (stable/Trixie)",
     architecture: "arm64",
-    path: "/Users/demo/Library/Application Support/vzctl/images/baked/debian-latest.raw",
+    path: "/Users/demo/Library/Application Support/vzctl/images/baked/debian-latest@v1.raw",
     format: "raw",
     sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     baked: true,
@@ -509,7 +509,7 @@ export async function mockRunVzctlArgv(args: string[]): Promise<string> {
       {
         image: {
           name: target,
-          path: `/images/sealed/${target}.raw`,
+          path: `/images/sealed/${target}@v1.raw`,
           sealed: true,
           read_only: true,
         },

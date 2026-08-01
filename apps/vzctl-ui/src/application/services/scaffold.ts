@@ -36,7 +36,7 @@ export function scaffoldEnvironment(options: ScaffoldOptions): Environment {
         forward: { enabled: true, upstream: "system" },
       },
       images: {
-        "ubuntu-base": { from: "ubuntu-latest", role: "base" },
+        "ubuntu-base": { from: "ubuntu-latest", role: "base", tag: "v1" },
       },
       networks: {
         lan: { cidr, mode: "shared", dhcp: false, natEgress: true, backend: "vmnet" },

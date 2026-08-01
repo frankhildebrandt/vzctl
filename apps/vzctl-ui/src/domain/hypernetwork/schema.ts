@@ -69,6 +69,11 @@ export const VmConfigSchema = z.object({
 export const ImageConfigSchema = z.object({
   from: z.string().min(1),
   role: z.literal("base"),
+  tag: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
 });
 
 export const DnsConfigSchema = z.object({

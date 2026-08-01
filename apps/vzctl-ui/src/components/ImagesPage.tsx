@@ -1,23 +1,35 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { ConsoleLog, type ConsoleLine } from "@/components/ApplyProgress";
+import { useT } from "@/lib/i18n";
+import { localeToBcp47 } from "@/lib/i18n/detect";
 import {
   bakeImage,
   catalogAliasOptions,
+  DEFAULT_IMAGE_TAG,
   imageKeys,
   imageStateLabel,
   listImages,
   pullImage,
   sealImage,
+  validImageTag,
   type ImageListItem,
+  type JobResponse,
 } from "@/lib/images";
+import { useSettingsStore } from "@/store/settingsStore";
 
 export function ImagesPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyAlias, setBusyAlias] = useState<string | null>(null);
   const [pullAlias, setPullAlias] = useState("ubuntu-latest");
+  const [imageTag, setImageTag] = useState(DEFAULT_IMAGE_TAG);
   const [sealTarget, setSealTarget] = useState("");
+  const [jobLines, setJobLines] = useState<ConsoleLine[]>([]);
+  const logCursor = useRef(0);
+  const nextLineId = useRef(1);
 
   const listQuery = useQuery({
     queryKey: imageKeys.list(),
@@ -29,18 +41,51 @@ export function ImagesPage() {
     [listQuery.data?.catalog],
   );
 
+  const tag = imageTag.trim();
+  const tagOk = validImageTag(tag);
+
   const invalidate = () =>
     void queryClient.invalidateQueries({ queryKey: imageKeys.all });
 
+  const resetJobLog = () => {
+    logCursor.current = 0;
+    nextLineId.current = 1;
+    setJobLines([]);
+  };
+
+  const onJobUpdate = (job: JobResponse) => {
+    const log = job.log ?? [];
+    if (log.length < logCursor.current) {
+      logCursor.current = 0;
+      nextLineId.current = 1;
+      setJobLines([]);
+    }
+    if (log.length <= logCursor.current) return;
+    const locale = useSettingsStore.getState().locale;
+    const ts = new Date().toLocaleTimeString(localeToBcp47(locale), {
+      hour12: false,
+    });
+    const fresh = log.slice(logCursor.current).map((text) => {
+      const id = nextLineId.current;
+      nextLineId.current += 1;
+      return { id, ts, level: "info" as const, text };
+    });
+    logCursor.current = log.length;
+    setJobLines((prev) => [...prev, ...fresh]);
+  };
+
+  const jobOpts = { onUpdate: onJobUpdate };
+
   const pullMutation = useMutation({
-    mutationFn: (alias: string) => pullImage(alias),
+    mutationFn: (alias: string) => pullImage(alias, jobOpts),
     onMutate: (alias) => {
       setError(null);
       setActionMsg(null);
       setBusyAlias(alias);
+      resetJobLog();
     },
     onSuccess: (_data, alias) => {
-      setActionMsg(`Pull ok: ${alias}`);
+      setActionMsg(t("images.pullOk", { alias }));
       invalidate();
     },
     onError: (err) => setError(String(err)),
@@ -48,14 +93,16 @@ export function ImagesPage() {
   });
 
   const bakeMutation = useMutation({
-    mutationFn: (alias: string) => bakeImage(alias),
-    onMutate: (alias) => {
+    mutationFn: ({ alias, tag }: { alias: string; tag: string }) =>
+      bakeImage(alias, tag, jobOpts),
+    onMutate: ({ alias }) => {
       setError(null);
       setActionMsg(null);
       setBusyAlias(alias);
+      resetJobLog();
     },
-    onSuccess: (_data, alias) => {
-      setActionMsg(`Bake ok: ${alias}`);
+    onSuccess: (_data, { alias, tag }) => {
+      setActionMsg(t("images.bakeOk", { alias, tag }));
       invalidate();
     },
     onError: (err) => setError(String(err)),
@@ -63,14 +110,16 @@ export function ImagesPage() {
   });
 
   const sealMutation = useMutation({
-    mutationFn: (target: string) => sealImage(target),
-    onMutate: (target) => {
+    mutationFn: ({ target, tag }: { target: string; tag: string }) =>
+      sealImage(target, tag, jobOpts),
+    onMutate: ({ target }) => {
       setError(null);
       setActionMsg(null);
       setBusyAlias(target);
+      resetJobLog();
     },
-    onSuccess: (_data, target) => {
-      setActionMsg(`Seal ok: ${target}`);
+    onSuccess: (_data, { target, tag }) => {
+      setActionMsg(t("images.sealOk", { target, tag }));
       invalidate();
     },
     onError: (err) => setError(String(err)),
@@ -78,25 +127,23 @@ export function ImagesPage() {
   });
 
   const images = listQuery.data?.images ?? [];
-  const busy =
-    pullMutation.isPending ||
-    bakeMutation.isPending ||
-    sealMutation.isPending ||
-    listQuery.isFetching;
+  const jobPending =
+    pullMutation.isPending || bakeMutation.isPending || sealMutation.isPending;
+  const busy = jobPending || listQuery.isFetching;
+  const showJobLog = jobPending || jobLines.length > 0;
 
   return (
     <section>
       <header className="detail-heading" style={{ marginBottom: "1rem" }}>
-        <h2 className="section-title">Images</h2>
+        <h2 className="section-title">{t("images.title")}</h2>
         <p className="muted">
-          Image-Cache wie <code>vzctl image list|pull|bake|seal</code> — Lifecycle{" "}
-          <code>pull → bake → seal</code>.
+          {t("images.subtitle")}
         </p>
       </header>
 
       <div className="card summary-card">
         <div className="summary-row">
-          <span className="badge ok">{images.length} lokal</span>
+          <span className="badge ok">{t("images.localCount", { n: images.length })}</span>
           {listQuery.data?.imagesDir ? (
             <span className="muted" title={listQuery.data.imagesDir}>
               {listQuery.data.imagesDir}
@@ -108,7 +155,7 @@ export function ImagesPage() {
             disabled={busy}
             onClick={() => void listQuery.refetch()}
           >
-            Aktualisieren
+            {t("images.refresh")}
           </button>
         </div>
         {listQuery.isError ? (
@@ -118,16 +165,21 @@ export function ImagesPage() {
         {actionMsg ? <p className="muted">{actionMsg}</p> : null}
         {busyAlias ? (
           <p className="muted">
-            Läuft: <code>{busyAlias}</code> (kann Minuten dauern)…
+            {t("images.busy", { alias: busyAlias })}
           </p>
         ) : null}
       </div>
 
+      {showJobLog ? (
+        <div style={{ marginBottom: "1rem" }}>
+          <h3 className="group-title">{t("images.jobLog.title")}</h3>
+          <ConsoleLog lines={jobLines} visible />
+        </div>
+      ) : null}
+
       <div className="card">
-        <h3 className="group-title">Pull</h3>
-        <p className="muted">
-          Alias aus dem Katalog laden und als Raw normalisieren.
-        </p>
+        <h3 className="group-title">{t("images.pullTitle")}</h3>
+        <p className="muted">{t("images.pullHint")}</p>
         <form
           className="form-grid"
           style={{ alignItems: "end" }}
@@ -138,7 +190,7 @@ export function ImagesPage() {
           }}
         >
           <label>
-            Alias
+            {t("images.pullAlias")}
             <select
               value={pullAlias}
               disabled={busy}
@@ -152,32 +204,49 @@ export function ImagesPage() {
             </select>
           </label>
           <button type="submit" disabled={busy || !pullAlias.trim()}>
-            Pull
+            {t("images.pull")}
           </button>
         </form>
       </div>
 
       <div className="card">
-        <h3 className="group-title">Seal (Name / Pfad)</h3>
-        <p className="muted">
-          Freies Input wie CLI <code>image seal &lt;name|path&gt;</code>.
-        </p>
+        <h3 className="group-title">{t("images.tagTitle")}</h3>
+        <p className="muted">{t("images.tagHint")}</p>
+        <label>
+          {t("images.tagField")}
+          <input
+            value={imageTag}
+            disabled={busy}
+            onChange={(e) => setImageTag(e.target.value)}
+            placeholder={DEFAULT_IMAGE_TAG}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </label>
+        {!tagOk && imageTag.trim() !== "" ? (
+          <p className="form-error">{t("images.tagInvalid")}</p>
+        ) : null}
+      </div>
+
+      <div className="card">
+        <h3 className="group-title">{t("images.sealTitle")}</h3>
+        <p className="muted">{t("images.sealHint")}</p>
         <form
           className="form-grid"
           style={{ alignItems: "end" }}
           onSubmit={(event) => {
             event.preventDefault();
             const target = sealTarget.trim();
-            if (target) sealMutation.mutate(target);
+            if (target && tagOk) sealMutation.mutate({ target, tag });
           }}
         >
           <label>
-            Name oder Pfad
+            {t("images.sealField")}
             <input
               value={sealTarget}
               disabled={busy}
               onChange={(e) => setSealTarget(e.target.value)}
-              placeholder="ubuntu-latest oder /path/to/image.raw"
+              placeholder={t("images.sealPlaceholder")}
               list="image-seal-aliases"
             />
             <datalist id="image-seal-aliases">
@@ -186,31 +255,29 @@ export function ImagesPage() {
               ))}
             </datalist>
           </label>
-          <button type="submit" disabled={busy || !sealTarget.trim()}>
-            Seal
+          <button type="submit" disabled={busy || !sealTarget.trim() || !tagOk}>
+            {t("images.seal")}
           </button>
         </form>
       </div>
 
       {listQuery.isLoading ? (
-        <p className="muted">Lade Image-Cache…</p>
+        <p className="muted">{t("images.loading")}</p>
       ) : images.length === 0 ? (
         <div className="card">
-          <h2>Kein lokaler Cache</h2>
-          <p className="muted">
-            Noch keine Aliase gepullt. Oben einen Katalog-Alias pullen.
-          </p>
+          <h2>{t("images.emptyTitle")}</h2>
+          <p className="muted">{t("images.emptyHint")}</p>
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: "auto" }}>
           <table className="vm-table">
             <thead>
               <tr>
-                <th>Alias</th>
-                <th>State</th>
-                <th>Distribution</th>
-                <th>Release</th>
-                <th>Agent</th>
+                <th>{t("images.col.alias")}</th>
+                <th>{t("images.col.state")}</th>
+                <th>{t("images.col.distribution")}</th>
+                <th>{t("images.col.release")}</th>
+                <th>{t("images.col.agent")}</th>
                 <th />
               </tr>
             </thead>
@@ -220,9 +287,14 @@ export function ImagesPage() {
                   key={image.alias}
                   image={image}
                   busy={busy}
+                  tagOk={tagOk}
                   rowBusy={busyAlias === image.alias}
-                  onBake={() => bakeMutation.mutate(image.alias)}
-                  onSeal={() => sealMutation.mutate(image.alias)}
+                  onBake={() =>
+                    tagOk && bakeMutation.mutate({ alias: image.alias, tag })
+                  }
+                  onSeal={() =>
+                    tagOk && sealMutation.mutate({ target: image.alias, tag })
+                  }
                 />
               ))}
             </tbody>
@@ -236,16 +308,19 @@ export function ImagesPage() {
 function ImageRow({
   image,
   busy,
+  tagOk,
   rowBusy,
   onBake,
   onSeal,
 }: {
   image: ImageListItem;
   busy: boolean;
+  tagOk: boolean;
   rowBusy: boolean;
   onBake: () => void;
   onSeal: () => void;
 }) {
+  const t = useT();
   const state = imageStateLabel(image);
   return (
     <tr>
@@ -269,32 +344,34 @@ function ImageRow({
           {state}
         </span>
       </td>
-      <td>{image.distribution || "—"}</td>
-      <td>{image.release || "—"}</td>
-      <td className="muted">{image.agent_version ?? "—"}</td>
+      <td>{image.distribution || t("common.emDash")}</td>
+      <td>{image.release || t("common.emDash")}</td>
+      <td className="muted">{image.agent_version ?? t("common.emDash")}</td>
       <td>
         <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
           <button
             type="button"
             className="secondary"
-            disabled={busy || image.sealed}
+            disabled={busy || image.sealed || !tagOk}
             title={
               image.sealed
-                ? "Bereits sealed — Bake nicht möglich"
-                : "Guest-Agent einbacken"
+                ? t("images.bakeSealed")
+                : !tagOk
+                  ? t("images.tagInvalid")
+                  : t("images.bakeHint")
             }
             onClick={onBake}
           >
-            {rowBusy ? "…" : "Bake"}
+            {rowBusy ? t("common.ellipsis") : t("images.bake")}
           </button>
           <button
             type="button"
             className="secondary"
-            disabled={busy}
-            title="Clone-safe versiegeln"
+            disabled={busy || !tagOk}
+            title={!tagOk ? t("images.tagInvalid") : t("images.sealHintBtn")}
             onClick={onSeal}
           >
-            Seal
+            {t("images.seal")}
           </button>
         </div>
       </td>

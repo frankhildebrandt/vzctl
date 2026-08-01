@@ -3,6 +3,7 @@ import {
   catalogAliasOptions,
   IMAGE_ALIAS_HINTS,
   imageStateLabel,
+  validImageTag,
   type ImageCatalogEntry,
   type ImageListItem,
 } from "@/lib/images";
@@ -34,6 +35,14 @@ describe("images helpers", () => {
     expect(imageStateLabel(sampleImage({ baked: true, sealed: true }))).toBe(
       "sealed",
     );
+  });
+
+  it("validates image tags like CLI", () => {
+    expect(validImageTag("v1")).toBe(true);
+    expect(validImageTag("release.1_0-rc")).toBe(true);
+    expect(validImageTag("")).toBe(false);
+    expect(validImageTag(".v1")).toBe(false);
+    expect(validImageTag("a".repeat(65))).toBe(false);
   });
 
   it("flattens catalog aliases for pull options", () => {

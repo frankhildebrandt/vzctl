@@ -26,7 +26,7 @@ export function emptySnapshot(): EditorSnapshot {
         hostListen: "127.0.0.1:15353",
         forward: { enabled: true, upstream: "system" },
       },
-      images: { "ubuntu-base": { from: "ubuntu-latest", role: "base" } },
+      images: { "ubuntu-base": { from: "ubuntu-latest", role: "base", tag: "v1" } },
       networks: {},
       routes: [],
       policies: [],
