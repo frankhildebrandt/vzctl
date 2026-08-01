@@ -172,105 +172,88 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
   const diffActions = (Array.isArray(diffData?.actions) ? diffData?.actions : []) as DiffAction[];
   const stackData = asRecord(stackSection?.data);
   const stackVms = asRecord(stackData?.vms);
+  const dnsNeedsHelper = needsDnsBindHelper(
+    dnsInner?.last_error != null ? String(dnsInner.last_error) : null,
+  );
+
+  const rows: StatusRowModel[] = [
+    {
+      title: "Stack",
+      ok: String(stackData?.phase ?? "") === "running",
+      facts: [
+        stackData?.label != null ? String(stackData.label) : null,
+        stackVms
+          ? `${stackVms.running ?? 0}/${stackVms.desired ?? 0} VMs`
+          : null,
+        stackData?.stack_id != null ? String(stackData.stack_id) : null,
+      ],
+    },
+    {
+      title: "DNS",
+      ok: Boolean(dnsInner?.ok ?? dns?.ok),
+      facts: [
+        joinList(dnsInner?.listeners),
+        dnsInner?.zones != null ? `${dnsInner.zones} zones` : null,
+        dnsInner?.records != null ? `${dnsInner.records} records` : null,
+        dnsInner?.upstream != null ? `upstream ${String(dnsInner.upstream)}` : null,
+      ],
+      error:
+        dnsInner?.last_error != null
+          ? String(dnsInner.last_error)
+          : dns?.stderr || undefined,
+      hint: dnsNeedsHelper
+        ? "Guest-:53 braucht den DNS-Bind-Helper (Admin)."
+        : undefined,
+      action: dnsNeedsHelper ? <DnsBindHelperButton /> : undefined,
+    },
+    {
+      title: "CA",
+      ok: Boolean(certs?.ok && certsData?.fingerprint && certsData?.trusted !== false),
+      facts: [
+        shortFp(certsData?.fingerprint != null ? String(certsData.fingerprint) : null),
+        certsData?.trusted === true
+          ? "trusted"
+          : certsData?.trusted === false
+            ? "nicht trusted"
+            : null,
+        certsData?.path != null ? String(certsData.path) : null,
+      ],
+      hint:
+        certsData?.trusted === false
+          ? "Browser melden SEC_ERROR_UNKNOWN_ISSUER, bis die CA in der Keychain liegt. Firefox/Zen: enterprise_roots oder manueller Import."
+          : undefined,
+      action:
+        certsData?.present === true && certsData?.trusted === false ? (
+          <CaInstallButton />
+        ) : undefined,
+    },
+    {
+      title: "OIDC",
+      ok: Boolean(oidcData?.running),
+      facts: [
+        oidcData?.running ? "running" : "stopped",
+        oidcData?.pid != null ? `pid ${String(oidcData.pid)}` : null,
+        oidcData?.project != null ? String(oidcData.project) : null,
+      ],
+    },
+    {
+      title: "Drift",
+      ok: diffActions.length === 0 && Boolean(diff?.ok),
+      facts: [
+        `${diffActions.length} actions`,
+        diffData?.stack_id != null ? String(diffData.stack_id) : null,
+      ],
+    },
+  ];
 
   return (
     <div className="view-stack">
-      <div className="status-grid">
-        <StatusTile
-          title="Stack"
-          ok={String(stackData?.phase ?? "") === "running"}
-          rows={[
-            ["Phase", stackData?.label != null ? String(stackData.label) : "—"],
-            [
-              "VMs",
-              stackVms
-                ? `${stackVms.running ?? 0}/${stackVms.desired ?? 0} running`
-                : "—",
-            ],
-            [
-              "Stack",
-              stackData?.stack_id != null ? String(stackData.stack_id) : "—",
-            ],
-          ]}
-        />
-        <StatusTile
-          title="DNS"
-          ok={Boolean(dnsInner?.ok ?? dns?.ok)}
-          rows={[
-            ["Listeners", joinList(dnsInner?.listeners)],
-            ["Zones", String(dnsInner?.zones ?? "—")],
-            ["Records", String(dnsInner?.records ?? "—")],
-            ["Upstream", String(dnsInner?.upstream ?? "—")],
-          ]}
-          error={
-            dnsInner?.last_error != null
-              ? String(dnsInner.last_error)
-              : dns?.stderr || undefined
-          }
-          action={
-            needsDnsBindHelper(
-              dnsInner?.last_error != null ? String(dnsInner.last_error) : null,
-            ) ? (
-              <DnsBindHelperButton />
-            ) : undefined
-          }
-          hint={
-            needsDnsBindHelper(
-              dnsInner?.last_error != null ? String(dnsInner.last_error) : null,
-            )
-              ? "Guest-:53 braucht den DNS-Bind-Helper (Admin)."
-              : undefined
-          }
-        />
-        <StatusTile
-          title="CA"
-          ok={Boolean(certs?.ok && certsData?.fingerprint && certsData?.trusted !== false)}
-          rows={[
-            [
-              "Fingerprint",
-              shortFp(certsData?.fingerprint != null ? String(certsData.fingerprint) : null),
-            ],
-            [
-              "Keychain",
-              certsData?.trusted === true
-                ? "trusted"
-                : certsData?.trusted === false
-                  ? "nicht trusted"
-                  : "—",
-            ],
-            ["Path", certsData?.path != null ? String(certsData.path) : "—"],
-          ]}
-          action={
-            certsData?.present === true && certsData?.trusted === false ? (
-              <CaInstallButton />
-            ) : undefined
-          }
-          hint={
-            certsData?.trusted === false
-              ? "Browser melden SEC_ERROR_UNKNOWN_ISSUER, bis die CA in der Keychain liegt. Firefox/Zen: enterprise_roots oder manueller Import."
-              : undefined
-          }
-        />
-        <StatusTile
-          title="OIDC"
-          ok={Boolean(oidcData?.running)}
-          rows={[
-            ["Running", oidcData?.running ? "yes" : "no"],
-            ["PID", oidcData?.pid != null ? String(oidcData.pid) : "—"],
-            ["Project", oidcData?.project != null ? String(oidcData.project) : "—"],
-          ]}
-        />
-        <StatusTile
-          title="Drift"
-          ok={diffActions.length === 0 && Boolean(diff?.ok)}
-          rows={[
-            ["Actions", String(diffActions.length)],
-            [
-              "Stack",
-              diffData?.stack_id != null ? String(diffData.stack_id) : "—",
-            ],
-          ]}
-        />
+      <div className="card status-board">
+        <ul className="status-board-list">
+          {rows.map((row) => (
+            <StatusRow key={row.title} {...row} />
+          ))}
+        </ul>
       </div>
 
       {diffActions.length > 0 ? (
@@ -297,39 +280,33 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function StatusTile({
-  title,
-  ok,
-  rows,
-  error,
-  action,
-  hint,
-}: {
+type StatusRowModel = {
   title: string;
   ok: boolean;
-  rows: Array<[string, string]>;
+  facts: Array<string | null | undefined>;
   error?: string;
   action?: ReactNode;
   hint?: string;
-}) {
+};
+
+function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
+  const visibleFacts = facts.filter(
+    (fact): fact is string => typeof fact === "string" && fact.length > 0 && fact !== "—",
+  );
+
   return (
-    <div className="card status-tile">
-      <div className="summary-row">
-        <h3>{title}</h3>
+    <li className={`status-board-row${ok ? "" : " is-warn"}`}>
+      <div className="status-board-main">
+        <span className="status-board-title">{title}</span>
         <span className={ok ? "badge ok" : "badge warn"}>{ok ? "ok" : "check"}</span>
+        <p className="status-board-facts" title={visibleFacts.join(" · ")}>
+          {visibleFacts.length > 0 ? visibleFacts.join(" · ") : "—"}
+        </p>
       </div>
-      <dl className="kv">
-        {rows.map(([k, v]) => (
-          <div key={k} className="kv-row">
-            <dt>{k}</dt>
-            <dd title={v}>{v}</dd>
-          </div>
-        ))}
-      </dl>
-      {error ? <p className="tile-error">{error}</p> : null}
-      {hint ? <p className="muted tile-hint">{hint}</p> : null}
-      {action ? <div className="tile-action">{action}</div> : null}
-    </div>
+      {error ? <p className="status-board-error">{error}</p> : null}
+      {hint ? <p className="muted status-board-hint">{hint}</p> : null}
+      {action ? <div className="status-board-action">{action}</div> : null}
+    </li>
   );
 }
 

@@ -347,13 +347,9 @@ export function ApplyProgress({
 export function ConsoleLog({
   lines,
   visible,
-  title = "Log",
-  onDismiss,
 }: {
   lines: ConsoleLine[];
   visible: boolean;
-  title?: string;
-  onDismiss?: () => void;
 }) {
   const scroller = useRef<HTMLPreElement>(null);
   const stickRef = useRef(true);
@@ -368,20 +364,10 @@ export function ConsoleLog({
 
   return (
     <div className="card console-card">
-      <div className="progress-head">
-        <h2>{title}</h2>
-        <div className="console-head-actions">
-          <span className="muted">{lines.length} Zeilen</span>
-          {onDismiss ? (
-            <button type="button" className="debug-btn" onClick={onDismiss}>
-              Schließen
-            </button>
-          ) : null}
-        </div>
-      </div>
       <pre
         ref={scroller}
         className="text-console"
+        aria-label="Apply-Log"
         aria-live="polite"
         onScroll={(event) => {
           const el = event.currentTarget;
