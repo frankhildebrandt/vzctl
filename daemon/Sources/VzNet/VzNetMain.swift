@@ -4,13 +4,13 @@ import Foundation
 import VzDaemonKit
 
 @main
-enum VzSupervisorMain {
+enum VzNetMain {
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
         case "version", nil:
-            print("vz-supervisor \(VzDaemonKit.version) (macOS ≥ \(VzDaemonKit.minMacOSMajor))")
-            print("ownership: DNS+journal+orchestrate; vmnet refs via vz-net (ADR 0002)")
+            print("vz-net \(VzDaemonKit.version) (macOS ≥ \(VzDaemonKit.minMacOSMajor))")
+            print("ownership: vmnet refs + host bridges (ADR 0002)")
         case "doctor":
             let v = ProcessInfo.processInfo.operatingSystemVersion
             print("host: macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)")
@@ -26,18 +26,8 @@ enum VzSupervisorMain {
                 exit(VzExit.hostTooOld.rawValue)
             }
             do {
-                let serveArgs = Array(args.dropFirst())
-                let parsed = try RestConfig.parseServeArgs(serveArgs)
-                let apiListen = try RestConfig.resolve(
-                    stateDirectory: resolveStateDirectory(),
-                    flagValue: parsed.apiListen
-                )
-                // Re-resolve state dir once for server (same path).
                 let stateDirectory = try resolveStateDirectory()
-                let server = try SupervisorServer(
-                    stateDirectory: stateDirectory,
-                    apiListen: apiListen
-                )
+                let server = try NetServer(stateDirectory: stateDirectory)
                 signal(SIGPIPE, SIG_IGN)
                 signal(SIGINT, SIG_IGN)
                 signal(SIGTERM, SIG_IGN)
@@ -53,8 +43,7 @@ enum VzSupervisorMain {
                     server.stop()
                 }
                 print("listening: \(server.socketPath)")
-                print("api: \(server.apiListenDescription)")
-                print("state: \(server.databasePath)")
+                print("state: \(stateDirectory.path)")
                 fflush(stdout)
                 try server.run()
             } catch {
@@ -64,22 +53,18 @@ enum VzSupervisorMain {
         case "help", "-h", "--help":
             print(
                 """
-                vz-supervisor — stack supervisor (P0)
+                vz-net — HyperNetwork Supervisor (vmnet refs)
 
                 Commands:
                   version
                   doctor
-                  serve [--api-listen unix:<path>|tcp:127.0.0.1:<port>]
+                  serve
                   help
 
                 Env:
                   VZCTL_STATE_DIR   state directory (default: ~/Library/Application Support/vzctl)
-                  VZCTL_API_LISTEN  REST listen spec (default: unix:$VZCTL_STATE_DIR/api.sock)
 
-                Owns: DNS listeners, apply journal, REST control-plane, desired-state nets.
-                vmnet refs: vz-net (net.sock). Contract: docs/specs/vz-net-v1.md
-                Accepts: helper.hello/helper.state and exposes records via vm.list.
-                REST: docs/specs/supervisor-rest-v1.md
+                Owns: vmnet_network_ref + host bridges. Contract: docs/specs/vz-net-v1.md
                 """
             )
         default:

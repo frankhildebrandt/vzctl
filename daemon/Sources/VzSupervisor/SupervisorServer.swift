@@ -40,8 +40,13 @@ final class SupervisorServer: @unchecked Sendable {
     private var helpers: [String: HelperRecord] = [:]
     private var helperProcesses: [String: Process] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
+    private var eventListeners: [UUID: EventListener] = [:]
+    private var restServer: RestServer?
+    private let restJobs: RestJobRunner
+    private let restRouter: RestRouter
+    private let apiListenSpec: RestListenSpec
 
-    init(stateDirectory: URL) throws {
+    init(stateDirectory: URL, apiListen: RestListenSpec? = nil) throws {
         self.stateDirectory = stateDirectory
         try FileManager.default.createDirectory(
             at: stateDirectory,
@@ -54,8 +59,18 @@ final class SupervisorServer: @unchecked Sendable {
         socketPath = stateDirectory.appendingPathComponent("vz.sock").path
         databasePath = stateDirectory.appendingPathComponent("state.sqlite").path
         database = try StateDatabase(path: databasePath)
-        networkRegistry = try NetworkRegistry(database: database)
+        networkRegistry = try NetworkRegistry(database: database, stateDirectory: stateDirectory)
         dnsServer = DNSServer()
+        apiListenSpec = try apiListen ?? RestConfig.resolve(
+            stateDirectory: stateDirectory,
+            flagValue: nil
+        )
+        restJobs = RestJobRunner(stateDirectory: stateDirectory)
+        restRouter = RestRouter(
+            jobs: restJobs,
+            database: database,
+            stateDirectory: stateDirectory
+        )
     }
 
     func run() throws {
@@ -81,6 +96,11 @@ final class SupervisorServer: @unchecked Sendable {
             }
             reloadDNS(reason: "startup")
             reloadPorts(reason: "startup")
+
+            restRouter.server = self
+            let rest = RestServer(listenSpec: apiListenSpec, router: restRouter)
+            try rest.start()
+            restServer = rest
 
             while true {
                 let client = Darwin.accept(fd, nil, nil)
@@ -142,7 +162,39 @@ final class SupervisorServer: @unchecked Sendable {
         gatewayIngressProxy.shutdown()
         embeddedProcesses.shutdown()
         networkRegistry.shutdown()
+        restServer?.stop()
+        restServer = nil
     }
+
+    /// In-process JSON-RPC dispatch for the REST control plane.
+    func dispatchRPC(method: String, params: JSONValue? = nil) -> JSONRPCResponse {
+        let request = JSONRPCRequest(method: method, params: params, id: .number(1))
+        guard let data = try? JSONEncoder().encode(request) else {
+            return JSONRPCResponse(
+                error: JSONRPCError(code: -32700, message: "Encode error"),
+                id: .null
+            )
+        }
+        return response(for: data)
+    }
+
+    @discardableResult
+    func addEventListener(
+        filter: EventFilter,
+        handler: @escaping @Sendable (EventEnvelope) -> Void
+    ) -> UUID {
+        let id = UUID()
+        stateLock.withLock {
+            eventListeners[id] = EventListener(filter: filter, handler: handler)
+        }
+        return id
+    }
+
+    func removeEventListener(_ id: UUID) {
+        stateLock.withLock { _ = eventListeners.removeValue(forKey: id) }
+    }
+
+    var apiListenDescription: String { apiListenSpec.description }
 
     private func handle(_ client: Int32) {
         guard peerUID(client) == geteuid() else { return }
@@ -198,6 +250,9 @@ final class SupervisorServer: @unchecked Sendable {
                 $0.runtimeState != "active"
             }.count ?? 0
             let dnsHealth = dnsServer.health()
+            let netHealth = vzNetHealth()
+            // CP `ok` tracks local health; vz-net is reported separately so doctor
+            // can WARN without treating the control plane as down.
             return JSONRPCResponse(
                 result: .object([
                     "ok": .bool(dnsHealth.ok),
@@ -209,6 +264,8 @@ final class SupervisorServer: @unchecked Sendable {
                     "network_orphans": .number(Double(orphanedNetworks)),
                     "dns_ok": .bool(dnsHealth.ok),
                     "dns": dnsHealth.json,
+                    "vz_net_ok": .bool(netHealth.ok),
+                    "vz_net": netHealth.json,
                 ]),
                 id: request.id ?? .null
             )
@@ -301,15 +358,17 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try objectParams(request.params, context: "vm.stop")
                 let vmID = try requiredReconcileString("vm_id", from: params)
+                let force = optionalBool("force", from: params) ?? false
+                let signal = force ? SIGKILL : SIGTERM
                 let record = stateLock.withLock { helpers[vmID] }
                 if let record, record.state == "starting" || record.state == "running" {
-                    let killResult = Darwin.kill(pid_t(record.pid), SIGTERM)
+                    let killResult = Darwin.kill(pid_t(record.pid), signal)
                     let killErrno = errno
                     guard killResult == 0 || killErrno == ESRCH else {
                         throw SupervisorError.system("stop helper \(vmID)", killErrno)
                     }
-                    // ESRCH / already-dead: terminationHandler may never run — drop stale records now.
-                    if killErrno == ESRCH || !helperProcessIsRunning(vmID) {
+                    // Force / ESRCH / already-dead: drop bookkeeping immediately.
+                    if force || killErrno == ESRCH || !helperProcessIsRunning(vmID) {
                         stateLock.withLock {
                             helperProcesses.removeValue(forKey: vmID)
                             helpers.removeValue(forKey: vmID)
@@ -318,7 +377,17 @@ final class SupervisorServer: @unchecked Sendable {
                 } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
                           process.isRunning
                 {
-                    process.terminate()
+                    if force {
+                        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                    } else {
+                        process.terminate()
+                    }
+                    if force {
+                        stateLock.withLock {
+                            helperProcesses.removeValue(forKey: vmID)
+                            helpers.removeValue(forKey: vmID)
+                        }
+                    }
                 } else {
                     // No live helper — clear any leftover bookkeeping so vm.list drops the id.
                     stateLock.withLock {
@@ -327,7 +396,11 @@ final class SupervisorServer: @unchecked Sendable {
                     }
                 }
                 return JSONRPCResponse(
-                    result: .object(["vm_id": .string(vmID), "state": .string("stopped")]),
+                    result: .object([
+                        "vm_id": .string(vmID),
+                        "state": .string("stopped"),
+                        "force": .bool(force),
+                    ]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -337,14 +410,14 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try objectParams(request.params, context: "vm.purge")
                 let vmID = try requiredReconcileString("vm_id", from: params)
-                // Stop + clear helper bookkeeping even if the process is already gone.
+                // Hard-kill + clear helper bookkeeping even if the process is already gone.
                 let record = stateLock.withLock { helpers[vmID] }
                 if let record, record.state == "starting" || record.state == "running" {
-                    _ = Darwin.kill(pid_t(record.pid), SIGTERM)
+                    _ = Darwin.kill(pid_t(record.pid), SIGKILL)
                 } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
                           process.isRunning
                 {
-                    process.terminate()
+                    _ = Darwin.kill(process.processIdentifier, SIGKILL)
                 }
                 stateLock.withLock {
                     helperProcesses.removeValue(forKey: vmID)
@@ -1572,7 +1645,7 @@ final class SupervisorServer: @unchecked Sendable {
     private func emit(type: String, data: [String: JSONValue]) {
         let event = EventEnvelope(type: type, data: data)
         guard let encoded = try? JSONRPCFraming.encode(event) else { return }
-        stateLock.withLock {
+        let listeners: [EventListener] = stateLock.withLock {
             let failed = subscribers.compactMap { id, subscriber -> UUID? in
                 guard subscriber.filter.matches(type) else { return nil }
                 return writeAll(encoded, to: subscriber.fd) ? nil : id
@@ -1580,6 +1653,37 @@ final class SupervisorServer: @unchecked Sendable {
             for id in failed {
                 subscribers.removeValue(forKey: id)
             }
+            return Array(eventListeners.values)
+        }
+        for listener in listeners where listener.filter.matches(type) {
+            listener.handler(event)
+        }
+    }
+
+    private func vzNetHealth() -> (ok: Bool, json: JSONValue) {
+        let client = VzNetClient(
+            socketPath: VzNetClient.defaultSocketPath(stateDirectory: stateDirectory)
+        )
+        do {
+            let health = try client.health()
+            return (
+                health.ok,
+                .object([
+                    "ok": .bool(health.ok),
+                    "version": .string(health.version),
+                    "networks": .number(Double(health.networks)),
+                    "socket": .string(client.socketPath),
+                ])
+            )
+        } catch {
+            return (
+                false,
+                .object([
+                    "ok": .bool(false),
+                    "socket": .string(client.socketPath),
+                    "error": .string(String(describing: error)),
+                ])
+            )
         }
     }
 
@@ -1684,6 +1788,11 @@ final class SupervisorServer: @unchecked Sendable {
 private struct EventSubscriber: Sendable {
     let fd: Int32
     let filter: EventFilter
+}
+
+private struct EventListener: Sendable {
+    let filter: EventFilter
+    let handler: @Sendable (EventEnvelope) -> Void
 }
 
 private enum ReconcileRPCError: Error {

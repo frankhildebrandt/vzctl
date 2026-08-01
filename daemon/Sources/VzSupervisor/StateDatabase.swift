@@ -98,6 +98,12 @@ final class StateDatabase {
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (bind, host_port)
                 );
+                CREATE TABLE IF NOT EXISTS stacks (
+                    id TEXT PRIMARY KEY,
+                    path TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    opened_at TEXT NOT NULL
+                );
                 """
             )
             // Older DBs: add nat_egress if missing (ignore duplicate-column errors).
@@ -780,6 +786,81 @@ final class StateDatabase {
             return true
         }
         return Darwin.kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    func listStacks() throws -> [StackRegistryRecord] {
+        try withStatement(
+            "SELECT id, path, name, opened_at FROM stacks ORDER BY opened_at DESC;"
+        ) { statement in
+            var rows: [StackRegistryRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                rows.append(
+                    StackRegistryRecord(
+                        id: text(statement, 0),
+                        path: text(statement, 1),
+                        name: text(statement, 2),
+                        openedAt: text(statement, 3)
+                    )
+                )
+            }
+            return rows
+        }
+    }
+
+    func getStack(id: String) throws -> StackRegistryRecord? {
+        try withStatement(
+            "SELECT id, path, name, opened_at FROM stacks WHERE id = ? LIMIT 1;"
+        ) { statement in
+            try bind(id, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return StackRegistryRecord(
+                id: text(statement, 0),
+                path: text(statement, 1),
+                name: text(statement, 2),
+                openedAt: text(statement, 3)
+            )
+        }
+    }
+
+    func getStackByPath(_ path: String) throws -> StackRegistryRecord? {
+        try withStatement(
+            "SELECT id, path, name, opened_at FROM stacks WHERE path = ? LIMIT 1;"
+        ) { statement in
+            try bind(path, at: 1, to: statement)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return StackRegistryRecord(
+                id: text(statement, 0),
+                path: text(statement, 1),
+                name: text(statement, 2),
+                openedAt: text(statement, 3)
+            )
+        }
+    }
+
+    func upsertStack(_ record: StackRegistryRecord) throws {
+        try withStatement(
+            """
+            INSERT INTO stacks (id, path, name, opened_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                path = excluded.path,
+                name = excluded.name,
+                opened_at = excluded.opened_at;
+            """
+        ) { statement in
+            try bind(record.id, at: 1, to: statement)
+            try bind(record.path, at: 2, to: statement)
+            try bind(record.name, at: 3, to: statement)
+            try bind(record.openedAt, at: 4, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func deleteStack(id: String) throws {
+        try withStatement("DELETE FROM stacks WHERE id = ?;") { statement in
+            try bind(id, at: 1, to: statement)
+            try stepDone(statement)
+        }
     }
 
     private func withStatement<T>(_ sql: String, body: (OpaquePointer) throws -> T) throws -> T {

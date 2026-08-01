@@ -330,22 +330,33 @@ private final class BackendState: @unchecked Sendable {
 
 private struct RecordingBackend: NetworkRuntimeBackend {
     let state: BackendState
+    var releasesOnShutdown: Bool { true }
 
     func reserve(_ network: NetworkRecord) throws -> any NetworkRuntimeHandle {
         state.reserve()
-        return RecordingHandle(state: state)
+        return RecordingHandle(name: network.name, state: state)
+    }
+
+    func serialize(name: String, handle: any NetworkRuntimeHandle) throws -> Data {
+        _ = name
+        _ = handle
+        return Data("test-serialization".utf8)
+    }
+
+    func release(name: String, handle: any NetworkRuntimeHandle) throws {
+        _ = name
+        _ = handle
+        state.release()
     }
 }
 
 private final class RecordingHandle: NetworkRuntimeHandle, @unchecked Sendable {
+    let name: String
     let state: BackendState
 
-    init(state: BackendState) {
+    init(name: String, state: BackendState) {
+        self.name = name
         self.state = state
-    }
-
-    deinit {
-        state.release()
     }
 }
 

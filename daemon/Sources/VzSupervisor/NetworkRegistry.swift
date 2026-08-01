@@ -1,8 +1,5 @@
-import CoreFoundation
-import Dispatch
 import Foundation
 import VzDaemonKit
-import vmnet
 
 enum NetworkRegistryError: Error, CustomStringConvertible {
     case invalid(String)
@@ -31,131 +28,63 @@ enum NetworkRegistryError: Error, CustomStringConvertible {
 protocol NetworkRuntimeHandle: AnyObject, Sendable {}
 
 protocol NetworkRuntimeBackend: Sendable {
+    /// When true, dropping handles on CP shutdown releases the runtime reservation
+    /// (in-process / test backends). Remote `vz-net` returns false so CP crashes
+    /// do not orphan-or-release CIDRs held by `vz-net`.
+    var releasesOnShutdown: Bool { get }
+
     func reserve(_ network: NetworkRecord) throws -> any NetworkRuntimeHandle
+    func serialize(name: String, handle: any NetworkRuntimeHandle) throws -> Data
+    func release(name: String, handle: any NetworkRuntimeHandle) throws
 }
 
-/// Holds the process-local vmnet reservation plus a host-side interface.
-///
-/// G0: `.0` is only bindable after `vmnet_interface_start_with_network`
-/// (bridge inet appears). Without that, DNS/ingress fail with EADDRNOTAVAIL.
-final class NativeVmnetHandle: NetworkRuntimeHandle, @unchecked Sendable {
-    let network: vmnet_network_ref
-    private let interface: interface_ref?
-
-    init(network: vmnet_network_ref, interface: interface_ref?) {
-        self.network = network
-        self.interface = interface
-    }
-
-    deinit {
-        if let interface {
-            let queue = DispatchQueue(label: "vzctl.vmnet.stop")
-            let sem = DispatchSemaphore(value: 0)
-            let status = vmnet_stop_interface(interface, queue) { _ in
-                sem.signal()
-            }
-            if status == .VMNET_SUCCESS {
-                _ = sem.wait(timeout: .now() + .seconds(5))
-            }
-        }
-        // vmnet_network_ref is an opaque CF_RETURNS_RETAINED C handle; Swift ARC
-        // does not release it automatically.
-        releaseOpaqueCF(network)
-    }
+/// Marker handle for a network reserved in `vz-net`.
+final class RemoteVmnetHandle: NetworkRuntimeHandle, @unchecked Sendable {
+    let name: String
+    init(name: String) { self.name = name }
 }
 
-struct NativeVmnetBackend: NetworkRuntimeBackend {
-    func reserve(_ record: NetworkRecord) throws -> any NetworkRuntimeHandle {
-        guard record.mode == "shared" else {
-            throw NetworkRegistryError.invalid(
-                "bridged mode is unsupported in v0.1; use --mode shared"
-            )
-        }
-        let cidr: IPv4CIDR
+struct RemoteVzNetBackend: NetworkRuntimeBackend {
+    let client: VzNetClient
+    var releasesOnShutdown: Bool { false }
+
+    func reserve(_ network: NetworkRecord) throws -> any NetworkRuntimeHandle {
         do {
-            cidr = try IPv4CIDR(record.cidr)
+            _ = try client.acquire(
+                name: network.name,
+                cidr: network.cidr,
+                mode: network.mode,
+                natEgress: network.natEgress
+            )
+            return RemoteVmnetHandle(name: network.name)
+        } catch let error as VzNetClientError {
+            throw NetworkRegistryError.runtime(error.description)
         } catch {
-            throw NetworkRegistryError.invalid(String(describing: error))
+            throw NetworkRegistryError.runtime(String(describing: error))
         }
+    }
 
-        // natEgress:false → host-only (no Internet NAT); true → shared NAT44.
-        let operationMode: operating_modes_t =
-            record.natEgress ? .VMNET_SHARED_MODE : .VMNET_HOST_MODE
-
-        var status: vmnet_return_t = .VMNET_SUCCESS
-        guard let configuration = vmnet_network_configuration_create(operationMode, &status)
-        else {
-            throw NetworkRegistryError.runtime(
-                "vmnet configuration for \(record.name) failed (\(status.rawValue))"
-            )
-        }
-        defer { releaseOpaqueCF(configuration) }
-        var subnet = cidr.subnetAddress
-        var mask = cidr.maskAddress
-        status = vmnet_network_configuration_set_ipv4_subnet(configuration, &subnet, &mask)
-        guard status == .VMNET_SUCCESS else {
-            throw NetworkRegistryError.runtime(
-                "vmnet subnet \(record.cidr) failed (\(status.rawValue))"
-            )
-        }
-        vmnet_network_configuration_disable_dhcp(configuration)
-        vmnet_network_configuration_disable_dns_proxy(configuration)
-
-        guard let network = vmnet_network_create(configuration, &status) else {
-            throw NetworkRegistryError.runtime(
-                "vmnet reserve \(record.cidr) failed (\(status.rawValue)); "
-                    + "after an unclean exit this CIDR may remain orphaned until reboot"
-            )
-        }
+    func serialize(name: String, handle: any NetworkRuntimeHandle) throws -> Data {
+        _ = handle
         do {
-            let interface = try Self.startHostInterface(network: network, name: record.name)
-            return NativeVmnetHandle(network: network, interface: interface)
+            return try client.serialize(name: name)
+        } catch let error as VzNetClientError {
+            throw NetworkRegistryError.runtime(error.description)
         } catch {
-            releaseOpaqueCF(network)
-            throw error
+            throw NetworkRegistryError.runtime(String(describing: error))
         }
     }
 
-    /// Activates the host bridge so gateway `.0` appears and is bindable.
-    private static func startHostInterface(
-        network: vmnet_network_ref,
-        name: String
-    ) throws -> interface_ref {
-        let desc = xpc_dictionary_create(nil, nil, 0)
-        xpc_dictionary_set_bool(desc, vmnet_allocate_mac_address_key, true)
-
-        let queue = DispatchQueue(label: "vzctl.vmnet.\(name)")
-        let sem = DispatchSemaphore(value: 0)
-        var completionStatus: vmnet_return_t = .VMNET_FAILURE
-
-        guard let iface = vmnet_interface_start_with_network(network, desc, queue, { status, _ in
-            completionStatus = status
-            sem.signal()
-        }) else {
-            throw NetworkRegistryError.runtime(
-                "vmnet interface start for \(name) returned nil"
-            )
+    func release(name: String, handle: any NetworkRuntimeHandle) throws {
+        _ = handle
+        do {
+            try client.release(name: name)
+        } catch let error as VzNetClientError {
+            throw NetworkRegistryError.runtime(error.description)
+        } catch {
+            throw NetworkRegistryError.runtime(String(describing: error))
         }
-
-        let wait = sem.wait(timeout: .now() + .seconds(15))
-        guard wait == .success else {
-            _ = vmnet_stop_interface(iface, queue) { _ in }
-            throw NetworkRegistryError.runtime(
-                "vmnet interface start for \(name) timed out"
-            )
-        }
-        guard completionStatus == .VMNET_SUCCESS else {
-            _ = vmnet_stop_interface(iface, queue) { _ in }
-            throw NetworkRegistryError.runtime(
-                "vmnet interface start for \(name) failed (\(completionStatus.rawValue))"
-            )
-        }
-        return iface
     }
-}
-
-private func releaseOpaqueCF(_ pointer: OpaquePointer) {
-    Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(pointer)).release()
 }
 
 struct NetworkSnapshot: Sendable {
@@ -209,10 +138,21 @@ final class NetworkRegistry: @unchecked Sendable {
     private var handles: [String: any NetworkRuntimeHandle] = [:]
     private var stopped = false
 
-    init(database: StateDatabase, backend: any NetworkRuntimeBackend = NativeVmnetBackend()) throws {
+    init(
+        database: StateDatabase,
+        backend: any NetworkRuntimeBackend
+    ) throws {
         self.database = database
         self.backend = backend
         try rebuild()
+    }
+
+    /// Production path: desired state in SQLite, runtime refs in `vz-net`.
+    convenience init(database: StateDatabase, stateDirectory: URL) throws {
+        let client = VzNetClient(
+            socketPath: VzNetClient.defaultSocketPath(stateDirectory: stateDirectory)
+        )
+        try self.init(database: database, backend: RemoteVzNetBackend(client: client))
     }
 
     func create(
@@ -541,8 +481,9 @@ final class NetworkRegistry: @unchecked Sendable {
             } catch {
                 throw NetworkRegistryError.conflict("cannot delete network \(name): \(error)")
             }
-            // Dropping the last strong reference releases the vmnet reservation.
-            handles.removeValue(forKey: name)
+            if let handle = handles.removeValue(forKey: name) {
+                try backend.release(name: name, handle: handle)
+            }
         }
     }
 
@@ -555,7 +496,7 @@ final class NetworkRegistry: @unchecked Sendable {
         }
     }
 
-    /// Portable vmnet blobs for every attachment of `vmID` (supervisor-owned refs stay live).
+    /// Portable vmnet blobs for every attachment of `vmID` (vz-net-owned refs stay live).
     /// Docker-backend attachments are logical (docker0) and are omitted from helper NICs.
     func serializedAttachments(for vmID: String) throws -> [SerializedVmnetAttachment] {
         try lock.withLock {
@@ -573,14 +514,14 @@ final class NetworkRegistry: @unchecked Sendable {
                 if networks[attachment.networkName]?.isDockerBackend == true {
                     return nil
                 }
-                guard let handle = handles[attachment.networkName] as? NativeVmnetHandle else {
+                guard let handle = handles[attachment.networkName] else {
                     throw NetworkRegistryError.runtime(
                         "network \(attachment.networkName) is not active for helper attach"
                     )
                 }
                 let blob: Data
                 do {
-                    blob = try VmnetSerialization.blob(from: handle.network)
+                    blob = try backend.serialize(name: attachment.networkName, handle: handle)
                 } catch {
                     throw NetworkRegistryError.runtime(
                         "cannot serialize network \(attachment.networkName): \(error)"
@@ -597,9 +538,18 @@ final class NetworkRegistry: @unchecked Sendable {
 
     func shutdown() {
         lock.withLock {
-            // Required by G0: release every vmnet_network_ref, not only interfaces.
+            // Control-plane shutdown must NOT release vz-net refs (ADR 0002).
+            // In-process/test backends still drop handles so deinit releases.
             stopped = true
-            handles.removeAll()
+            if backend.releasesOnShutdown {
+                let snapshot = handles
+                handles.removeAll()
+                for (name, handle) in snapshot {
+                    try? backend.release(name: name, handle: handle)
+                }
+            } else {
+                handles.removeAll()
+            }
         }
     }
 

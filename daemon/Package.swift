@@ -8,6 +8,7 @@ let package = Package(
         .executable(name: "vz-supervisor", targets: ["VzSupervisor"]),
         .executable(name: "vz-helper", targets: ["VzHelper"]),
         .executable(name: "vz-dns-bind", targets: ["VzDnsBind"]),
+        .executable(name: "vz-net", targets: ["VzNet"]),
         .library(name: "VzDaemonKit", targets: ["VzDaemonKit"]),
     ],
     targets: [
@@ -38,6 +39,13 @@ let package = Package(
             name: "VzDnsBind",
             dependencies: ["VzDaemonKit"]
         ),
+        .executableTarget(
+            name: "VzNet",
+            dependencies: ["VzDaemonKit"],
+            linkerSettings: [
+                .linkedFramework("vmnet"),
+            ]
+        ),
         .testTarget(
             name: "VzDaemonKitTests",
             dependencies: ["VzDaemonKit"]
@@ -49,6 +57,10 @@ let package = Package(
         .testTarget(
             name: "VzSupervisorTests",
             dependencies: ["VzSupervisor", "VzDaemonKit"]
+        ),
+        .testTarget(
+            name: "VzNetTests",
+            dependencies: ["VzNet", "VzDaemonKit"]
         ),
     ]
 )

@@ -46,6 +46,7 @@ release: ## Release-Binaries bauen und ad-hoc signieren
 	$(SWIFT) build --package-path daemon --configuration release
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-helper
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-supervisor
+	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-net
 	codesign --force --sign - daemon/.build/release/vz-dns-bind
 
 vendor: vendor-caddy vendor-dex ## Caddy- und Dex-Binaries fetchen (v0.2)
@@ -78,6 +79,7 @@ install: release ## Installation erstellen/aktualisieren und Supervisor neu star
 		LAUNCH_AGENTS_DIR="$(LAUNCH_AGENTS_DIR)" LOG_DIR="$(LOG_DIR)" \
 		ACTIVATE="$(ACTIVATE)" daemon/scripts/install.sh \
 		target/release/vzctl \
+		daemon/.build/release/vz-net \
 		daemon/.build/release/vz-supervisor \
 		daemon/.build/release/vz-helper \
 		daemon/.build/release/vz-dns-bind
