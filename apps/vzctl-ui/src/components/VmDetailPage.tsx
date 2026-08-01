@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
 import { VmForm } from "@/components/VmForm";
 import { VmMountForm } from "@/components/VmMountForm";
+import { useT } from "@/lib/i18n";
 import { getProject } from "@/lib/projects";
 import {
   createVm,
@@ -45,6 +46,7 @@ export function VmDetailPage({
   vmId: string;
   stackPath?: string;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [panel, setPanel] = useState<Panel>(null);
@@ -91,7 +93,7 @@ export function VmDetailPage({
       setBusy("start");
       setError(null);
     },
-    onSuccess: () => setMessage("VM gestartet"),
+    onSuccess: () => setMessage(t("vmDetail.started")),
     onError: (err) => setError(String(err)),
     onSettled: async () => {
       setBusy(null);
@@ -105,7 +107,7 @@ export function VmDetailPage({
       setBusy("stop");
       setError(null);
     },
-    onSuccess: () => setMessage("VM gestoppt"),
+    onSuccess: () => setMessage(t("vmDetail.stopped")),
     onError: (err) => setError(String(err)),
     onSettled: async () => {
       setBusy(null);
@@ -150,8 +152,8 @@ export function VmDetailPage({
       const restart = envelope.restart_required === true;
       setMessage(
         restart
-          ? "Ressourcen gespeichert — Restart nötig"
-          : "Ressourcen gespeichert (nächster Start)",
+          ? t("vmDetail.resourcesRestart")
+          : t("vmDetail.resourcesSaved"),
       );
       setPanel(null);
       await refresh();
@@ -187,7 +189,7 @@ export function VmDetailPage({
       await createVm(input);
       setPending(null);
       setPanel(null);
-      setMessage("VM ersetzt");
+      setMessage(t("vmDetail.replaced"));
       await refresh();
     } catch (err) {
       setError(String(err));
@@ -200,10 +202,10 @@ export function VmDetailPage({
     stackPath && stackName
       ? [
           {
-            label: "Stacks",
+            label: t("crumb.stacks"),
             node: (
               <Link to="/projects" className="crumb-link">
-                Stacks
+                {t("crumb.stacks")}
               </Link>
             ),
           },
@@ -223,10 +225,10 @@ export function VmDetailPage({
         ]
       : [
           {
-            label: "VMs",
+            label: t("crumb.vms"),
             node: (
               <Link to="/vms" className="crumb-link">
-                VMs
+                {t("crumb.vms")}
               </Link>
             ),
           },
@@ -257,7 +259,7 @@ export function VmDetailPage({
               disabled={busy != null}
               onClick={() => stopMutation.mutate()}
             >
-              {busy === "stop" ? "Stop…" : "Stop"}
+              {busy === "stop" ? t("vmDetail.stopBusy") : t("vmDetail.stop")}
             </button>
           ) : (
             <button
@@ -265,7 +267,7 @@ export function VmDetailPage({
               disabled={busy != null}
               onClick={() => startMutation.mutate()}
             >
-              {busy === "start" ? "Start…" : "Start"}
+              {busy === "start" ? t("vmDetail.startBusy") : t("vmDetail.start")}
             </button>
           )}
           <button
@@ -274,7 +276,7 @@ export function VmDetailPage({
             disabled={busy != null}
             onClick={() => setPanel(panel === "modify" ? null : "modify")}
           >
-            Modify
+            {t("vmDetail.modify")}
           </button>
           <button
             type="button"
@@ -282,7 +284,7 @@ export function VmDetailPage({
             disabled={busy != null}
             onClick={() => setPanel(panel === "mount" ? null : "mount")}
           >
-            Mount
+            {t("vmDetail.mount")}
           </button>
           <button
             type="button"
@@ -290,7 +292,7 @@ export function VmDetailPage({
             disabled={!running || busy != null}
             onClick={() => setPanel(panel === "console" ? null : "console")}
           >
-            Attach
+            {t("vmDetail.attach")}
           </button>
           <button
             type="button"
@@ -298,7 +300,7 @@ export function VmDetailPage({
             disabled={!running || busy != null}
             onClick={() => setPanel(panel === "shell" ? null : "shell")}
           >
-            Shell
+            {t("vmDetail.shell")}
           </button>
           {vm?.roles?.includes("docker") ? (
             <button
@@ -313,7 +315,7 @@ export function VmDetailPage({
                 })
               }
             >
-              Containers
+              {t("vmDetail.containers")}
             </button>
           ) : null}
           <button
@@ -322,7 +324,7 @@ export function VmDetailPage({
             disabled={busy != null}
             onClick={() => setPanel(panel === "replace" ? null : "replace")}
           >
-            Replace
+            {t("vmDetail.replace")}
           </button>
           <button
             type="button"
@@ -330,7 +332,7 @@ export function VmDetailPage({
             disabled={busy != null}
             onClick={() => setPending({ kind: "delete" })}
           >
-            Delete
+            {t("vmDetail.delete")}
           </button>
         </div>
       </div>
@@ -338,24 +340,24 @@ export function VmDetailPage({
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("common.error")}</h3>
           <p>{error}</p>
         </div>
       ) : null}
       {detailQuery.isError ? (
         <div className="card error-card">
-          <h3>Inspect fehlgeschlagen</h3>
+          <h3>{t("vmDetail.inspectFailed")}</h3>
           <p>{String(detailQuery.error)}</p>
         </div>
       ) : null}
 
       {panel === "modify" ? (
         <form className="card vm-form" onSubmit={(e) => void submitModify(e)}>
-          <h3>Ressourcen ändern</h3>
-          <p className="muted">Wirkt erst nach Stop/Start (kein Hotplug).</p>
+          <h3>{t("vmDetail.modifyTitle")}</h3>
+          <p className="muted">{t("vmDetail.modifyHint")}</p>
           <div className="form-grid">
             <label>
-              CPUs
+              {t("vmForm.cpus")}
               <input
                 type="number"
                 min={1}
@@ -365,7 +367,7 @@ export function VmDetailPage({
               />
             </label>
             <label>
-              Memory
+              {t("vmDetail.memory")}
               <input
                 value={memory}
                 disabled={busy != null}
@@ -375,14 +377,14 @@ export function VmDetailPage({
           </div>
           <div className="row" style={{ gap: "0.5rem" }}>
             <button type="submit" disabled={busy != null}>
-              {busy === "modify" ? "Speichern…" : "Speichern"}
+              {busy === "modify" ? t("common.saveBusy") : t("common.save")}
             </button>
             <button
               type="button"
               className="secondary"
               onClick={() => setPanel(null)}
             >
-              Abbrechen
+              {t("common.cancel")}
             </button>
           </div>
         </form>
@@ -424,13 +426,13 @@ export function VmDetailPage({
       {panel === "console" ? (
         <div className="card terminal-card">
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <h3>Serial Console</h3>
+            <h3>{t("vmDetail.consoleTitle")}</h3>
             <button
               type="button"
               className="secondary"
               onClick={() => setPanel(null)}
             >
-              Schließen
+              {t("common.close")}
             </button>
           </div>
           <Terminal mode="attach" vmId={vmId} />
@@ -440,13 +442,13 @@ export function VmDetailPage({
       {panel === "shell" ? (
         <div className="card terminal-card">
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <h3>Shell</h3>
+            <h3>{t("vmDetail.shellTitle")}</h3>
             <button
               type="button"
               className="secondary"
               onClick={() => setPanel(null)}
             >
-              Schließen
+              {t("common.close")}
             </button>
           </div>
           <Terminal mode="exec" vmId={vmId} cmd={["/bin/bash"]} />
@@ -455,42 +457,42 @@ export function VmDetailPage({
 
       <div className="dash-grid">
         <div className="card">
-          <h3>Overview</h3>
+          <h3>{t("vmDetail.overview")}</h3>
           {detailQuery.isLoading ? (
-            <p className="muted">Laden…</p>
+            <p className="muted">{t("common.loading")}</p>
           ) : (
             <dl className="kv">
-              <dt>Bundle</dt>
-              <dd className="mono">{vm?.bundle ?? "—"}</dd>
-              <dt>Managed-by</dt>
-              <dd>{vm?.["managed-by"] ?? "—"}</dd>
-              <dt>Roles</dt>
-              <dd>{vm?.roles?.join(", ") || "—"}</dd>
-              <dt>IPs</dt>
+              <dt>{t("vmDetail.bundle")}</dt>
+              <dd className="mono">{vm?.bundle ?? t("common.emDash")}</dd>
+              <dt>{t("vmDetail.managedBy")}</dt>
+              <dd>{vm?.["managed-by"] ?? t("common.emDash")}</dd>
+              <dt>{t("vmDetail.roles")}</dt>
+              <dd>{vm?.roles?.join(", ") || t("common.emDash")}</dd>
+              <dt>{t("vmDetail.ips")}</dt>
               <dd className="mono">
                 {(inspect?.networks ?? [])
                   .map((n) => (n.name ? `${n.name}:${n.ip ?? "?"}` : n.ip))
                   .filter(Boolean)
-                  .join(", ") || "—"}
+                  .join(", ") || t("common.emDash")}
               </dd>
-              <dt>Serial log</dt>
-              <dd className="mono">{inspect?.logs?.serial ?? "—"}</dd>
-              <dt>Agent</dt>
+              <dt>{t("vmDetail.serialLog")}</dt>
+              <dd className="mono">{inspect?.logs?.serial ?? t("common.emDash")}</dd>
+              <dt>{t("vmDetail.agent")}</dt>
               <dd>
                 {typeof inspect?.agent?.state === "string"
                   ? inspect.agent.state
-                  : "—"}
+                  : t("common.emDash")}
               </dd>
             </dl>
           )}
         </div>
 
         <div className="card">
-          <h3>Mounts</h3>
+          <h3>{t("vmDetail.mounts")}</h3>
           {mountsQuery.isLoading ? (
-            <p className="muted">Laden…</p>
+            <p className="muted">{t("common.loading")}</p>
           ) : mounts.length === 0 ? (
-            <p className="muted">Keine Mounts.</p>
+            <p className="muted">{t("vmDetail.noMounts")}</p>
           ) : (
             <ul className="mount-list">
               {mounts.map((mount) => (
@@ -510,7 +512,7 @@ export function VmDetailPage({
                     disabled={busy != null}
                     onClick={() => setPending({ kind: "unmount", mount })}
                   >
-                    Unmount
+                    {t("vmDetail.unmount")}
                   </button>
                 </li>
               ))}
@@ -521,7 +523,7 @@ export function VmDetailPage({
 
       {inspect?.warnings?.length ? (
         <div className="card">
-          <h3>Warnings</h3>
+          <h3>{t("vmDetail.warnings")}</h3>
           <ul>
             {inspect.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
@@ -532,9 +534,9 @@ export function VmDetailPage({
 
       <ConfirmDialog
         open={pending?.kind === "delete"}
-        title="VM löschen"
-        message={`VM „${vmId}“ wirklich löschen? Bundle und Attachments werden entfernt.`}
-        confirmLabel="Löschen"
+        title={t("vmDetail.deleteTitle")}
+        message={t("vmDetail.deleteMessage", { id: vmId })}
+        confirmLabel={t("dialog.delete")}
         busy={busy === "delete"}
         error={pending?.kind === "delete" ? error : null}
         onCancel={() => {
@@ -551,13 +553,16 @@ export function VmDetailPage({
 
       <ConfirmDialog
         open={pending?.kind === "unmount"}
-        title="Mount entfernen"
+        title={t("vmDetail.unmountTitle")}
         message={
           pending?.kind === "unmount"
-            ? `Mount „${pending.mount.name}“ (${pending.mount.target}) wirklich entfernen?`
+            ? t("vmDetail.unmountMessage", {
+                name: pending.mount.name,
+                target: pending.mount.target,
+              })
             : ""
         }
-        confirmLabel="Unmount"
+        confirmLabel={t("vmDetail.unmount")}
         busy={busy?.startsWith("unmount:") === true}
         onCancel={() => {
           if (!busy?.startsWith("unmount:")) setPending(null);
@@ -569,9 +574,9 @@ export function VmDetailPage({
 
       <ConfirmDialog
         open={pending?.kind === "replace"}
-        title="VM ersetzen"
-        message={`VM „${vmId}“ löschen und neu anlegen? Bestehende Daten gehen verloren.`}
-        confirmLabel="Ersetzen"
+        title={t("vmDetail.replaceTitle")}
+        message={t("vmDetail.replaceMessage", { id: vmId })}
+        confirmLabel={t("vmDetail.replaceConfirm")}
         busy={busy === "replace"}
         onCancel={() => {
           if (busy !== "replace") setPending(null);

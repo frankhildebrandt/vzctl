@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { getT } from "@/lib/i18n";
 
 type Mode = "attach" | "exec";
 
@@ -93,10 +94,13 @@ export function Terminal({
       unlisteners.push(
         await listen<TerminalExitEvent>("terminal-exit", (event) => {
           if (event.payload.sessionId !== currentSession) return;
+          const t = getT();
           const code = event.payload.code;
           const msg =
             event.payload.message ??
-            (code == null ? "session closed" : `exit ${code}`);
+            (code == null
+              ? t("terminal.sessionClosed")
+              : t("terminal.exit", { code: String(code) }));
           term.writeln(`\r\n\x1b[90m[${msg}]\x1b[0m`);
         }),
       );

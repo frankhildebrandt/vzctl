@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "@/lib/i18n";
 
 export type VmnetOrphanChoice = "reboot" | "cidr";
 
@@ -20,6 +21,7 @@ export function VmnetOrphanDialog({
   onChoose: (choice: VmnetOrphanChoice) => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
@@ -70,21 +72,15 @@ export function VmnetOrphanDialog({
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        <h3 id={titleId}>vmnet-CIDR verwaist</h3>
-        <p>
-          <code>{orphanedCidr}</code> ist nach einem unclean Exit von{" "}
-          <code>vz-net</code> auf dem Host blockiert (Status 1001). Bis zum Reboot
-          oder einer neuen CIDR schlägt der Netz-Reserve fehl.
-        </p>
+        <h3 id={titleId}>{t("orphan.title")}</h3>
+        <p>{t("orphan.body", { cidr: orphanedCidr })}</p>
         <ul className="vmnet-orphan-options">
           <li>
-            <strong>Host neu starten</strong> — gibt verwaiste Reservierungen
-            frei; danach Supervisor starten und erneut up.
+            <strong>{t("orphan.optionRebootTitle")}</strong> — {t("orphan.optionRebootHint")}
           </li>
           <li>
-            <strong>CIDR wechseln</strong> — Config auf{" "}
-            <code>{suggestedCidr}</code> umschreiben (IPs behalten Host-Offset)
-            und up erneut versuchen.
+            <strong>{t("orphan.optionCidrTitle")}</strong> —{" "}
+            {t("orphan.optionCidrHint", { cidr: suggestedCidr })}
           </li>
         </ul>
         {error ? <p className="form-error confirm-error">{error}</p> : null}
@@ -98,7 +94,7 @@ export function VmnetOrphanDialog({
               onCancel();
             }}
           >
-            Abbrechen
+            {t("dialog.cancel")}
           </button>
           <button
             type="button"
@@ -109,7 +105,7 @@ export function VmnetOrphanDialog({
               choose("reboot");
             }}
           >
-            {busy && pending === "reboot" ? "Neustart…" : "Host neu starten"}
+            {busy && pending === "reboot" ? t("orphan.rebootBusy") : t("orphan.reboot")}
           </button>
           <button
             ref={primaryRef}
@@ -121,8 +117,8 @@ export function VmnetOrphanDialog({
             }}
           >
             {busy && pending === "cidr"
-              ? "CIDR wechseln…"
-              : `CIDR → ${suggestedCidr}`}
+              ? t("orphan.cidrSwitchBusy")
+              : t("orphan.cidrSwitch", { cidr: suggestedCidr })}
           </button>
         </div>
       </div>

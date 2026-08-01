@@ -1,3 +1,6 @@
+import type { MessageKey } from "@/lib/i18n";
+import type { TFunction } from "@/lib/i18n/useT";
+
 export type StackPhase =
   | "down"
   | "starting"
@@ -32,19 +35,19 @@ export type StackInventory = {
   items?: StackVmItem[];
 };
 
-const LABELS: Record<StackPhase, string> = {
-  down: "Down",
-  starting: "Starting",
-  stopping: "Stopping",
-  reconciling: "Up (Reconciling)",
-  running: "Up (Running)",
-  partial: "Up (Partial)",
-  failed: "Failed",
-  unknown: "Unknown",
+const PHASE_KEYS: Record<StackPhase, MessageKey> = {
+  down: "stack.phase.down",
+  starting: "stack.phase.starting",
+  stopping: "stack.phase.stopping",
+  reconciling: "stack.phase.reconciling",
+  running: "stack.phase.running",
+  partial: "stack.phase.partial",
+  failed: "stack.phase.failed",
+  unknown: "stack.phase.unknown",
 };
 
-export function phaseLabel(phase: StackPhase): string {
-  return LABELS[phase] ?? LABELS.unknown;
+export function phaseLabel(phase: StackPhase, t: TFunction): string {
+  return t(PHASE_KEYS[phase] ?? PHASE_KEYS.unknown);
 }
 
 export function parseStackInventory(
@@ -61,7 +64,7 @@ export function parseStackInventory(
     return {
       ...data,
       phase,
-      label: data.label || phaseLabel(phase),
+      label: data.label ?? "",
     };
   } catch {
     return null;
@@ -73,35 +76,36 @@ export function deriveStackStatus(input: {
   applyActive: boolean;
   applyMode: string | null;
   applyFailed: boolean;
+  t: TFunction;
 }): { phase: StackPhase; label: string; inventory: StackInventory | null } {
-  const { inventory, applyActive, applyMode, applyFailed } = input;
+  const { inventory, applyActive, applyMode, applyFailed, t } = input;
 
   if (applyActive) {
     const mode = applyMode ?? "apply";
     if (mode === "down") {
-      return { phase: "stopping", label: phaseLabel("stopping"), inventory };
+      return { phase: "stopping", label: phaseLabel("stopping", t), inventory };
     }
     const running = inventory?.vms?.running ?? 0;
     if (mode === "up" && running === 0) {
-      return { phase: "starting", label: phaseLabel("starting"), inventory };
+      return { phase: "starting", label: phaseLabel("starting", t), inventory };
     }
     return {
       phase: "reconciling",
-      label: phaseLabel("reconciling"),
+      label: phaseLabel("reconciling", t),
       inventory,
     };
   }
 
   if (applyFailed) {
-    return { phase: "failed", label: phaseLabel("failed"), inventory };
+    return { phase: "failed", label: phaseLabel("failed", t), inventory };
   }
 
   if (!inventory) {
-    return { phase: "unknown", label: phaseLabel("unknown"), inventory: null };
+    return { phase: "unknown", label: phaseLabel("unknown", t), inventory: null };
   }
 
   const phase = normalizePhase(inventory.phase);
-  return { phase, label: inventory.label || phaseLabel(phase), inventory };
+  return { phase, label: phaseLabel(phase, t), inventory };
 }
 
 function normalizePhase(value: unknown): StackPhase {

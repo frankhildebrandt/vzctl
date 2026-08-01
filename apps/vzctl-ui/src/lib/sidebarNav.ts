@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
+import { getT, useT, type TFunction } from "@/lib/i18n";
 import { getProject } from "@/lib/projects";
 import { basename } from "@/lib/vzctl";
 import {
@@ -129,39 +130,42 @@ function parseLocation(input: SidebarLocationInput): {
   return { kind: "root" };
 }
 
-const ROOT_ITEMS: SidebarNavItem[] = [
-  { id: "dashboard", label: "Dashboard", to: "/", exact: true },
-  { id: "vms", label: "VMs", to: "/vms" },
-  { id: "projects", label: "Stacks", to: "/projects" },
-  { id: "networks", label: "Networks", to: "/networks" },
-  { id: "images", label: "Images", to: "/images" },
-  { id: "doctor", label: "Doctor", to: "/doctor" },
-];
+function buildRootItems(t: TFunction): SidebarNavItem[] {
+  return [
+    { id: "dashboard", label: t("nav.dashboard"), to: "/", exact: true },
+    { id: "vms", label: t("nav.vms"), to: "/vms" },
+    { id: "projects", label: t("nav.stacks"), to: "/projects" },
+    { id: "networks", label: t("nav.networks"), to: "/networks" },
+    { id: "images", label: t("nav.images"), to: "/images" },
+    { id: "doctor", label: t("nav.doctor"), to: "/doctor" },
+    { id: "errors", label: t("nav.errors"), to: "/errors" },
+  ];
+}
 
-function buildRoot(): SidebarNavModel {
+function buildRoot(t: TFunction): SidebarNavModel {
   return {
     context: "root",
     contextKey: "root",
     title: null,
     back: null,
     showDashboard: false,
-    items: ROOT_ITEMS,
+    items: buildRootItems(t),
     showSettingsBottom: true,
   };
 }
 
-function buildSettings(): SidebarNavModel {
+function buildSettings(t: TFunction): SidebarNavModel {
   return {
     context: "settings",
     contextKey: "settings",
-    title: "Settings",
+    title: t("nav.settings"),
     // Kein Zurück: Escape ist bereits „← Dashboard“ in der Brand-Zeile.
     back: null,
     showDashboard: true,
     items: [
       {
         id: "settings",
-        label: "Settings",
+        label: t("nav.settings"),
         to: "/settings",
         exact: true,
         active: true,
@@ -172,39 +176,40 @@ function buildSettings(): SidebarNavModel {
 }
 
 function buildStack(
+  t: TFunction,
   envPath: string | undefined,
   tab: "ops" | "topology" | "config",
   titleOverride?: string | null,
 ): SidebarNavModel {
   const title =
     titleOverride ??
-    (envPath ? basename(envPath) : "Stack");
+    (envPath ? basename(envPath) : t("nav.stackFallback"));
   const searchBase = envPath ? { path: envPath } : { path: "" };
 
   return {
     context: "stack",
     contextKey: `stack:${envPath ?? ""}`,
     title,
-    back: { label: "Zurück", to: "/projects" },
+    back: { label: t("nav.back"), to: "/projects" },
     showDashboard: true,
     items: [
       {
         id: "ops",
-        label: "Betrieb",
+        label: t("nav.ops"),
         to: "/env",
         search: { ...searchBase, tab: "ops" },
         active: tab === "ops",
       },
       {
         id: "topology",
-        label: "Topologie",
+        label: t("nav.topology"),
         to: "/env",
         search: { ...searchBase, tab: "topology" },
         active: tab === "topology",
       },
       {
         id: "config",
-        label: "Config",
+        label: t("nav.config"),
         to: "/env",
         search: { ...searchBase, tab: "config" },
         active: tab === "config",
@@ -214,39 +219,43 @@ function buildStack(
   };
 }
 
-function buildVm(opts: {
-  vmId: string;
-  stackPath?: string;
-  containerLevel?: "list" | "detail";
-  showContainers: boolean;
-}): SidebarNavModel {
+function buildVm(
+  t: TFunction,
+  opts: {
+    vmId: string;
+    stackPath?: string;
+    containerLevel?: "list" | "detail";
+    showContainers: boolean;
+  },
+): SidebarNavModel {
   const { vmId, stackPath, containerLevel, showContainers } = opts;
   const encoded = encodeVmIdParam(vmId);
   const vmSearch = stackPath ? { stackPath } : {};
   const onContainers = containerLevel != null;
+  const backLabel = t("nav.back");
 
   let back: SidebarBack;
   if (onContainers) {
     back = {
-      label: "Zurück",
+      label: backLabel,
       to: "/vms/$vmId",
       params: { vmId: encoded },
       search: vmSearch,
     };
   } else if (stackPath) {
     back = {
-      label: "Zurück",
+      label: backLabel,
       to: "/env",
       search: { path: stackPath, tab: "ops" },
     };
   } else {
-    back = { label: "Zurück", to: "/vms" };
+    back = { label: backLabel, to: "/vms" };
   }
 
   const items: SidebarNavItem[] = [
     {
       id: "overview",
-      label: "Übersicht",
+      label: t("nav.overview"),
       to: "/vms/$vmId",
       params: { vmId: encoded },
       search: vmSearch,
@@ -257,7 +266,7 @@ function buildVm(opts: {
   if (showContainers) {
     items.push({
       id: "containers",
-      label: "Containers",
+      label: t("nav.containers"),
       to: "/vms/$vmId/containers",
       params: { vmId: encoded },
       search: vmSearch,
@@ -278,26 +287,31 @@ function buildVm(opts: {
 
 export function resolveSidebarNav(
   location: SidebarLocationInput,
-  opts?: { hasDockerRole?: boolean; stackTitle?: string | null },
+  opts?: {
+    hasDockerRole?: boolean;
+    stackTitle?: string | null;
+    t?: TFunction;
+  },
 ): SidebarNavModel {
+  const t = opts?.t ?? getT();
   const parsed = parseLocation(location);
 
-  if (parsed.kind === "settings") return buildSettings();
+  if (parsed.kind === "settings") return buildSettings(t);
   if (parsed.kind === "stack") {
-    return buildStack(parsed.envPath, parsed.tab ?? "ops", opts?.stackTitle);
+    return buildStack(t, parsed.envPath, parsed.tab ?? "ops", opts?.stackTitle);
   }
   if (parsed.kind === "vm" && parsed.vmId) {
     const onContainers = parsed.containerLevel != null;
     const showContainers =
       onContainers || opts?.hasDockerRole === true;
-    return buildVm({
+    return buildVm(t, {
       vmId: parsed.vmId,
       stackPath: parsed.stackPath,
       containerLevel: parsed.containerLevel,
       showContainers,
     });
   }
-  return buildRoot();
+  return buildRoot(t);
 }
 
 function pickVmFromMatches(
@@ -328,6 +342,7 @@ function pickVmFromMatches(
 }
 
 export function useSidebarNav(): SidebarNavModel {
+  const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const search = useRouterState({
     select: (s) => s.location.search as Record<string, unknown>,
@@ -369,5 +384,5 @@ export function useSidebarNav(): SidebarNavModel {
     stackTitle = getProject(parsed.envPath)?.name ?? basename(parsed.envPath);
   }
 
-  return resolveSidebarNav(location, { hasDockerRole, stackTitle });
+  return resolveSidebarNav(location, { hasDockerRole, stackTitle, t });
 }

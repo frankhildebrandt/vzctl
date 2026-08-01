@@ -4,35 +4,38 @@ import {
   PaletteKindIcon,
   type PaletteKind,
 } from "@/features/topology-editor/PaletteIcons";
+import { useT } from "@/lib/i18n";
 
-const PALETTE: Array<{
+type PaletteItem = {
   id: string;
-  label: string;
-  description: string;
+  labelKey: "topo.palette.network" | "topo.palette.vm" | "topo.palette.router" | "topo.palette.docker";
+  descriptionKey: "topo.palette.networkDesc" | "topo.palette.vmDesc" | "topo.palette.routerDesc" | "topo.palette.dockerDesc";
   kind: PaletteKind;
-}> = [
+};
+
+const PALETTE: PaletteItem[] = [
   {
     id: "network",
-    label: "Netzwerk",
-    description: "CIDR · Container",
+    labelKey: "topo.palette.network",
+    descriptionKey: "topo.palette.networkDesc",
     kind: "network",
   },
   {
     id: "vm",
-    label: "Host",
-    description: "Compute · NICs",
+    labelKey: "topo.palette.vm",
+    descriptionKey: "topo.palette.vmDesc",
     kind: "vm",
   },
   {
     id: "router",
-    label: "Router",
-    description: "roles: [router]",
+    labelKey: "topo.palette.router",
+    descriptionKey: "topo.palette.routerDesc",
     kind: "router",
   },
   {
     id: "docker",
-    label: "Docker",
-    description: "roles: [docker, router]",
+    labelKey: "topo.palette.docker",
+    descriptionKey: "topo.palette.dockerDesc",
     kind: "docker",
   },
 ];
@@ -44,6 +47,7 @@ type Props = {
 };
 
 export function TopologyPalette({ onClickCreate, onDragStart }: Props) {
+  const t = useT();
   const filter = useEditorStore((s) => s.ui.paletteFilter);
   const setFilter = useEditorStore((s) => s.setPaletteFilter);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -52,24 +56,24 @@ export function TopologyPalette({ onClickCreate, onDragStart }: Props) {
   const items = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return PALETTE;
-    return PALETTE.filter(
-      (p) =>
-        p.label.toLowerCase().includes(q) ||
-        p.description.toLowerCase().includes(q),
-    );
-  }, [filter]);
+    return PALETTE.filter((p) => {
+      const label = t(p.labelKey).toLowerCase();
+      const description = t(p.descriptionKey).toLowerCase();
+      return label.includes(q) || description.includes(q);
+    });
+  }, [filter, t]);
 
   return (
-    <aside className="topology-palette" aria-label="Komponentenpalette">
-      <h3 className="topology-panel-title">Komponenten</h3>
+    <aside className="topology-palette" aria-label={t("topo.paletteTitle")}>
+      <h3 className="topology-panel-title">{t("topo.paletteTitle")}</h3>
       <label className="topology-field">
-        <span className="sr-only">Filter</span>
+        <span className="sr-only">{t("topo.paletteFilter")}</span>
         <input
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filtern…"
-          aria-label="Palette filtern"
+          placeholder={t("topo.paletteFilter")}
+          aria-label={t("topo.paletteFilterAria")}
         />
       </label>
       <ul className="topology-palette-list">
@@ -109,17 +113,14 @@ export function TopologyPalette({ onClickCreate, onDragStart }: Props) {
                 <PaletteKindIcon kind={item.kind} size={36} />
               </span>
               <span className="topology-palette-text">
-                <strong>{item.label}</strong>
-                <span className="muted">{item.description}</span>
+                <strong>{t(item.labelKey)}</strong>
+                <span className="muted">{t(item.descriptionKey)}</span>
               </span>
             </button>
           </li>
         ))}
       </ul>
-      <p className="muted topology-palette-hint">
-        Ziehen materialisiert eine Vorschau auf dem Canvas. Klick fügt in der
-        Mitte ein.
-      </p>
+      <p className="muted topology-palette-hint">{t("topo.paletteHint")}</p>
     </aside>
   );
 }

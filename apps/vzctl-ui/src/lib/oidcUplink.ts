@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parse, stringify } from "yaml";
+import type { MessageKey } from "@/lib/i18n";
 
 export const UPLINK_TYPES = ["oidc", "github", "microsoft", "discord"] as const;
 export type UplinkType = (typeof UPLINK_TYPES)[number];
@@ -26,7 +27,6 @@ export type HostOidcUplinkState = {
 
 export type ProviderPreset = {
   id: UplinkType;
-  label: string;
   issuer?: string;
   tenant?: string;
   scopes: string;
@@ -36,16 +36,59 @@ export type ProviderPreset = {
   showGetUserInfo: boolean;
   help: {
     createUrl: string;
-    createLabel: string;
     redirectHint: string;
-    steps: string[];
   };
 };
+
+const HELP_STEP_KEYS: Record<UplinkType, MessageKey[]> = {
+  oidc: [
+    "oidc.help.oidc.step1",
+    "oidc.help.oidc.step2",
+    "oidc.help.oidc.step3",
+  ],
+  github: [
+    "oidc.help.github.step1",
+    "oidc.help.github.step2",
+    "oidc.help.github.step3",
+    "oidc.help.github.step4",
+    "oidc.help.github.step5",
+  ],
+  discord: [
+    "oidc.help.discord.step1",
+    "oidc.help.discord.step2",
+    "oidc.help.discord.step3",
+    "oidc.help.discord.step4",
+    "oidc.help.discord.step5",
+  ],
+  microsoft: [
+    "oidc.help.microsoft.step1",
+    "oidc.help.microsoft.step2",
+    "oidc.help.microsoft.step3",
+    "oidc.help.microsoft.step4",
+    "oidc.help.microsoft.step5",
+    "oidc.help.microsoft.step6",
+  ],
+};
+
+const CREATE_LABEL_KEYS: Partial<Record<UplinkType, MessageKey>> = {
+  github: "oidc.help.github.create",
+  discord: "oidc.help.discord.create",
+  microsoft: "oidc.help.microsoft.create",
+};
+
+export class OidcMessageError extends Error {
+  readonly messageKey: MessageKey;
+
+  constructor(messageKey: MessageKey) {
+    super(messageKey);
+    this.name = "OidcMessageError";
+    this.messageKey = messageKey;
+  }
+}
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: "oidc",
-    label: "Generic OIDC",
     scopes: "openid, profile, email",
     getUserInfo: true,
     showIssuer: true,
@@ -53,18 +96,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     showGetUserInfo: true,
     help: {
       createUrl: "",
-      createLabel: "",
       redirectHint: "https://auth.svc.<project>.vz.test/callback",
-      steps: [
-        "Beliebiger OIDC-IdP mit Discovery (/.well-known/openid-configuration).",
-        "Redirect URI in der IdP-App: https://auth.svc.<project>.vz.test/callback",
-        "Client ID + Secret hier eintragen.",
-      ],
     },
   },
   {
     id: "github",
-    label: "GitHub",
     scopes: "read:user, user:email",
     getUserInfo: true,
     showIssuer: false,
@@ -72,20 +108,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     showGetUserInfo: false,
     help: {
       createUrl: "https://github.com/settings/developers",
-      createLabel: "GitHub OAuth App anlegen",
       redirectHint: "https://auth.svc.<project>.vz.test/callback",
-      steps: [
-        "GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.",
-        "Homepage URL beliebig (z. B. https://vzctl.local).",
-        "Authorization callback URL: https://auth.svc.<project>.vz.test/callback",
-        "Client ID übernehmen; Client Secret generieren und hier speichern.",
-        "Dex nutzt den nativen github-Connector.",
-      ],
     },
   },
   {
     id: "discord",
-    label: "Discord",
     scopes: "identify, email",
     getUserInfo: true,
     showIssuer: false,
@@ -93,20 +120,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     showGetUserInfo: false,
     help: {
       createUrl: "https://discord.com/developers/applications",
-      createLabel: "Discord Application anlegen",
       redirectHint: "https://auth.svc.<project>.vz.test/callback",
-      steps: [
-        "Discord Developer Portal → New Application → OAuth2.",
-        "Redirects: https://auth.svc.<project>.vz.test/callback hinzufügen.",
-        "Client ID + Client Secret (Reset Secret) hier eintragen.",
-        "Scopes identify + email (E-Mail muss in Discord verifiziert sein).",
-        "Dex mappt Discord via oauth2-Connector.",
-      ],
     },
   },
   {
     id: "microsoft",
-    label: "Microsoft Entra ID",
     tenant: "common",
     scopes: "openid, profile, email",
     getUserInfo: true,
@@ -116,19 +134,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     help: {
       createUrl:
         "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-      createLabel: "Entra App-Registrierung",
       redirectHint: "https://auth.svc.<project>.vz.test/callback",
-      steps: [
-        "Azure Portal → Microsoft Entra ID → App registrations → New registration.",
-        "Supported account types passend wählen (Single tenant / Multitenant).",
-        "Redirect URI (Web): https://auth.svc.<project>.vz.test/callback",
-        "Certificates & secrets → New client secret.",
-        "Application (client) ID + Secret hier; Tenant = Directory (tenant) ID oder common / organizations.",
-        "Dex nutzt den nativen microsoft-Connector.",
-      ],
     },
   },
 ];
+
+export function providerHelpSteps(type: UplinkType): MessageKey[] {
+  return HELP_STEP_KEYS[type];
+}
+
+export function providerCreateLabelKey(type: UplinkType): MessageKey | null {
+  return CREATE_LABEL_KEYS[type] ?? null;
+}
 
 async function isTauri(): Promise<boolean> {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -186,16 +203,16 @@ export function validateUplinkDraft(draft: {
   issuer: string;
   tenant: string;
   clientID: string;
-}): string | null {
-  if (!draft.clientID.trim()) return "Client ID ist erforderlich.";
+}): MessageKey | null {
+  if (!draft.clientID.trim()) return "oidc.error.clientIdRequired";
   if (draft.type === "oidc") {
-    if (!draft.issuer.trim()) return "Issuer ist erforderlich.";
+    if (!draft.issuer.trim()) return "oidc.error.issuerRequired";
     if (!draft.issuer.trim().startsWith("https://")) {
-      return "Issuer muss mit https:// beginnen.";
+      return "oidc.error.issuerHttps";
     }
   }
   if (draft.type === "microsoft" && !draft.tenant.trim()) {
-    return "Tenant ist erforderlich (z. B. common oder Directory-ID).";
+    return "oidc.error.tenantRequired";
   }
   return null;
 }
@@ -217,7 +234,6 @@ export async function loadHostOidcUplink(): Promise<HostOidcUplinkState> {
         uplink = normalizeOidcUplink((parsed as HostOidcUplinkFile).uplink);
       }
     }
-    // Secret presence: probe via path when Tauri available.
     if (await isTauri()) {
       secretPresent = await invoke<boolean>("path_exists", {
         path: hostSecretPath(stateDir),
@@ -238,10 +254,10 @@ export async function saveHostOidcUplink(input: {
   getUserInfo: boolean;
   clientSecret: string;
 }): Promise<void> {
-  const error = validateUplinkDraft(input);
-  if (error) throw new Error(error);
+  const validation = validateUplinkDraft(input);
+  if (validation) throw new OidcMessageError(validation);
   if (!(await isTauri())) {
-    throw new Error("OIDC-Uplink speichern nur in der Tauri-App");
+    throw new OidcMessageError("oidc.error.tauriOnly");
   }
 
   const stateDir = await getVzctlStateDir();
@@ -280,7 +296,7 @@ export async function saveHostOidcUplink(input: {
       path: hostSecretPath(stateDir),
     });
     if (!present) {
-      throw new Error("Client Secret ist erforderlich (noch nicht gesetzt).");
+      throw new OidcMessageError("oidc.error.secretRequired");
     }
   }
 }
@@ -290,9 +306,9 @@ export async function saveProjectUplinkSecret(
   secret: string,
 ): Promise<void> {
   if (!(await isTauri())) {
-    throw new Error("Secret speichern nur in der Tauri-App");
+    throw new OidcMessageError("oidc.error.secretTauriOnly");
   }
-  if (!secret.trim()) throw new Error("Project Secret darf nicht leer sein.");
+  if (!secret.trim()) throw new OidcMessageError("oidc.error.projectSecretEmpty");
   const { apiRequest, encodeId } = await import("@/lib/api");
   await apiRequest(`/v1/projects/${encodeId(project)}/oidc/secret`, {
     method: "PUT",

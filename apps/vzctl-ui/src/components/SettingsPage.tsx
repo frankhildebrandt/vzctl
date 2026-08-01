@@ -1,43 +1,81 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { THEME_OPTIONS, type ThemeId } from "@/lib/settings";
+import { getT, useT, LOCALE_OPTIONS, type MessageKey } from "@/lib/i18n";
+import {
+  THEME_OPTION_IDS,
+  THEME_LABEL_KEYS,
+  THEME_DESCRIPTION_KEYS,
+  type ThemeId,
+} from "@/lib/settings";
+import type { LocaleId } from "@/lib/i18n";
 import { useSettingsStore } from "@/store/settingsStore";
 import {
   loadHostOidcUplink,
+  OidcMessageError,
   presetFor,
   PROVIDER_PRESETS,
+  providerCreateLabelKey,
+  providerHelpSteps,
   saveHostOidcUplink,
   scopesToInput,
   validateUplinkDraft,
   type UplinkType,
 } from "@/lib/oidcUplink";
 
+function formatError(error: unknown, t: ReturnType<typeof useT>): string {
+  if (error instanceof OidcMessageError) return t(error.messageKey);
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
 export function SettingsPage() {
+  const t = useT();
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
+  const locale = useSettingsStore((s) => s.locale);
+  const setLocale = useSettingsStore((s) => s.setLocale);
 
   return (
     <section>
-      <h2 className="section-title">Settings</h2>
-      <p className="muted">Globale Einstellungen für die vzctl UI.</p>
+      <h2 className="section-title">{t("settings.title")}</h2>
+      <p className="muted">{t("settings.subtitle")}</p>
 
       <div className="card settings-section">
-        <h2>Appearance</h2>
-        <p className="muted settings-section-hint">
-          Theme gilt für die gesamte App und bleibt lokal gespeichert.
-        </p>
+        <h2>{t("settings.appearance")}</h2>
+        <p className="muted settings-section-hint">{t("settings.themeHint")}</p>
         <div
           className="theme-grid"
           role="radiogroup"
-          aria-label="Theme"
+          aria-label={t("settings.themeAria")}
         >
-          {THEME_OPTIONS.map((option) => (
+          {THEME_OPTION_IDS.map((id) => (
             <ThemeCard
+              key={id}
+              id={id}
+              label={t(THEME_LABEL_KEYS[id])}
+              description={t(THEME_DESCRIPTION_KEYS[id])}
+              selected={theme === id}
+              onSelect={setTheme}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="card settings-section">
+        <h2>{t("settings.locale")}</h2>
+        <p className="muted settings-section-hint">{t("settings.localeHint")}</p>
+        <div
+          className="theme-grid"
+          role="radiogroup"
+          aria-label={t("settings.localeAria")}
+        >
+          {LOCALE_OPTIONS.map((option) => (
+            <LocaleCard
               key={option.id}
               id={option.id}
               label={option.label}
               description={option.description}
-              selected={theme === option.id}
-              onSelect={setTheme}
+              selected={locale === option.id}
+              onSelect={setLocale}
             />
           ))}
         </div>
@@ -85,7 +123,37 @@ function ThemeCard({
   );
 }
 
+function LocaleCard({
+  id,
+  label,
+  description,
+  selected,
+  onSelect,
+}: {
+  id: LocaleId;
+  label: string;
+  description: string;
+  selected: boolean;
+  onSelect: (locale: LocaleId) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      className={`theme-card locale-card${selected ? " selected" : ""}`}
+      onClick={() => onSelect(id)}
+    >
+      <span className="theme-card-meta">
+        <span className="theme-card-label">{label}</span>
+        <span className="theme-card-desc muted">{description}</span>
+      </span>
+    </button>
+  );
+}
+
 function HostOidcUplinkSection() {
+  const t = useT();
   const [type, setType] = useState<UplinkType>("oidc");
   const [issuer, setIssuer] = useState("");
   const [tenant, setTenant] = useState("common");
@@ -100,6 +168,8 @@ function HostOidcUplinkSection() {
   const [saving, setSaving] = useState(false);
 
   const preset = presetFor(type);
+  const createLabelKey = providerCreateLabelKey(type);
+  const helpSteps = providerHelpSteps(type);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,18 +178,18 @@ function HostOidcUplinkSection() {
         const state = await loadHostOidcUplink();
         if (cancelled) return;
         if (state.uplink) {
-          const t = state.uplink.type ?? "oidc";
-          setType(t);
+          const uplinkType = state.uplink.type ?? "oidc";
+          setType(uplinkType);
           setIssuer(state.uplink.issuer ?? "");
           setTenant(state.uplink.tenant ?? "common");
           setClientID(state.uplink.clientID ?? "");
-          setScopes(scopesToInput(state.uplink.scopes, t));
+          setScopes(scopesToInput(state.uplink.scopes, uplinkType));
           setGetUserInfo(state.uplink.getUserInfo ?? true);
         }
         setSecretPresent(state.secretPresent);
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
+          setError(formatError(e, getT()));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -149,7 +219,7 @@ function HostOidcUplinkSection() {
     setStatus(null);
     const validation = validateUplinkDraft({ type, issuer, tenant, clientID });
     if (validation) {
-      setError(validation);
+      setError(t(validation));
       return;
     }
     setSaving(true);
@@ -165,9 +235,9 @@ function HostOidcUplinkSection() {
       });
       setClientSecret("");
       setSecretPresent(true);
-      setStatus("Host-Uplink gespeichert.");
+      setStatus(t("settings.uplinkSaved"));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e, t));
     } finally {
       setSaving(false);
     }
@@ -175,21 +245,24 @@ function HostOidcUplinkSection() {
 
   return (
     <div className="card settings-section">
-      <h2>OIDC Uplink (Host)</h2>
-      <p className="muted settings-section-hint">
-        Dex federiert zu diesem Upstream-IdP. Defaults gelten für alle Stacks;
-        Overrides liegen unter Stack Config (Zahnrad). Secrets unter Application
-        Support, nicht in Git.
-      </p>
+      <h2>{t("settings.oidcHostTitle")}</h2>
+      <p className="muted settings-section-hint">{t("settings.oidcHostHint")}</p>
       {loading ? (
-        <p className="muted">Lade…</p>
+        <p className="muted">{t("common.loading")}</p>
       ) : (
         <form className="form-grid" onSubmit={onSave}>
           <div className="form-span-2">
-            <p className="muted settings-section-hint" style={{ marginBottom: "0.5rem" }}>
-              Konfig-Hilfe — Preset wählt Connector und Default-Scopes:
+            <p
+              className="muted settings-section-hint"
+              style={{ marginBottom: "0.5rem" }}
+            >
+              {t("settings.oidcPresetHint")}
             </p>
-            <div className="provider-preset-row" role="radiogroup" aria-label="Provider">
+            <div
+              className="provider-preset-row"
+              role="radiogroup"
+              aria-label={t("settings.providerAria")}
+            >
               {PROVIDER_PRESETS.map((p) => (
                 <button
                   key={p.id}
@@ -199,7 +272,7 @@ function HostOidcUplinkSection() {
                   className={`provider-preset${type === p.id ? " selected" : ""}`}
                   onClick={() => applyPreset(p.id)}
                 >
-                  {p.label}
+                  {t(`oidc.preset.${p.id}` as MessageKey)}
                 </button>
               ))}
             </div>
@@ -207,18 +280,18 @@ function HostOidcUplinkSection() {
 
           <div className="form-span-2 uplink-help">
             <p className="uplink-help-redirect">
-              <strong>Callback / Redirect URI:</strong>{" "}
+              <strong>{t("settings.redirectUri")}</strong>{" "}
               <code>{preset.help.redirectHint}</code>
             </p>
             <ol className="uplink-help-steps">
-              {preset.help.steps.map((step) => (
-                <li key={step}>{step}</li>
+              {helpSteps.map((key) => (
+                <li key={key}>{t(key)}</li>
               ))}
             </ol>
-            {preset.help.createUrl ? (
+            {preset.help.createUrl && createLabelKey ? (
               <p className="muted">
                 <a href={preset.help.createUrl} target="_blank" rel="noreferrer">
-                  {preset.help.createLabel} ↗
+                  {t(createLabelKey)} ↗
                 </a>
               </p>
             ) : null}
@@ -226,54 +299,56 @@ function HostOidcUplinkSection() {
 
           {preset.showIssuer ? (
             <label>
-              Issuer
+              {t("settings.field.issuer")}
               <input
                 type="url"
                 value={issuer}
                 onChange={(e) => setIssuer(e.target.value)}
-                placeholder="https://login.example.com"
+                placeholder={t("settings.placeholder.issuer")}
                 autoComplete="off"
               />
             </label>
           ) : null}
           {preset.showTenant ? (
             <label>
-              Tenant
+              {t("settings.field.tenant")}
               <input
                 type="text"
                 value={tenant}
                 onChange={(e) => setTenant(e.target.value)}
-                placeholder="common oder Directory (tenant) ID"
+                placeholder={t("settings.placeholder.tenant")}
                 autoComplete="off"
               />
             </label>
           ) : null}
-          <label className={preset.showIssuer || preset.showTenant ? "" : "form-span-2"}>
-            Client ID
+          <label
+            className={preset.showIssuer || preset.showTenant ? "" : "form-span-2"}
+          >
+            {t("settings.field.clientId")}
             <input
               type="text"
               value={clientID}
               onChange={(e) => setClientID(e.target.value)}
-              placeholder="Application / Client ID"
+              placeholder={t("settings.placeholder.clientId")}
               autoComplete="off"
             />
           </label>
           <label className="form-span-2">
-            Client Secret
+            {t("settings.field.clientSecret")}
             <input
               type="password"
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
               placeholder={
                 secretPresent
-                  ? "Gesetzt — leer lassen zum Behalten"
-                  : "Upstream Client Secret"
+                  ? t("settings.placeholder.secretSet")
+                  : t("settings.placeholder.secret")
               }
               autoComplete="new-password"
             />
           </label>
           <label className="form-span-2">
-            Scopes
+            {t("settings.field.scopes")}
             <input
               type="text"
               value={scopes}
@@ -289,17 +364,17 @@ function HostOidcUplinkSection() {
                 checked={getUserInfo}
                 onChange={(e) => setGetUserInfo(e.target.checked)}
               />
-              getUserInfo
+              {t("settings.field.getUserInfo")}
             </label>
           ) : null}
           <div className="form-span-2 settings-form-actions">
             <button type="submit" disabled={saving}>
-              {saving ? "Speichern…" : "Host-Uplink speichern"}
+              {saving ? t("common.saving") : t("settings.saveUplink")}
             </button>
             {secretPresent ? (
-              <span className="muted">Secret vorhanden</span>
+              <span className="muted">{t("settings.secretPresent")}</span>
             ) : (
-              <span className="muted">Kein Secret gesetzt</span>
+              <span className="muted">{t("settings.secretMissing")}</span>
             )}
           </div>
           {error ? <p className="form-error form-span-2">{error}</p> : null}

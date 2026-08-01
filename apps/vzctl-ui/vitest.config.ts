@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    setupFiles: ["./src/tests/setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     // Graph.registerNode needs browser-ish stubs in node — skip shape registration tests that pull X6 DOM.
   },

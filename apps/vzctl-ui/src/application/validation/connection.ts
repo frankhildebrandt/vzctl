@@ -1,4 +1,5 @@
 import type { Environment } from "@/domain/hypernetwork/schema";
+import type { MessageKey, MessageParams } from "@/lib/i18n";
 import {
   isNetworkAttachPortId,
   isVmNicPortId,
@@ -31,7 +32,14 @@ export type ConnectionValidationResult =
       to?: string;
       via?: string;
     }
-  | { ok: false; reason: string };
+  | { ok: false; reasonKey: MessageKey; reasonParams?: MessageParams };
+
+function fail(
+  reasonKey: MessageKey,
+  reasonParams?: MessageParams,
+): Extract<ConnectionValidationResult, { ok: false }> {
+  return { ok: false, reasonKey, reasonParams };
+}
 
 function parseVm(id: string): string | null {
   return id.startsWith("vm:") ? id.slice(3) : null;
@@ -64,7 +72,7 @@ export function validateConnection(
     attempt;
 
   if (source.nodeId === target.nodeId) {
-    return { ok: false, reason: "Selbstverbindung ist verboten" };
+    return fail("conn.selfLink");
   }
 
   const srcVm = parseVm(source.nodeId);
@@ -74,10 +82,7 @@ export function validateConnection(
 
   if (srcVm && tgtNet) {
     if (!portsAllowAttachment(source, target)) {
-      return {
-        ok: false,
-        reason: "Nur NIC-Port ↔ Netz-Attach-Port",
-      };
+      return fail("conn.nicPortOnly");
     }
     return validateAttachment(
       srcVm,
@@ -89,10 +94,7 @@ export function validateConnection(
   }
   if (tgtVm && srcNet) {
     if (!portsAllowAttachment(source, target)) {
-      return {
-        ok: false,
-        reason: "Nur NIC-Port ↔ Netz-Attach-Port",
-      };
+      return fail("conn.nicPortOnly");
     }
     return validateAttachment(
       tgtVm,
@@ -104,18 +106,14 @@ export function validateConnection(
   }
 
   if (srcNet && tgtNet) {
-    return {
-      ok: false,
-      reason:
-        "Netz↔Netz nur über Route (Router-VM). Bitte Route im Inspector anlegen.",
-    };
+    return fail("conn.netToNetRoute");
   }
 
   if (srcVm && tgtVm) {
-    return { ok: false, reason: "VMs können nicht direkt verbunden werden" };
+    return fail("conn.vmDirect");
   }
 
-  return { ok: false, reason: "Ungültige Endpunkte" };
+  return fail("conn.invalidEndpoints");
 }
 
 function validateAttachment(
@@ -127,12 +125,12 @@ function validateAttachment(
 ): ConnectionValidationResult {
   const vm = env.spec.vms[vmName];
   const net = env.spec.networks[networkName];
-  if (!vm) return { ok: false, reason: `VM ${vmName} fehlt` };
-  if (!net) return { ok: false, reason: `Netz ${networkName} fehlt` };
+  if (!vm) return fail("conn.vmMissing", { name: vmName });
+  if (!net) return fail("conn.netMissing", { name: networkName });
 
   const key = `${vmName}|${networkName}`;
   if (key !== ignoreAttachment && existing.has(key)) {
-    return { ok: false, reason: "Attachment existiert bereits" };
+    return fail("conn.attachmentExists");
   }
 
   return {

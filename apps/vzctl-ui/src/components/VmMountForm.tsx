@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { pickDirectory } from "@/lib/dialogs";
+import { useT } from "@/lib/i18n";
 import { mountVm } from "@/lib/vms";
 
 export function VmMountForm({
@@ -11,6 +12,7 @@ export function VmMountForm({
   onDone: () => void | Promise<void>;
   onCancel: () => void;
 }) {
+  const t = useT();
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [tag, setTag] = useState("");
@@ -19,7 +21,7 @@ export function VmMountForm({
   const [error, setError] = useState<string | null>(null);
 
   async function chooseSource() {
-    const path = await pickDirectory("Host-Verzeichnis für Mount");
+    const path = await pickDirectory(t("mount.pickTitle"));
     if (path) setSource(path);
   }
 
@@ -45,18 +47,18 @@ export function VmMountForm({
 
   return (
     <form className="card vm-form" onSubmit={(e) => void submit(e)}>
-      <h3>Mount hinzufügen</h3>
-      <p className="muted">virtiofs Share (Host → Guest).</p>
+      <h3>{t("mount.title")}</h3>
+      <p className="muted">{t("mount.subtitle")}</p>
       <div className="form-grid">
         <label className="form-span-2">
-          Source (Host)
+          {t("mount.source")}
           <div className="row" style={{ gap: "0.5rem" }}>
             <input
               required
               value={source}
               disabled={busy}
               onChange={(e) => setSource(e.target.value)}
-              placeholder="/Users/…"
+              placeholder={t("mount.sourcePlaceholder")}
               style={{ flex: 1 }}
             />
             <button
@@ -65,22 +67,22 @@ export function VmMountForm({
               disabled={busy}
               onClick={() => void chooseSource()}
             >
-              Wählen…
+              {t("mount.pick")}
             </button>
           </div>
         </label>
         <label>
-          Target (Guest)
+          {t("mount.target")}
           <input
             required
             value={target}
             disabled={busy}
             onChange={(e) => setTarget(e.target.value)}
-            placeholder="/srv/app"
+            placeholder={t("mount.targetPlaceholder")}
           />
         </label>
         <label>
-          Tag / Name
+          {t("mount.tag")}
           <input
             value={tag}
             disabled={busy}
@@ -95,13 +97,13 @@ export function VmMountForm({
             disabled={busy}
             onChange={(e) => setReadOnly(e.target.checked)}
           />
-          Read-only
+          {t("mount.readOnly")}
         </label>
       </div>
       {error ? <p className="form-error">{error}</p> : null}
       <div className="row" style={{ gap: "0.5rem" }}>
         <button type="submit" disabled={busy}>
-          {busy ? "Mount…" : "Mount"}
+          {busy ? t("mount.submitBusy") : t("mount.submit")}
         </button>
         <button
           type="button"
@@ -109,7 +111,7 @@ export function VmMountForm({
           disabled={busy}
           onClick={onCancel}
         >
-          Abbrechen
+          {t("common.cancel")}
         </button>
       </div>
     </form>

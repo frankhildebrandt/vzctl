@@ -1,11 +1,17 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import {
   demoRoute,
   doctorRoute,
   envRoute,
+  errorsRoute,
   imagesRoute,
   indexRoute,
   networksRoute,
@@ -18,6 +24,7 @@ import {
   vmsRoute,
 } from "./routes";
 import { enableDemoMode, isDemoMode } from "./lib/demo";
+import { reportError } from "./store/errorStore";
 import { useSettingsStore } from "./store/settingsStore";
 import "./styles.css";
 
@@ -38,6 +45,7 @@ const routeTree = rootRoute.addChildren([
   networksRoute,
   imagesRoute,
   doctorRoute,
+  errorsRoute,
   settingsRoute,
   demoRoute,
   envRoute,
@@ -55,6 +63,19 @@ declare module "@tanstack/react-router" {
 }
 
 const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      reportError(error, { source: "query", queryKey: query.queryKey });
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error, _variables, _context, mutation) => {
+      reportError(error, {
+        source: "mutation",
+        mutationKey: mutation.options.mutationKey,
+      });
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: false,

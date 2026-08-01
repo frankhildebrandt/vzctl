@@ -5,6 +5,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconButton, IconPlay, IconStop, IconTrash } from "@/components/IconButton";
 import { StackCardsSection } from "@/components/StackCard";
 import { VmForm } from "@/components/VmForm";
+import { useT } from "@/lib/i18n";
 import { listProjects, projectKeys } from "@/lib/projects";
 import { partitionStacksAndVms } from "@/lib/stackPartition";
 import {
@@ -21,6 +22,7 @@ import { listen } from "@tauri-apps/api/event";
 import { queryKeys, runVzctl, type VzctlEvent } from "@/lib/vzctl";
 
 export function VmListPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,18 +144,16 @@ export function VmListPage() {
   return (
     <section>
       {activeProjects.length > 0 ? (
-        <StackCardsSection title="Stacks" projects={activeProjects} />
+        <StackCardsSection title={t("vms.stacksTitle")} projects={activeProjects} />
       ) : null}
 
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div>
-          <h2 className="section-title">VMs</h2>
-          <p className="muted">
-            Einzelne Bundles außerhalb von Stacks.
-          </p>
+          <h2 className="section-title">{t("vms.title")}</h2>
+          <p className="muted">{t("vms.subtitle")}</p>
         </div>
         <button type="button" onClick={() => setShowCreate((v) => !v)}>
-          {showCreate ? "Abbrechen" : "VM erstellen…"}
+          {showCreate ? t("vms.cancelCreate") : t("vms.create")}
         </button>
       </div>
 
@@ -170,32 +170,27 @@ export function VmListPage() {
 
       {error ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("common.error")}</h3>
           <p>{error}</p>
         </div>
       ) : null}
 
       {listQuery.isError ? (
         <div className="card error-card">
-          <h3>Liste fehlgeschlagen</h3>
+          <h3>{t("vms.listFailed")}</h3>
           <p>{String(listQuery.error)}</p>
         </div>
       ) : null}
 
       {listQuery.isLoading ? (
-        <p className="muted">Lade VMs…</p>
+        <p className="muted">{t("vms.loading")}</p>
       ) : standaloneVms.length === 0 ? (
         <div className="card">
-          <h2>Keine Einzel-VMs</h2>
+          <h2>{t("vms.emptyTitle")}</h2>
           <p className="muted">
             {activeProjects.length > 0
-              ? "Alle vorhandenen VMs stecken in den Stacks oben."
-              : (
-                <>
-                  Erstelle eine VM oder starte einen{" "}
-                  <Link to="/projects">Stack</Link>.
-                </>
-              )}
+              ? t("vms.emptyInStacks")
+              : t("vms.emptyHint")}
           </p>
         </div>
       ) : (
@@ -203,11 +198,11 @@ export function VmListPage() {
           <table className="vm-table">
             <thead>
               <tr>
-                <th>ID</th>
-                <th>State</th>
-                <th>IPs</th>
-                <th>Roles</th>
-                <th>PID</th>
+                <th>{t("vms.col.id")}</th>
+                <th>{t("vms.col.state")}</th>
+                <th>{t("vms.col.ips")}</th>
+                <th>{t("vms.col.roles")}</th>
+                <th>{t("vms.col.pid")}</th>
                 <th />
               </tr>
             </thead>
@@ -229,13 +224,13 @@ export function VmListPage() {
 
       <ConfirmDialog
         open={pendingDeleteId != null}
-        title="VM löschen"
+        title={t("vms.deleteTitle")}
         message={
           pendingDeleteId
-            ? `VM „${pendingDeleteId}“ wirklich löschen? Bundle und Attachments werden entfernt.`
+            ? t("vms.deleteMessage", { id: pendingDeleteId })
             : ""
         }
-        confirmLabel="Löschen"
+        confirmLabel={t("dialog.delete")}
         busy={deleting}
         error={pendingDeleteId != null ? error : null}
         onCancel={() => {
@@ -269,6 +264,7 @@ function VmRow({
   onStop: () => void;
   onDelete: () => void;
 }) {
+  const t = useT();
   const running = isRunning(vm.state);
   return (
     <tr>
@@ -284,21 +280,21 @@ function VmRow({
       <td>
         <span className={`vm-state state-${vm.state}`}>{vm.state}</span>
       </td>
-      <td className="mono">{vm.ips.join(", ") || "—"}</td>
-      <td>{vm.roles.join(", ") || "—"}</td>
-      <td className="mono">{vm.pid ?? "—"}</td>
+      <td className="mono">{vm.ips.join(", ") || t("common.emDash")}</td>
+      <td>{vm.roles.join(", ") || t("common.emDash")}</td>
+      <td className="mono">{vm.pid ?? t("common.emDash")}</td>
       <td>
         <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
           {running ? (
-            <IconButton label="Stop" disabled={busy} onClick={onStop} tone="danger">
+            <IconButton label={t("vms.stop")} disabled={busy} onClick={onStop} tone="danger">
               <IconStop />
             </IconButton>
           ) : (
-            <IconButton label="Start" disabled={busy} onClick={onStart} tone="primary">
+            <IconButton label={t("vms.start")} disabled={busy} onClick={onStart} tone="primary">
               <IconPlay />
             </IconButton>
           )}
-          <IconButton label="Löschen" disabled={busy} onClick={onDelete} tone="danger">
+          <IconButton label={t("common.delete")} disabled={busy} onClick={onDelete} tone="danger">
             <IconTrash />
           </IconButton>
         </div>

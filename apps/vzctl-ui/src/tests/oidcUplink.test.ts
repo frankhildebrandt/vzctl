@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeOidcUplink,
   presetFor,
+  providerCreateLabelKey,
+  providerHelpSteps,
   scopesToInput,
   validateUplinkDraft,
 } from "@/lib/oidcUplink";
@@ -63,7 +65,7 @@ describe("oidcUplink", () => {
         tenant: "",
         clientID: "x",
       }),
-    ).toMatch(/https/);
+    ).toBe("oidc.error.issuerHttps");
     expect(
       validateUplinkDraft({
         type: "github",
@@ -79,7 +81,7 @@ describe("oidcUplink", () => {
         tenant: "",
         clientID: "ms",
       }),
-    ).toMatch(/Tenant/);
+    ).toBe("oidc.error.tenantRequired");
     expect(
       validateUplinkDraft({
         type: "microsoft",
@@ -96,5 +98,8 @@ describe("oidcUplink", () => {
     expect(scopesToInput(["openid"])).toBe("openid");
     expect(presetFor("discord").help.createUrl).toContain("discord.com");
     expect(presetFor("microsoft").showTenant).toBe(true);
+    expect(providerHelpSteps("github")).toContain("oidc.help.github.step1");
+    expect(providerCreateLabelKey("github")).toBe("oidc.help.github.create");
+    expect(providerCreateLabelKey("oidc")).toBeNull();
   });
 });

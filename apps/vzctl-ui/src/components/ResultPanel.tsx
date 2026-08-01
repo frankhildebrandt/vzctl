@@ -1,5 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
+import { useT } from "@/lib/i18n";
 import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
 export type PanelKind = "diff" | "status" | "text" | "error" | "idle";
@@ -32,10 +34,10 @@ export function ResultPanel({
 }: {
   result: ResultModel;
   busyLabel?: string | null;
-  /** Stack path for incomplete-journal recovery actions. */
   stackPath?: string | null;
   onJournalRecovered?: () => void;
 }) {
+  const t = useT();
   const [debug, setDebug] = useState(false);
   const parsed = useMemo(() => tryParse(result.raw), [result.raw]);
   const incompleteJournal =
@@ -44,7 +46,7 @@ export function ResultPanel({
   if (result.kind === "idle" && !busyLabel) {
     return (
       <div className="card result-empty">
-        <p className="muted">Diff oder Status laden — JSON nur über Debug.</p>
+        <p className="muted">{t("result.empty")}</p>
       </div>
     );
   }
@@ -60,13 +62,13 @@ export function ResultPanel({
   return (
     <div className={result.kind === "error" ? "result-panel is-error" : "result-panel"}>
       <div className="result-toolbar">
-        <span className="result-label">{labelFor(result.kind)}</span>
+        <span className="result-label">{labelFor(result.kind, t)}</span>
         <button
           type="button"
           className={debug ? "debug-btn active" : "debug-btn"}
           onClick={() => setDebug((v) => !v)}
         >
-          Debug
+          {t("result.debug")}
         </button>
       </div>
 
@@ -74,7 +76,7 @@ export function ResultPanel({
         <DebugBlock text={result.raw} error={result.kind === "error"} />
       ) : result.kind === "error" ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("result.errorTitle")}</h3>
           <p>{result.raw}</p>
           {incompleteJournal && stackPath ? (
             <IncompleteJournalActions
@@ -92,7 +94,7 @@ export function ResultPanel({
       ) : parsed ? (
         <div className="card summary-card">
           <div className="summary-row">
-            <span className="badge ok">ok</span>
+            <span className="badge ok">{t("result.status.ok")}</span>
             {parsed.command != null ? (
               <span className="path">{String(parsed.command)}</span>
             ) : null}
@@ -100,13 +102,13 @@ export function ResultPanel({
           <p className="muted">
             {String(
               (parsed.summary as Record<string, unknown> | undefined)?.message ??
-                "Fertig.",
+                t("result.summary.done"),
             )}
           </p>
         </div>
       ) : (
         <div className="card">
-          <p className="muted">Keine grafische Darstellung — Debug öffnen.</p>
+          <p className="muted">{t("result.noGraphicView")}</p>
         </div>
       )}
     </div>
@@ -128,6 +130,7 @@ function IncompleteJournalActions({
   path: string;
   onDone?: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState<"restart" | "resume" | "abort" | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -139,13 +142,13 @@ function IncompleteJournalActions({
       if (mode === "restart") {
         await runVzctl(path, "apply", { abort: true });
         await runVzctl(path, "apply", { force: true });
-        setMsg("Journal verworfen und Apply neu gestartet.");
+        setMsg(t("result.journalRestartMsg"));
       } else if (mode === "resume") {
         await runVzctl(path, "apply", { resume: true });
-        setMsg("Apply fortgesetzt.");
+        setMsg(t("result.journalResumeMsg"));
       } else {
         await runVzctl(path, "apply", { abort: true });
-        setMsg("Journal abgebrochen — Apply erneut starten.");
+        setMsg(t("result.journalAbortMsg"));
       }
       onDone?.();
     } catch (err) {
@@ -157,18 +160,14 @@ function IncompleteJournalActions({
 
   return (
     <div className="doctor-actions" style={{ marginTop: "0.75rem" }}>
-      <p className="muted">
-        Unvollständiges Apply-Journal. Nach einem fehlgeschlagenen{" "}
-        <code>await_agents</code> hilft meist ein Neustart (abort + apply),
-        nicht nur Resume.
-      </p>
+      <p className="muted">{t("result.incompleteJournalHint")}</p>
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
         <button
           type="button"
           disabled={busy != null}
           onClick={() => void run("restart")}
         >
-          {busy === "restart" ? "Startet neu…" : "Neu starten (abort + apply)"}
+          {busy === "restart" ? t("result.restartBusy") : t("result.restart")}
         </button>
         <button
           type="button"
@@ -176,7 +175,7 @@ function IncompleteJournalActions({
           disabled={busy != null}
           onClick={() => void run("resume")}
         >
-          {busy === "resume" ? "Setzt fort…" : "Fortsetzen (--resume)"}
+          {busy === "resume" ? t("result.resumeBusy") : t("result.resume")}
         </button>
         <button
           type="button"
@@ -184,7 +183,7 @@ function IncompleteJournalActions({
           disabled={busy != null}
           onClick={() => void run("abort")}
         >
-          {busy === "abort" ? "Bricht ab…" : "Nur abbrechen"}
+          {busy === "abort" ? t("result.abortBusy") : t("result.abort")}
         </button>
       </div>
       {msg ? <p className="muted">{msg}</p> : null}
@@ -193,10 +192,16 @@ function IncompleteJournalActions({
 }
 
 function DiffView({ data }: { data: Record<string, unknown> }) {
+  const t = useT();
   const actions = (Array.isArray(data.actions) ? data.actions : []) as DiffAction[];
   const summary = (data.summary as Record<string, unknown> | undefined) ?? {};
   const changed = Boolean(summary.changed ?? actions.length);
-  const message = String(summary.message ?? (changed ? "changes planned" : "no changes"));
+  const message =
+    summary.message != null
+      ? String(summary.message)
+      : changed
+        ? t("result.diff.changes", { n: actions.length })
+        : t("result.diff.equal");
   const stackId = data.stack_id != null ? String(data.stack_id) : null;
 
   const byKind = groupBy(actions, (a) => a.kind || "other");
@@ -206,7 +211,9 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
       <div className="card summary-card">
         <div className="summary-row">
           <span className={changed ? "badge warn" : "badge ok"}>
-            {changed ? `${actions.length} Änderungen` : "In Sync"}
+            {changed
+              ? t("result.diff.changes", { n: actions.length })
+              : t("result.diff.inSync")}
           </span>
           {stackId ? <span className="path">{stackId}</span> : null}
         </div>
@@ -215,7 +222,7 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
 
       {actions.length === 0 ? (
         <div className="card">
-          <p className="muted">Desired und Actual sind gleich.</p>
+          <p className="muted">{t("result.diff.equal")}</p>
         </div>
       ) : (
         Object.entries(byKind).map(([kind, items]) => (
@@ -234,7 +241,9 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
                     <strong>{item.name}</strong>
                     {item.reason ? <span className="muted">{item.reason}</span> : null}
                   </div>
-                  {item.breaking ? <span className="badge danger">breaking</span> : null}
+                  {item.breaking ? (
+                    <span className="badge danger">{t("result.status.breaking")}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -246,6 +255,8 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
 }
 
 function StatusView({ data }: { data: Record<string, unknown> }) {
+  const t = useT();
+  const emDash = t("common.emDash");
   const sections = (data.sections as Record<string, StatusSection> | undefined) ?? {};
   const dns = sections.dns;
   const certs = sections.certs;
@@ -267,69 +278,80 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
 
   const rows: StatusRowModel[] = [
     {
-      title: "Stack",
+      title: t("result.status.stack"),
       ok: String(stackData?.phase ?? "") === "running",
       facts: [
         stackData?.label != null ? String(stackData.label) : null,
         stackVms
-          ? `${stackVms.running ?? 0}/${stackVms.desired ?? 0} VMs`
+          ? t("result.status.vms", {
+              running: Number(stackVms.running ?? 0),
+              desired: Number(stackVms.desired ?? 0),
+            })
           : null,
         stackData?.stack_id != null ? String(stackData.stack_id) : null,
       ],
     },
     {
-      title: "DNS",
+      title: t("result.status.dns"),
       ok: Boolean(dnsInner?.ok ?? dns?.ok),
       facts: [
-        joinList(dnsInner?.listeners),
-        dnsInner?.zones != null ? `${dnsInner.zones} zones` : null,
-        dnsInner?.records != null ? `${dnsInner.records} records` : null,
-        dnsInner?.upstream != null ? `upstream ${String(dnsInner.upstream)}` : null,
+        joinList(dnsInner?.listeners, emDash),
+        dnsInner?.zones != null
+          ? t("result.status.zones", { n: Number(dnsInner.zones) })
+          : null,
+        dnsInner?.records != null
+          ? t("result.status.records", { n: Number(dnsInner.records) })
+          : null,
+        dnsInner?.upstream != null
+          ? t("result.status.upstream", { upstream: String(dnsInner.upstream) })
+          : null,
       ],
       error:
         dnsInner?.last_error != null
           ? String(dnsInner.last_error)
           : dns?.stderr || undefined,
-      hint: dnsNeedsHelper
-        ? "Guest-:53 braucht den DNS-Bind-Helper (Admin)."
-        : undefined,
+      hint: dnsNeedsHelper ? t("result.status.dnsHint") : undefined,
       action: dnsNeedsHelper ? <DnsBindHelperButton /> : undefined,
     },
     {
-      title: "CA",
+      title: t("result.status.ca"),
       ok: Boolean(certs?.ok && certsData?.fingerprint && certsData?.trusted !== false),
       facts: [
-        shortFp(certsData?.fingerprint != null ? String(certsData.fingerprint) : null),
+        shortFp(
+          certsData?.fingerprint != null ? String(certsData.fingerprint) : null,
+          emDash,
+        ),
         certsData?.trusted === true
-          ? "trusted"
+          ? t("result.status.trusted")
           : certsData?.trusted === false
-            ? "nicht trusted"
+            ? t("result.status.notTrusted")
             : null,
         certsData?.path != null ? String(certsData.path) : null,
       ],
-      hint:
-        certsData?.trusted === false
-          ? "Browser melden SEC_ERROR_UNKNOWN_ISSUER, bis die CA in der Keychain liegt. Firefox/Zen: enterprise_roots oder manueller Import."
-          : undefined,
+      hint: certsData?.trusted === false ? t("result.status.caHint") : undefined,
       action:
         certsData?.present === true && certsData?.trusted === false ? (
           <CaInstallButton />
         ) : undefined,
     },
     {
-      title: "OIDC",
+      title: t("result.status.oidc"),
       ok: Boolean(oidcData?.running),
       facts: [
-        oidcData?.running ? "running" : "stopped",
-        oidcData?.pid != null ? `pid ${String(oidcData.pid)}` : null,
+        oidcData?.running
+          ? t("result.status.running")
+          : t("result.status.stopped"),
+        oidcData?.pid != null
+          ? t("result.status.pid", { pid: String(oidcData.pid) })
+          : null,
         oidcData?.project != null ? String(oidcData.project) : null,
       ],
     },
     {
-      title: "Drift",
+      title: t("result.status.drift"),
       ok: diffActions.length === 0 && Boolean(diff?.ok),
       facts: [
-        `${diffActions.length} actions`,
+        t("result.status.actions", { n: diffActions.length }),
         diffData?.stack_id != null ? String(diffData.stack_id) : null,
       ],
     },
@@ -347,7 +369,7 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
 
       {diffActions.length > 0 ? (
         <div className="card">
-          <h3 className="group-title">Offene Diff-Actions</h3>
+          <h3 className="group-title">{t("result.status.openDiffActions")}</h3>
           <ul className="action-list compact">
             {diffActions.slice(0, 12).map((item) => (
               <li key={`${item.kind}:${item.name}:${item.action}`} className="action-row">
@@ -361,7 +383,9 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
             ))}
           </ul>
           {diffActions.length > 12 ? (
-            <p className="muted">+{diffActions.length - 12} weitere…</p>
+            <p className="muted">
+              {t("result.status.moreActions", { n: diffActions.length - 12 })}
+            </p>
           ) : null}
         </div>
       ) : null}
@@ -379,17 +403,22 @@ type StatusRowModel = {
 };
 
 function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
+  const t = useT();
+  const emDash = t("common.emDash");
   const visibleFacts = facts.filter(
-    (fact): fact is string => typeof fact === "string" && fact.length > 0 && fact !== "—",
+    (fact): fact is string =>
+      typeof fact === "string" && fact.length > 0 && fact !== emDash,
   );
 
   return (
     <li className={`status-board-row${ok ? "" : " is-warn"}`}>
       <div className="status-board-main">
         <span className="status-board-title">{title}</span>
-        <span className={ok ? "badge ok" : "badge warn"}>{ok ? "ok" : "check"}</span>
+        <span className={ok ? "badge ok" : "badge warn"}>
+          {ok ? t("result.status.ok") : t("result.status.check")}
+        </span>
         <p className="status-board-facts" title={visibleFacts.join(" · ")}>
-          {visibleFacts.length > 0 ? visibleFacts.join(" · ") : "—"}
+          {visibleFacts.length > 0 ? visibleFacts.join(" · ") : emDash}
         </p>
       </div>
       {error ? <p className="status-board-error">{error}</p> : null}
@@ -400,6 +429,7 @@ function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
 }
 
 function CaInstallButton() {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -414,8 +444,8 @@ function CaInstallButton() {
           void (async () => {
             try {
               const envelope = parseEnvelope(await api.post("/v1/certs/ca/install"));
-              assertEnvelopeOk(envelope, "CA-Installation fehlgeschlagen");
-              setMsg("Installiert — Status neu laden.");
+              assertEnvelopeOk(envelope, t("doctor.caInstallFail"));
+              setMsg(t("result.status.caInstallOk"));
             } catch (err) {
               setMsg(String(err));
             } finally {
@@ -424,7 +454,7 @@ function CaInstallButton() {
           })();
         }}
       >
-        {busy ? "Installiert…" : "CA in Keychain installieren"}
+        {busy ? t("result.status.caInstallBusy") : t("result.status.caInstall")}
       </button>
       {msg ? <p className="muted">{msg}</p> : null}
     </div>
@@ -441,6 +471,7 @@ function needsDnsBindHelper(lastError: string | null | undefined): boolean {
 }
 
 function DnsBindHelperButton() {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -455,11 +486,8 @@ function DnsBindHelperButton() {
           void (async () => {
             try {
               const envelope = parseEnvelope(await api.post("/v1/dns/bind-helper"));
-              assertEnvelopeOk(
-                envelope,
-                "DNS-Bind-Helper-Installation fehlgeschlagen",
-              );
-              setMsg("Installiert — Status neu laden.");
+              assertEnvelopeOk(envelope, t("doctor.bindInstallFail"));
+              setMsg(t("result.status.bindInstallOk"));
             } catch (err) {
               setMsg(String(err));
             } finally {
@@ -468,7 +496,7 @@ function DnsBindHelperButton() {
           })();
         }}
       >
-        {busy ? "Installiert…" : "Bind-Helper installieren"}
+        {busy ? t("result.status.bindInstallBusy") : t("result.status.bindInstall")}
       </button>
       {msg ? <p className="muted">{msg}</p> : null}
     </div>
@@ -476,6 +504,7 @@ function DnsBindHelperButton() {
 }
 
 function DebugBlock({ text, error }: { text: string; error?: boolean }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   return (
     <div className={error ? "out-wrap error" : "out-wrap"}>
@@ -490,25 +519,28 @@ function DebugBlock({ text, error }: { text: string; error?: boolean }) {
           });
         }}
       >
-        {copied ? "Kopiert" : "Kopieren"}
+        {copied ? t("common.copied") : t("common.copy")}
       </button>
       <pre className={error ? "out error" : "out"}>{text}</pre>
     </div>
   );
 }
 
-function labelFor(kind: PanelKind): string {
+function labelFor(
+  kind: PanelKind,
+  t: ReturnType<typeof useT>,
+): string {
   switch (kind) {
     case "diff":
-      return "Diff";
+      return t("result.label.diff");
     case "status":
-      return "Status";
+      return t("result.label.status");
     case "error":
-      return "Fehler";
+      return t("result.label.error");
     case "text":
-      return "Ausgabe";
+      return t("result.label.text");
     default:
-      return "Ergebnis";
+      return t("result.label.idle");
   }
 }
 
@@ -540,35 +572,13 @@ function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {
   return out;
 }
 
-function joinList(value: unknown): string {
-  if (Array.isArray(value)) return value.map(String).join(", ") || "—";
-  if (value == null) return "—";
+function joinList(value: unknown, emDash: string): string {
+  if (Array.isArray(value)) return value.map(String).join(", ") || emDash;
+  if (value == null) return emDash;
   return String(value);
 }
 
-function shortFp(fp: string | null): string {
-  if (!fp) return "—";
+function shortFp(fp: string | null, emDash: string): string {
+  if (!fp) return emDash;
   return fp.length > 16 ? `${fp.slice(0, 10)}…${fp.slice(-6)}` : fp;
-}
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    try {
-      const area = document.createElement("textarea");
-      area.value = text;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.left = "-9999px";
-      document.body.appendChild(area);
-      area.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(area);
-      return ok;
-    } catch {
-      return false;
-    }
-  }
 }

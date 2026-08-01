@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import { useT } from "@/lib/i18n";
 
 export type BreadcrumbItem = {
   label: string;
@@ -7,10 +8,11 @@ export type BreadcrumbItem = {
 };
 
 export function Breadcrumbs({ items }: { items: BreadcrumbItem[] }) {
+  const t = useT();
   if (items.length === 0) return null;
 
   return (
-    <nav className="crumb" aria-label="Brotkrumen">
+    <nav className="crumb" aria-label={t("crumb.aria")}>
       {items.map((item, index) => (
         <Fragment key={`${item.label}-${index}`}>
           {index > 0 ? (

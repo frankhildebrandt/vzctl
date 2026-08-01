@@ -20,6 +20,7 @@ import {
   SHAPE_NETWORK,
   SHAPE_VM,
 } from "@/diagram/nodes/shapes";
+import { getT } from "@/lib/i18n";
 
 export type ProjectedModel = {
   nodeIds: Set<string>;
@@ -289,6 +290,7 @@ export function projectToGraph(
     if (showGateways && net.natEgress !== false && net.backend !== "docker") {
       const gid = `igw:${name}`;
       nodeIds.add(gid);
+      const internetLabel = getT()("topo.gatewayLabel");
       const gpos = defaultPos(diagram, gid, {
         x: pos.x + width / 2 - 50,
         y: pos.y - 92,
@@ -305,13 +307,13 @@ export function projectToGraph(
           width: gpos.width,
           height: gpos.height,
           zIndex: 5,
-          attrs: { label: { text: "Internet" } },
+          attrs: { label: { text: internetLabel } },
           data: { kind: "gateway", networkName: name },
         });
       } else {
         gNode.position(gpos.x, gpos.y);
         gNode.resize(gpos.width, gpos.height);
-        gNode.attr("label/text", "Internet");
+        gNode.attr("label/text", internetLabel);
       }
       const geid = `uplink:${name}`;
       edgeIds.add(geid);

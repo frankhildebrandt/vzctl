@@ -6,6 +6,8 @@ import { useEditorStore } from "@/store/editorStore";
 import { validateConnection } from "@/application/validation/connection";
 import type { PaletteKind } from "@/features/topology-editor/PaletteIcons";
 import type { ContextMenuState } from "@/features/topology-editor/TopologyContextMenu";
+import { useT } from "@/lib/i18n";
+import { useSettingsStore } from "@/store/settingsStore";
 
 function editableCellId(cellId: string | null): string | null {
   if (!cellId) return null;
@@ -51,6 +53,8 @@ export function TopologyCanvas({
   onPaletteMaterialize,
   onContextMenu,
 }: Props) {
+  const t = useT();
+  const locale = useSettingsStore((s) => s.locale);
   const containerRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -118,7 +122,10 @@ export function TopologyCanvas({
           ignoreAttachment,
         });
         if (!result.ok) {
-          state.setConnectionHint(result.reason);
+          state.setConnectionHint({
+            key: result.reasonKey,
+            params: result.reasonParams,
+          });
           return false;
         }
         state.setConnectionHint(null);
@@ -262,7 +269,11 @@ export function TopologyCanvas({
           }
           return;
         }
-        setConnectionHint(result.ok ? "Reconnect ungültig" : result.reason);
+        setConnectionHint(
+          result.ok
+            ? { key: "conn.reconnectInvalid" }
+            : { key: result.reasonKey, params: result.reasonParams },
+        );
         const latest = store();
         if (latest.env) {
           setProjecting(true);
@@ -293,7 +304,10 @@ export function TopologyCanvas({
       ) {
         attachNic(result.vmName, result.networkName);
       } else if (!result.ok) {
-        setConnectionHint(result.reason);
+        setConnectionHint({
+          key: result.reasonKey,
+          params: result.reasonParams,
+        });
       }
     });
 
@@ -347,7 +361,7 @@ export function TopologyCanvas({
     } finally {
       requestAnimationFrame(() => setProjecting(false));
     }
-  }, [env, diagram, errorNodeIds, setProjecting]);
+  }, [env, diagram, errorNodeIds, setProjecting, locale]);
 
   void projecting;
 
@@ -357,7 +371,7 @@ export function TopologyCanvas({
         ref={containerRef}
         className="topology-canvas"
         role="application"
-        aria-label="Topologie-Canvas"
+        aria-label={t("topo.canvasAria")}
         onContextMenu={(e) => e.preventDefault()}
       />
       <div ref={minimapRef} className="topology-minimap" aria-hidden />

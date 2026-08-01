@@ -1,9 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import type { MouseEvent, ReactNode } from "react";
 import { isDemoMode } from "@/lib/demo";
+import { useT } from "@/lib/i18n";
 import { useSidebarNav, type SidebarNavItem } from "@/lib/sidebarNav";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const t = useT();
   const demo = isDemoMode();
   const nav = useSidebarNav();
 
@@ -20,24 +22,24 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Link
               to="/"
               className="sidebar-brand sidebar-brand-link"
-              aria-label="Zum Dashboard"
+              aria-label={t("shell.dashboardAria")}
             >
-              <span className="sidebar-logo">← Dashboard</span>
-              <span className="sidebar-tag">vzctl</span>
+              <span className="sidebar-logo">{t("shell.backDashboard")}</span>
+              <span className="sidebar-tag">{t("shell.brand")}</span>
             </Link>
           ) : (
             <div className="sidebar-brand" data-tauri-drag-region>
               <span className="sidebar-logo" data-tauri-drag-region>
-                vzctl
+                {t("shell.brand")}
               </span>
               <span className="sidebar-tag" data-tauri-drag-region>
-                hypervisor
+                {t("shell.tagline")}
               </span>
             </div>
           )}
         </div>
 
-        <nav className="sidebar-nav" aria-label="Hauptnavigation">
+        <nav className="sidebar-nav" aria-label={t("shell.navAria")}>
           <div key={nav.contextKey} className="sidebar-nav-panel">
             {nav.back ? (
               <Link
@@ -69,7 +71,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               className="sidebar-link"
               activeProps={{ className: "sidebar-link active" }}
             >
-              Settings
+              {t("shell.settings")}
             </Link>
           </div>
         ) : (
@@ -85,8 +87,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="content">{children}</main>
       </div>
       {demo ? (
-        <span className="demo-watermark" role="status" aria-label="Demo-Modus">
-          Demo
+        <span className="demo-watermark" role="status" aria-label={t("shell.demoAria")}>
+          {t("shell.demo")}
         </span>
       ) : null}
     </div>

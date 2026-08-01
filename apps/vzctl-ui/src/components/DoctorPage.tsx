@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import { getT, useT } from "@/lib/i18n";
 import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
 type DoctorCheck = {
@@ -15,6 +16,7 @@ const doctorKeys = {
 };
 
 export function DoctorPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [actionMsg, setActionMsg] = useState<string | null>(null);
 
@@ -26,11 +28,11 @@ export function DoctorPage() {
   const installCa = useMutation({
     mutationFn: async () => {
       const envelope = parseEnvelope(await api.post("/v1/certs/ca/install"));
-      assertEnvelopeOk(envelope, "CA-Installation fehlgeschlagen");
+      assertEnvelopeOk(envelope, getT()("doctor.caInstallFail"));
       return envelope;
     },
     onSuccess: () => {
-      setActionMsg("Local CA in die Login-Keychain installiert.");
+      setActionMsg(t("doctor.caInstallOk"));
       void queryClient.invalidateQueries({ queryKey: doctorKeys.all });
     },
     onError: (err) => {
@@ -41,11 +43,11 @@ export function DoctorPage() {
   const initCa = useMutation({
     mutationFn: async () => {
       const envelope = parseEnvelope(await api.post("/v1/certs/ca/init"));
-      assertEnvelopeOk(envelope, "CA-Init fehlgeschlagen");
+      assertEnvelopeOk(envelope, getT()("doctor.caInitFail"));
       return envelope;
     },
     onSuccess: () => {
-      setActionMsg("Local CA initialisiert. Jetzt in Keychain installieren.");
+      setActionMsg(t("doctor.caInitOk"));
       void queryClient.invalidateQueries({ queryKey: doctorKeys.all });
     },
     onError: (err) => {
@@ -56,13 +58,11 @@ export function DoctorPage() {
   const installBindHelper = useMutation({
     mutationFn: async () => {
       const envelope = parseEnvelope(await api.post("/v1/dns/bind-helper"));
-      assertEnvelopeOk(envelope, "DNS-Bind-Helper-Installation fehlgeschlagen");
+      assertEnvelopeOk(envelope, getT()("doctor.bindInstallFail"));
       return envelope;
     },
     onSuccess: () => {
-      setActionMsg(
-        "DNS-Bind-Helper installiert. Guest-:53 ist bereit (ggf. Doctor neu prüfen).",
-      );
+      setActionMsg(t("doctor.bindInstallOk"));
       void queryClient.invalidateQueries({ queryKey: doctorKeys.all });
     },
     onError: (err) => {
@@ -96,11 +96,8 @@ export function DoctorPage() {
   return (
     <section>
       <header className="detail-heading" style={{ marginBottom: "1rem" }}>
-        <h2 className="section-title">Doctor</h2>
-        <p className="muted">
-          Host-Checks wie <code>vzctl doctor</code> — inkl. Local-CA-Trust und
-          DNS-Bind-Helper für Guest-<code>:53</code>.
-        </p>
+        <h2 className="section-title">{t("doctor.title")}</h2>
+        <p className="muted">{t("doctor.subtitle")}</p>
       </header>
 
       <div className="card summary-card">
@@ -114,12 +111,15 @@ export function DoctorPage() {
                   : "badge ok"
             }
           >
-            {doctorQuery.data?.status ?? (doctorQuery.isLoading ? "…" : "—")}
+            {doctorQuery.data?.status ?? (doctorQuery.isLoading ? t("common.ellipsis") : t("common.emDash"))}
           </span>
           {summary ? (
             <span className="muted">
-              {String(summary.ok ?? 0)} ok · {String(summary.warnings ?? 0)} warn ·{" "}
-              {String(summary.failures ?? 0)} fail
+              {t("doctor.summaryOk", {
+                ok: String(summary.ok ?? 0),
+                warnings: String(summary.warnings ?? 0),
+                failures: String(summary.failures ?? 0),
+              })}
             </span>
           ) : null}
           <button
@@ -128,7 +128,7 @@ export function DoctorPage() {
             disabled={busy}
             onClick={() => void doctorQuery.refetch()}
           >
-            Neu prüfen
+            {t("doctor.refresh")}
           </button>
         </div>
         {doctorQuery.isError ? (
@@ -139,33 +139,29 @@ export function DoctorPage() {
 
       <div className="card">
         <div className="summary-row">
-          <h3 className="group-title">DNS Bind-Helper</h3>
+          <h3 className="group-title">{t("doctor.bindTitle")}</h3>
           <span className={bindReady ? "badge ok" : "badge warn"}>
-            {bindReady ? "ready" : "fehlt"}
+            {bindReady ? t("doctor.bindReady") : t("doctor.bindMissing")}
           </span>
         </div>
-        <p className="muted">
-          Guest-DNS auf Bridge-<code>.0:53</code> braucht den Root-LaunchDaemon{" "}
-          <code>vz-dns-bind</code> (SCM_RIGHTS). Ohne Helper:{" "}
-          <code>Permission denied</code> im DNS-Status.
-        </p>
+        <p className="muted">{t("doctor.bindHint")}</p>
         <dl className="kv">
           <div className="kv-row">
-            <dt>Socket</dt>
+            <dt>{t("doctor.bindSocket")}</dt>
             <dd title={String(bindDetails?.socket ?? "")}>
               {bindDetails?.socket_connectable
-                ? "erreichbar"
+                ? t("doctor.bindSocketOk")
                 : bindDetails?.socket != null
                   ? String(bindDetails.socket)
-                  : "—"}
+                  : t("common.emDash")}
             </dd>
           </div>
           <div className="kv-row">
-            <dt>Guest-Port</dt>
+            <dt>{t("doctor.bindGuestPort")}</dt>
             <dd>
               {bindDetails?.guest_port != null
                 ? String(bindDetails.guest_port)
-                : "—"}
+                : t("common.emDash")}
             </dd>
           </div>
         </dl>
@@ -179,32 +175,30 @@ export function DoctorPage() {
                 installBindHelper.mutate();
               }}
             >
-              Bind-Helper installieren
+              {t("doctor.bindInstall")}
             </button>
           ) : null}
           {bindReady ? (
-            <p className="muted">Bind-Helper ist aktiv.</p>
+            <p className="muted">{t("doctor.bindActive")}</p>
           ) : null}
         </div>
       </div>
 
       <div className="card">
         <div className="summary-row">
-          <h3 className="group-title">Local CA (Keychain)</h3>
+          <h3 className="group-title">{t("doctor.caTitle")}</h3>
           <span className={caTrusted ? "badge ok" : caPresent ? "badge warn" : "badge ok"}>
-            {caTrusted ? "trusted" : caPresent ? "nicht trusted" : "keine CA"}
+            {caTrusted
+              ? t("doctor.caTrusted")
+              : caPresent
+                ? t("doctor.caNotTrusted")
+                : t("doctor.caNone")}
           </span>
         </div>
-        <p className="muted">
-          Ohne Keychain-Trust melden Browser{" "}
-          <code>SEC_ERROR_UNKNOWN_ISSUER</code> für{" "}
-          <code>*.svc.…vz.test</code>. Firefox/Zen brauchen zusätzlich
-          System-CAs (<code>security.enterprise_roots.enabled</code>) oder
-          manuellen Import.
-        </p>
+        <p className="muted">{t("doctor.caHint")}</p>
         <dl className="kv">
           <div className="kv-row">
-            <dt>Fingerprint</dt>
+            <dt>{t("doctor.caFingerprint")}</dt>
             <dd title={String(trustDetails?.fingerprint ?? "")}>
               {shortFp(
                 trustDetails?.fingerprint != null
@@ -214,9 +208,9 @@ export function DoctorPage() {
             </dd>
           </div>
           <div className="kv-row">
-            <dt>Cert</dt>
+            <dt>{t("doctor.caCert")}</dt>
             <dd title={String(trustDetails?.cert ?? "")}>
-              {trustDetails?.cert != null ? String(trustDetails.cert) : "—"}
+              {trustDetails?.cert != null ? String(trustDetails.cert) : t("common.emDash")}
             </dd>
           </div>
         </dl>
@@ -230,7 +224,7 @@ export function DoctorPage() {
                 initCa.mutate();
               }}
             >
-              CA initialisieren
+              {t("doctor.caInit")}
             </button>
           ) : null}
           {caPresent && !caTrusted ? (
@@ -242,11 +236,11 @@ export function DoctorPage() {
                 installCa.mutate();
               }}
             >
-              CA in Keychain installieren
+              {t("doctor.caInstall")}
             </button>
           ) : null}
           {caTrusted ? (
-            <p className="muted">Keychain-Trust ist gesetzt.</p>
+            <p className="muted">{t("doctor.caTrustOk")}</p>
           ) : null}
         </div>
       </div>
@@ -254,7 +248,7 @@ export function DoctorPage() {
       <div className="view-stack">
         {doctorQuery.isLoading && checks.length === 0 ? (
           <div className="card">
-            <p className="muted">Doctor läuft…</p>
+            <p className="muted">{t("doctor.running")}</p>
           </div>
         ) : (
           checks.map((check) => (
@@ -289,6 +283,7 @@ function DoctorCheckRow({
   onInstallCa: () => void;
   onInstallBindHelper: () => void;
 }) {
+  const t = useT();
   const details = asRecord(check.details);
   const showInstallCa =
     check.id === "certs.host_trust" &&
@@ -310,12 +305,12 @@ function DoctorCheckRow({
       <p>{check.message}</p>
       {showInstallCa ? (
         <button type="button" disabled={busy} onClick={onInstallCa}>
-          CA in Keychain installieren
+          {t("doctor.caInstall")}
         </button>
       ) : null}
       {showInstallBind ? (
         <button type="button" disabled={busy} onClick={onInstallBindHelper}>
-          Bind-Helper installieren
+          {t("doctor.bindInstall")}
         </button>
       ) : null}
     </div>
@@ -352,7 +347,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function shortFp(fp: string | null): string {
-  if (!fp) return "—";
+  if (!fp) return getT()("common.emDash");
   if (fp.length <= 16) return fp;
   return `${fp.slice(0, 8)}…${fp.slice(-6)}`;
 }

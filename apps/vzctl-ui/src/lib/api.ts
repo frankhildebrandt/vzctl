@@ -1,16 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export type ApiErrorRequest = {
+  method: string;
+  path: string;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
   details?: unknown;
+  request?: ApiErrorRequest;
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: unknown,
+    request?: ApiErrorRequest,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.details = details;
+    this.request = request;
   }
 }
 
@@ -59,6 +72,8 @@ export async function apiRequest<T = unknown>(
     headers.push(["Content-Type", "application/json"]);
   }
 
+  const requestMeta: ApiErrorRequest = { method, path };
+
   let response: InvokeApiResponse;
   try {
     response = await invoke<InvokeApiResponse>("api_request", {
@@ -70,7 +85,7 @@ export async function apiRequest<T = unknown>(
       },
     });
   } catch (err) {
-    throw new ApiError(0, "unavailable", String(err));
+    throw new ApiError(0, "unavailable", String(err), undefined, requestMeta);
   }
 
   const text = response.body ?? "";
@@ -84,7 +99,13 @@ export async function apiRequest<T = unknown>(
       parsed = JSON.parse(text) as unknown;
     } catch {
       if (response.status < 200 || response.status >= 300) {
-        throw new ApiError(response.status, "internal", text || `HTTP ${response.status}`);
+        throw new ApiError(
+          response.status,
+          "internal",
+          text || `HTTP ${response.status}`,
+          undefined,
+          requestMeta,
+        );
       }
       return text as T;
     }
@@ -99,6 +120,7 @@ export async function apiRequest<T = unknown>(
       err?.error?.code ?? "internal",
       err?.error?.message ?? `HTTP ${response.status}`,
       err?.error?.details,
+      requestMeta,
     );
   }
   return parsed as T;
@@ -133,6 +155,8 @@ export const api = {
         response.status,
         "internal",
         response.body || `HTTP ${response.status}`,
+        undefined,
+        { method: "GET", path },
       );
     }
     return response.body;

@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getT, useT, type MessageKey } from "@/lib/i18n";
+import { localeToBcp47 } from "@/lib/i18n/detect";
+import { useSettingsStore } from "@/store/settingsStore";
 import {
   APPLY_STEPS,
   DOWN_STEPS,
@@ -40,7 +43,8 @@ const idle: ProgressState = {
 };
 
 function nowStamp(): string {
-  return new Date().toLocaleTimeString("de-DE", { hour12: false });
+  const locale = useSettingsStore.getState().locale;
+  return new Date().toLocaleTimeString(localeToBcp47(locale), { hour12: false });
 }
 
 function append(
@@ -56,7 +60,6 @@ function append(
     text,
   };
   const lines = [...prev.lines, line];
-  // Keep console bounded.
   const trimmed = lines.length > 500 ? lines.slice(lines.length - 500) : lines;
   return { ...prev, lines: trimmed, nextId: prev.nextId + 1 };
 }
@@ -114,6 +117,7 @@ export function useApplyProgress(enabled: boolean) {
   }, [enabled]);
 
   function begin(mode: string) {
+    const t = getT();
     const catalog = mode === "down" ? DOWN_STEPS : APPLY_STEPS;
     const steps = Object.fromEntries(
       catalog.map((step) => [step, "pending" as StepStatus]),
@@ -130,18 +134,20 @@ export function useApplyProgress(enabled: boolean) {
       lastVmState: {},
     };
     next = append(next, "cmd", `$ vzctl ${mode}`);
-    next = append(next, "info", "warte auf apply-Events…");
+    next = append(next, "info", t("apply.console.waitEvents"));
     setState(next);
   }
 
   function end(ok = true) {
+    const t = getT();
     setState((prev) => {
       if (!prev.active && prev.finished) return prev;
       let next = { ...prev, active: false, finished: true };
+      const mode = prev.mode ?? t("apply.modeDefault");
       if (ok && !prev.error) {
-        next = append(next, "ok", `${prev.mode ?? "apply"} fertig`);
+        next = append(next, "ok", t("apply.finished.ok", { mode }));
       } else if (!ok && !prev.error) {
-        next = append(next, "error", `${prev.mode ?? "apply"} fehlgeschlagen`);
+        next = append(next, "error", t("apply.finished.fail", { mode }));
       }
       return next;
     });
@@ -174,12 +180,13 @@ export function useApplyProgress(enabled: boolean) {
 function reduceEvent(prev: ProgressState, event: VzctlEvent): ProgressState {
   const type = event.type;
   const data = event.data ?? {};
+  const locale = useSettingsStore.getState().locale;
   const ts = event.ts
-    ? new Date(event.ts).toLocaleTimeString("de-DE", { hour12: false })
+    ? new Date(event.ts).toLocaleTimeString(localeToBcp47(locale), {
+        hour12: false,
+      })
     : nowStamp();
 
-  // Only mirror live apply into the UI while a local up/apply/down is running.
-  // Otherwise vm.state spam replaces the project dashboard with a stuck log.
   if (!prev.active) return prev;
 
   if (type === "apply.started") {
@@ -306,6 +313,26 @@ function reduceEvent(prev: ProgressState, event: VzctlEvent): ProgressState {
   return prev;
 }
 
+function applyStepLabel(step: string, t: ReturnType<typeof useT>): string {
+  return t(`apply.step.${step}` as MessageKey);
+}
+
+function stepStatusLabel(
+  status: StepStatus,
+  t: ReturnType<typeof useT>,
+): string {
+  switch (status) {
+    case "running":
+      return t("apply.stepStatus.running");
+    case "done":
+      return t("apply.stepStatus.done");
+    case "failed":
+      return t("apply.stepStatus.failed");
+    default:
+      return "";
+  }
+}
+
 export function ApplyProgress({
   ordered,
   percent,
@@ -319,12 +346,15 @@ export function ApplyProgress({
   error: string | null;
   visible: boolean;
 }) {
+  const t = useT();
   if (!visible) return null;
+
+  const modeLabel = mode ?? t("apply.modeDefault");
 
   return (
     <div className="card progress-card">
       <div className="progress-head">
-        <h2>{mode ? `${mode}` : "apply"} — Fortschritt</h2>
+        <h2>{t("apply.progressTitle", { mode: modeLabel })}</h2>
         <span className="muted">{percent}%</span>
       </div>
       <div className="progress-bar" aria-hidden>
@@ -334,8 +364,12 @@ export function ApplyProgress({
         {ordered.map((step) => (
           <li key={step.name} className={`progress-step ${step.status}`}>
             <span className="progress-dot" aria-hidden />
-            <span className="progress-name">{step.name}</span>
-            <span className="progress-status">{label(step.status)}</span>
+            <span className="progress-name">
+              {applyStepLabel(step.name, t)}
+            </span>
+            <span className="progress-status">
+              {stepStatusLabel(step.status, t)}
+            </span>
           </li>
         ))}
       </ol>
@@ -351,6 +385,7 @@ export function ConsoleLog({
   lines: ConsoleLine[];
   visible: boolean;
 }) {
+  const t = useT();
   const scroller = useRef<HTMLPreElement>(null);
   const stickRef = useRef(true);
 
@@ -367,7 +402,7 @@ export function ConsoleLog({
       <pre
         ref={scroller}
         className="text-console"
-        aria-label="Apply-Log"
+        aria-label={t("apply.console.aria")}
         aria-live="polite"
         onScroll={(event) => {
           const el = event.currentTarget;
@@ -376,7 +411,7 @@ export function ConsoleLog({
         }}
       >
         {lines.length === 0 ? (
-          <span className="console-line info">warte auf Output…</span>
+          <span className="console-line info">{t("apply.console.waitOutput")}</span>
         ) : (
           lines.map((line) => (
             <span key={line.id} className={`console-line ${line.level}`}>
@@ -388,17 +423,4 @@ export function ConsoleLog({
       </pre>
     </div>
   );
-}
-
-function label(status: StepStatus): string {
-  switch (status) {
-    case "running":
-      return "läuft";
-    case "done":
-      return "ok";
-    case "failed":
-      return "fehler";
-    default:
-      return "";
-  }
 }

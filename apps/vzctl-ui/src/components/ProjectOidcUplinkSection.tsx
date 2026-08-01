@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { getT, useT } from "@/lib/i18n";
 import {
+  OidcMessageError,
   saveProjectUplinkSecret,
   scopesToInput,
   type OidcUplinkConfig,
@@ -8,8 +10,30 @@ import { loadProjectFlexible, saveProjectFlexible } from "@/features/persistence
 import type { Environment } from "@/domain/hypernetwork/schema";
 import { Link } from "@tanstack/react-router";
 
+const CONFIG_FILE = "hypernetwork.config.yaml";
+
+function ProjectOidcHint() {
+  const t = useT();
+  return (
+    <>
+      {t("projectOidc.hintBefore")}
+      <code>{CONFIG_FILE}</code>
+      {t("projectOidc.hintAfter")}
+      <Link to="/settings">{t("projectOidc.hintLink")}</Link>
+      {t("projectOidc.hintEnd")}
+    </>
+  );
+}
+
+function formatError(error: unknown, t: ReturnType<typeof useT>): string {
+  if (error instanceof OidcMessageError) return t(error.messageKey);
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
 /** Per-stack OIDC uplink overrides → hypernetwork.config.yaml */
 export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string }) {
+  const t = useT();
   const [issuer, setIssuer] = useState("");
   const [clientID, setClientID] = useState("");
   const [scopes, setScopes] = useState("");
@@ -50,7 +74,7 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
       } catch (e) {
         if (!cancelled) {
           setEnv(null);
-          setError(e instanceof Error ? e.message : String(e));
+          setError(formatError(e, getT()));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -70,16 +94,13 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
     try {
       const nextEnv: Environment = structuredClone(env);
       if (!nextEnv.spec.oidc) {
-        throw new Error(
-          "Stack hat kein spec.oidc — zuerst OIDC in hypernetwork.config.yaml aktivieren.",
-        );
+        throw new OidcMessageError("projectOidc.noOidcSpec");
       }
 
       if (clearOverride) {
         delete nextEnv.spec.oidc.uplink;
       } else {
         const uplink: OidcUplinkConfig = {};
-        // Keep existing type if set; otherwise omit so Host-Type geerbt wird.
         if (env.spec.oidc?.uplink?.type) {
           uplink.type = env.spec.oidc.uplink.type;
         }
@@ -100,7 +121,7 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
           }
         }
         if (uplink.issuer && !uplink.issuer.startsWith("https://")) {
-          throw new Error("Issuer muss mit https:// beginnen.");
+          throw new OidcMessageError("oidc.error.issuerHttps");
         }
         nextEnv.spec.oidc.uplink = uplink;
       }
@@ -110,12 +131,10 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
       setEnv(nextEnv);
       setProjectSecret("");
       setStatus(
-        clearOverride
-          ? "Stack-Override entfernt."
-          : "Uplink in hypernetwork.config.yaml gespeichert.",
+        t(clearOverride ? "projectOidc.cleared" : "projectOidc.saved"),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e, t));
     } finally {
       setSaving(false);
     }
@@ -123,14 +142,12 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
 
   return (
     <div className="card settings-section">
-      <h2>OIDC Uplink</h2>
+      <h2>{t("projectOidc.title")}</h2>
       <p className="muted settings-section-hint">
-        Optionale Overrides für diesen Stack in{" "}
-        <code>hypernetwork.config.yaml</code>. Leere Felder erben{" "}
-        <Link to="/settings">Host-Defaults</Link>.
+        <ProjectOidcHint />
       </p>
       {loading ? (
-        <p className="muted">Lade…</p>
+        <p className="muted">{t("common.loading")}</p>
       ) : (
         <form className="form-grid" onSubmit={onSave}>
           <label className="form-check form-span-2">
@@ -139,39 +156,39 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
               checked={clearOverride}
               onChange={(e) => setClearOverride(e.target.checked)}
             />
-            Override entfernen (nur Host-Defaults)
+            {t("projectOidc.clearOverride")}
           </label>
           {!clearOverride ? (
             <>
               <label>
-                Issuer (optional)
+                {t("projectOidc.issuerOptional")}
                 <input
                   type="url"
                   value={issuer}
                   onChange={(e) => setIssuer(e.target.value)}
-                  placeholder="Host-Default übernehmen"
+                  placeholder={t("projectOidc.issuerPlaceholder")}
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
               </label>
               <label>
-                Client ID (optional)
+                {t("projectOidc.clientIdOptional")}
                 <input
                   type="text"
                   value={clientID}
                   onChange={(e) => setClientID(e.target.value)}
-                  placeholder="Host-Default übernehmen"
+                  placeholder={t("projectOidc.clientIdPlaceholder")}
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
               </label>
               <label className="form-span-2">
-                Scopes (optional)
+                {t("projectOidc.scopesOptional")}
                 <input
                   type="text"
                   value={scopes}
                   onChange={(e) => setScopes(e.target.value)}
-                  placeholder="Host-Default übernehmen"
+                  placeholder={t("projectOidc.scopesPlaceholder")}
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
@@ -183,7 +200,7 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   onChange={(e) => setGetUserInfo(e.target.checked)}
                   disabled={!env?.spec.oidc}
                 />
-                getUserInfo
+                {t("settings.field.getUserInfo")}
               </label>
               <label className="form-check">
                 <input
@@ -192,16 +209,16 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   onChange={(e) => setUseHostSecret(e.target.checked)}
                   disabled={!env?.spec.oidc}
                 />
-                Host-Secret nutzen
+                {t("projectOidc.useHostSecret")}
               </label>
               {!useHostSecret ? (
                 <label className="form-span-2">
-                  Stack Secret
+                  {t("projectOidc.stackSecret")}
                   <input
                     type="password"
                     value={projectSecret}
                     onChange={(e) => setProjectSecret(e.target.value)}
-                    placeholder="Secret für diesen Stack"
+                    placeholder={t("projectOidc.stackSecretPlaceholder")}
                     autoComplete="new-password"
                     disabled={!env?.spec.oidc}
                   />
@@ -211,10 +228,10 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
           ) : null}
           <div className="form-span-2 settings-form-actions">
             <button type="submit" disabled={saving || !env?.spec.oidc}>
-              {saving ? "Speichern…" : "Uplink speichern"}
+              {saving ? t("common.saving") : t("projectOidc.save")}
             </button>
             {!env?.spec.oidc ? (
-              <span className="muted">Kein spec.oidc in diesem Stack</span>
+              <span className="muted">{t("projectOidc.noSpecOidc")}</span>
             ) : null}
           </div>
           {error ? <p className="form-error form-span-2">{error}</p> : null}

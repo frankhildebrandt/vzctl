@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useT } from "@/lib/i18n";
 import { deleteNet, getDefaultNet, listNets, netKeys, type NetRecord } from "@/lib/nets";
 
 export function NetworksPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [pendingDelete, setPendingDelete] = useState<NetRecord | null>(null);
 
@@ -42,11 +44,14 @@ export function NetworksPage() {
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>Networks</h1>
+          <h1>{t("networks.title")}</h1>
           <p className="muted">
-            Runtime-Netze aus dem Supervisor
+            {t("networks.subtitle")}
             {defaultQuery.data
-              ? ` · Default: ${defaultQuery.data.name} (${defaultQuery.data.cidr})`
+              ? t("networks.default", {
+                  name: defaultQuery.data.name,
+                  cidr: defaultQuery.data.cidr ?? "",
+                })
               : ""}
           </p>
         </div>
@@ -55,21 +60,21 @@ export function NetworksPage() {
       {netsQuery.isError && (
         <p className="error">{String(netsQuery.error)}</p>
       )}
-      {netsQuery.isLoading && <p className="muted">Lade Netze…</p>}
+      {netsQuery.isLoading && <p className="muted">{t("networks.loading")}</p>}
 
       {!netsQuery.isLoading && networks.length === 0 && (
-        <p className="muted">Keine Netze registriert.</p>
+        <p className="muted">{t("networks.empty")}</p>
       )}
 
       {networks.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>CIDR</th>
-              <th>Backend</th>
-              <th>State</th>
-              <th>Attachments</th>
+              <th>{t("networks.col.name")}</th>
+              <th>{t("networks.col.cidr")}</th>
+              <th>{t("networks.col.backend")}</th>
+              <th>{t("networks.col.state")}</th>
+              <th>{t("networks.col.attachments")}</th>
               <th />
             </tr>
           </thead>
@@ -79,12 +84,12 @@ export function NetworksPage() {
                 <td>
                   <code>{net.name}</code>
                   {defaultQuery.data?.name === net.name ? (
-                    <span className="badge">default</span>
+                    <span className="badge">{t("networks.badgeDefault")}</span>
                   ) : null}
                 </td>
-                <td>{net.cidr ?? "—"}</td>
+                <td>{net.cidr ?? t("common.emDash")}</td>
                 <td>{net.backend ?? "vmnet"}</td>
-                <td>{net.runtime_state ?? "—"}</td>
+                <td>{net.runtime_state ?? t("common.emDash")}</td>
                 <td>{attachmentCount.get(net.name) ?? 0}</td>
                 <td>
                   <button
@@ -92,7 +97,7 @@ export function NetworksPage() {
                     className="btn danger"
                     onClick={() => setPendingDelete(net)}
                   >
-                    Delete
+                    {t("networks.delete")}
                   </button>
                 </td>
               </tr>
@@ -103,13 +108,13 @@ export function NetworksPage() {
 
       <ConfirmDialog
         open={pendingDelete != null}
-        title="Netz löschen?"
+        title={t("networks.deleteTitle")}
         message={
           pendingDelete
-            ? `Netz „${pendingDelete.name}“ wirklich löschen? Attachments müssen vorher weg.`
+            ? t("networks.deleteMessage", { name: pendingDelete.name })
             : ""
         }
-        confirmLabel="Löschen"
+        confirmLabel={t("dialog.delete")}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => {
           if (pendingDelete) remove.mutate(pendingDelete.name);

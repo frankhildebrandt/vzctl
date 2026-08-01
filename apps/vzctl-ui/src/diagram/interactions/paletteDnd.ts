@@ -4,6 +4,7 @@ import {
   SHAPE_NETWORK,
   SHAPE_VM,
 } from "@/diagram/nodes/shapes";
+import { getT } from "@/lib/i18n";
 
 function rolesForKind(kind: PaletteKind): Array<"router" | "docker"> {
   if (kind === "router") return ["router"];
@@ -28,6 +29,7 @@ export function createPalettePreviewNode(
   graph: Graph,
   kind: PaletteKind,
 ): Node {
+  const t = getT();
   if (kind === "network") {
     return graph.createNode({
       shape: SHAPE_NETWORK,
@@ -35,17 +37,20 @@ export function createPalettePreviewNode(
       height: 200,
       attrs: {
         body: { opacity: 0.85 },
-        title: { text: "Netzwerk" },
-        subtitle: { text: "neues Netz" },
-        meta: { text: "shared" },
+        title: { text: t("topo.palette.network") },
+        subtitle: { text: t("topo.previewNewNet") },
+        meta: { text: t("topo.mode.shared") },
       },
       data: { paletteKind: kind },
     });
   }
 
-  const isRouter = kind === "router";
-  const isDocker = kind === "docker";
-  const title = isRouter ? "Router" : isDocker ? "Docker" : "Host";
+  const title =
+    kind === "router"
+      ? t("topo.palette.router")
+      : kind === "docker"
+        ? t("topo.palette.docker")
+        : t("topo.palette.vm");
   return graph.createNode({
     shape: SHAPE_VM,
     width: 200,
@@ -53,12 +58,12 @@ export function createPalettePreviewNode(
     attrs: {
       body: {
         opacity: 0.85,
-        stroke: isRouter ? "#9b2c2c" : isDocker ? "#2a5a8a" : "#1c2b27",
-        fill: isRouter ? "#faf0f0" : isDocker ? "#eef4fa" : "#fffaf0",
+        stroke: kind === "router" ? "#9b2c2c" : kind === "docker" ? "#2a5a8a" : "#1c2b27",
+        fill: kind === "router" ? "#faf0f0" : kind === "docker" ? "#eef4fa" : "#fffaf0",
       },
       title: { text: title },
-      subtitle: { text: "2 CPU · 2 GB" },
-      nics: { text: "eth0 · …" },
+      subtitle: { text: t("topo.previewResources") },
+      nics: { text: `eth0 ${t("common.ellipsis")}` },
     },
     data: { paletteKind: kind },
   });

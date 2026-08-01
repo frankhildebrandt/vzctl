@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "@/lib/i18n";
 
 export function ConfirmDialog({
   open,
   title,
   message,
-  confirmLabel = "Löschen",
-  cancelLabel = "Abbrechen",
+  confirmLabel,
+  cancelLabel,
   busy = false,
   tone = "danger",
   error = null,
@@ -24,6 +25,11 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
+  const resolvedCancel = cancelLabel ?? t("dialog.cancel");
+  const resolvedConfirm =
+    confirmLabel ??
+    (tone === "danger" ? t("dialog.delete") : t("dialog.confirmDefault"));
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -97,7 +103,7 @@ export function ConfirmDialog({
               onCancel();
             }}
           >
-            {cancelLabel}
+            {resolvedCancel}
           </button>
           <button
             ref={confirmRef}
@@ -110,7 +116,7 @@ export function ConfirmDialog({
               onConfirm();
             }}
           >
-            {busy ? `${confirmLabel}…` : confirmLabel}
+            {busy ? t("dialog.busy", { label: resolvedConfirm }) : resolvedConfirm}
           </button>
         </div>
       </div>

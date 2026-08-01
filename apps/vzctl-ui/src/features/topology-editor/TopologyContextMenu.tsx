@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PaletteKind } from "@/features/topology-editor/PaletteIcons";
+import { useT } from "@/lib/i18n";
 
 export type ContextMenuState = {
   /** Screen coordinates for fixed positioning. */
@@ -22,11 +23,14 @@ type Props = {
   onEdit: () => void;
 };
 
-const ADD_ITEMS: Array<{ kind: PaletteKind; label: string }> = [
-  { kind: "network", label: "Netzwerk" },
-  { kind: "vm", label: "Host" },
-  { kind: "router", label: "Router" },
-  { kind: "docker", label: "Docker" },
+const ADD_ITEMS: Array<{
+  kind: PaletteKind;
+  labelKey: "topo.palette.network" | "topo.palette.vm" | "topo.palette.router" | "topo.palette.docker";
+}> = [
+  { kind: "network", labelKey: "topo.palette.network" },
+  { kind: "vm", labelKey: "topo.palette.vm" },
+  { kind: "router", labelKey: "topo.palette.router" },
+  { kind: "docker", labelKey: "topo.palette.docker" },
 ];
 
 export function TopologyContextMenu({
@@ -36,6 +40,7 @@ export function TopologyContextMenu({
   onDelete,
   onEdit,
 }: Props) {
+  const t = useT();
   const rootRef = useRef<HTMLDivElement>(null);
   const [submenuOpen, setSubmenuOpen] = useState(false);
 
@@ -75,7 +80,7 @@ export function TopologyContextMenu({
       className="topology-context-menu"
       style={{ left, top }}
       role="menu"
-      aria-label="Kontextmenü"
+      aria-label={t("topo.contextMenuAria")}
     >
       <div
         className={`topology-context-item has-submenu${submenuOpen ? " open" : ""}`}
@@ -83,7 +88,7 @@ export function TopologyContextMenu({
         onMouseLeave={() => setSubmenuOpen(false)}
       >
         <button type="button" className="topology-context-btn" role="menuitem">
-          Node hinzufügen
+          {t("topo.contextAddNode")}
           <span className="topology-context-caret" aria-hidden>
             ›
           </span>
@@ -101,7 +106,7 @@ export function TopologyContextMenu({
                   onClose();
                 }}
               >
-                {item.label}
+                {t(item.labelKey)}
               </button>
             ))}
           </div>
@@ -117,7 +122,7 @@ export function TopologyContextMenu({
           onClose();
         }}
       >
-        Löschen
+        {t("common.delete")}
       </button>
       <button
         type="button"
@@ -129,7 +134,7 @@ export function TopologyContextMenu({
           onClose();
         }}
       >
-        Bearbeiten
+        {t("topo.contextEdit")}
       </button>
     </div>
   );

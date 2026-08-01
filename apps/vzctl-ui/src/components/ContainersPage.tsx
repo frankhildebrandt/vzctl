@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { getT, useT } from "@/lib/i18n";
 import {
   dockerKeys,
   isContainerRunning,
@@ -31,6 +32,7 @@ export function ContainersPage({
   vmId: string;
   stackPath?: string;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const project = projectFromVmId(vmId);
@@ -83,7 +85,7 @@ export function ContainersPage({
       action: "start" | "stop" | "restart";
       id: string;
     }) => {
-      if (!project) throw new Error("Docker nur mit Projekt");
+      if (!project) throw new Error(getT()("containers.dockerProjectOnly"));
       if (action === "start") return startContainer(project, id);
       if (action === "stop") return stopContainer(project, id);
       return restartContainer(project, id);
@@ -106,8 +108,8 @@ export function ContainersPage({
 
   const runMutation = useMutation({
     mutationFn: async () => {
-      if (!project) throw new Error("Docker nur mit Projekt");
-      if (!image.trim()) throw new Error("Image ist erforderlich");
+      if (!project) throw new Error(getT()("containers.dockerProjectOnly"));
+      if (!image.trim()) throw new Error(getT()("containers.imageRequired"));
       const env = envText
         .split("\n")
         .map((line) => line.trim())
@@ -135,7 +137,7 @@ export function ContainersPage({
       setMessage(null);
     },
     onSuccess: async (id) => {
-      setMessage(`gestartet ${shortContainerId(id)}`);
+      setMessage(t("containers.started", { id: shortContainerId(id) }));
       setShowRun(false);
       setImage("");
       setName("");
@@ -159,15 +161,15 @@ export function ContainersPage({
   const crumbs = stackPath
     ? [
         {
-          label: "Stacks",
+          label: t("crumb.stacks"),
           node: (
             <Link to="/projects" className="crumb-link">
-              Stacks
+              {t("crumb.stacks")}
             </Link>
           ),
         },
         {
-          label: stackName ?? "Stack",
+          label: stackName ?? t("nav.stackFallback"),
           node: (
             <Link
               to="/env"
@@ -191,14 +193,14 @@ export function ContainersPage({
             </Link>
           ),
         },
-        { label: "Containers" },
+        { label: t("nav.containers") },
       ]
     : [
         {
-          label: "VMs",
+          label: t("crumb.vms"),
           node: (
             <Link to="/vms" className="crumb-link">
-              VMs
+              {t("crumb.vms")}
             </Link>
           ),
         },
@@ -214,17 +216,15 @@ export function ContainersPage({
             </Link>
           ),
         },
-        { label: "Containers" },
+        { label: t("nav.containers") },
       ];
 
   if (project == null) {
     return (
       <section>
         <Breadcrumbs items={crumbs} />
-        <h2 className="section-title">Containers</h2>
-        <div className="card error-card">
-          Docker-Context braucht eine Projekt-VM (`project/vm`).
-        </div>
+        <h2 className="section-title">{t("containers.title")}</h2>
+        <div className="card error-card">{t("containers.noProject")}</div>
       </section>
     );
   }
@@ -234,10 +234,10 @@ export function ContainersPage({
       <div className="row" style={{ justifyContent: "space-between", gap: "1rem" }}>
         <div>
           <Breadcrumbs items={crumbs} />
-          <h2 className="section-title">Containers</h2>
+          <h2 className="section-title">{t("containers.title")}</h2>
           <p className="muted">
             {vmId}
-            {running ? null : " · VM nicht running"}
+            {running ? null : t("containers.vmNotRunning")}
           </p>
         </div>
         <div className="toolbar">
@@ -246,7 +246,7 @@ export function ContainersPage({
             disabled={!running || busyId != null}
             onClick={() => setShowRun((v) => !v)}
           >
-            Run
+            {t("containers.run")}
           </button>
         </div>
       </div>
@@ -254,14 +254,14 @@ export function ContainersPage({
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("common.error")}</h3>
           <p>{error}</p>
         </div>
       ) : null}
 
       {showRun ? (
         <div className="card">
-          <h3>Container starten</h3>
+          <h3>{t("containers.runTitle")}</h3>
           <form
             className="form-grid"
             onSubmit={(event) => {
@@ -270,7 +270,7 @@ export function ContainersPage({
             }}
           >
             <label>
-              Image
+              {t("containers.image")}
               <input
                 value={image}
                 onChange={(e) => setImage(e.target.value)}
@@ -280,23 +280,23 @@ export function ContainersPage({
               />
             </label>
             <label>
-              Name
+              {t("containers.name")}
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="optional"
+                placeholder={t("containers.namePlaceholder")}
               />
             </label>
             <label>
-              Ports
+              {t("containers.ports")}
               <input
                 value={ports}
                 onChange={(e) => setPorts(e.target.value)}
-                placeholder="8080:80, 8443:443"
+                placeholder={t("containers.portsPlaceholder")}
               />
             </label>
             <label className="form-span-2">
-              Env (eine Zeile pro KEY=VAL)
+              {t("containers.env")}
               <textarea
                 value={envText}
                 onChange={(e) => setEnvText(e.target.value)}
@@ -305,16 +305,16 @@ export function ContainersPage({
               />
             </label>
             <label className="form-span-2">
-              Command
+              {t("containers.command")}
               <input
                 value={cmd}
                 onChange={(e) => setCmd(e.target.value)}
-                placeholder="optional"
+                placeholder={t("containers.namePlaceholder")}
               />
             </label>
             <div className="row" style={{ gap: "0.5rem" }}>
               <button type="submit" disabled={busyId != null}>
-                {busyId === "run" ? "Start…" : "Start"}
+                {busyId === "run" ? t("containers.startBusy") : t("containers.start")}
               </button>
               <button
                 type="button"
@@ -322,7 +322,7 @@ export function ContainersPage({
                 disabled={busyId != null}
                 onClick={() => setShowRun(false)}
               >
-                Abbrechen
+                {t("common.cancel")}
               </button>
             </div>
           </form>
@@ -331,21 +331,21 @@ export function ContainersPage({
 
       <div className="card">
         {containersQuery.isLoading ? (
-          <p className="muted">Laden…</p>
+          <p className="muted">{t("common.loading")}</p>
         ) : containersQuery.isError ? (
           <p className="muted">{String(containersQuery.error)}</p>
         ) : containers.length === 0 ? (
-          <p className="muted">Keine Container.</p>
+          <p className="muted">{t("containers.empty")}</p>
         ) : (
           <table className="vm-table">
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Image</th>
-                <th>Status</th>
-                <th>IP</th>
-                <th>Ports</th>
+                <th>{t("containers.col.id")}</th>
+                <th>{t("containers.col.name")}</th>
+                <th>{t("containers.col.image")}</th>
+                <th>{t("containers.col.status")}</th>
+                <th>{t("containers.col.ip")}</th>
+                <th>{t("containers.col.ports")}</th>
                 <th />
               </tr>
             </thead>
@@ -367,17 +367,17 @@ export function ContainersPage({
                         {shortContainerId(c.id)}
                       </Link>
                     </td>
-                    <td>{c.names || "—"}</td>
-                    <td className="mono">{c.image || "—"}</td>
+                    <td>{c.names || t("common.emDash")}</td>
+                    <td className="mono">{c.image || t("common.emDash")}</td>
                     <td>
                       <span
                         className={`vm-state ${up ? "state-running" : "state-stopped"}`}
                       >
-                        {c.status || c.state || "—"}
+                        {c.status || c.state || t("common.emDash")}
                       </span>
                     </td>
-                    <td className="mono">{c.ip || "—"}</td>
-                    <td className="mono">{c.ports || "—"}</td>
+                    <td className="mono">{c.ip || t("common.emDash")}</td>
+                    <td className="mono">{c.ports || t("common.emDash")}</td>
                     <td>
                       <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
                         {up ? (
@@ -388,7 +388,7 @@ export function ContainersPage({
                               disabled={busyId != null || !running}
                               onClick={() => setPending({ kind: "stop", container: c })}
                             >
-                              {busyId === `stop:${c.id}` ? "…" : "Stop"}
+                              {busyId === `stop:${c.id}` ? t("common.ellipsis") : t("containers.stop")}
                             </button>
                             <button
                               type="button"
@@ -396,7 +396,7 @@ export function ContainersPage({
                               disabled={busyId != null || !running}
                               onClick={() => setPending({ kind: "restart", container: c })}
                             >
-                              {busyId === `restart:${c.id}` ? "…" : "Restart"}
+                              {busyId === `restart:${c.id}` ? t("common.ellipsis") : t("containers.restart")}
                             </button>
                           </>
                         ) : (
@@ -408,7 +408,7 @@ export function ContainersPage({
                               lifecycle.mutate({ action: "start", id: c.id })
                             }
                           >
-                            {busyId === `start:${c.id}` ? "…" : "Start"}
+                            {busyId === `start:${c.id}` ? t("common.ellipsis") : t("containers.start")}
                           </button>
                         )}
                       </div>
@@ -425,15 +425,23 @@ export function ContainersPage({
         open={pending != null}
         title={
           pending?.kind === "stop"
-            ? "Container stoppen?"
-            : "Container neu starten?"
+            ? t("containers.stopTitle")
+            : t("containers.restartTitle")
         }
         message={
           pending
-            ? `${pending.kind === "stop" ? "Stop" : "Restart"} ${pending.container.names || shortContainerId(pending.container.id)}`
+            ? t("containers.confirmNamed", {
+                action:
+                  pending.kind === "stop"
+                    ? t("containers.stopConfirm")
+                    : t("containers.restartConfirm"),
+                name:
+                  pending.container.names ||
+                  shortContainerId(pending.container.id),
+              })
             : ""
         }
-        confirmLabel={pending?.kind === "stop" ? "Stop" : "Restart"}
+        confirmLabel={pending?.kind === "stop" ? t("containers.stopConfirm") : t("containers.restartConfirm")}
         tone="danger"
         busy={busyId != null}
         onCancel={() => {

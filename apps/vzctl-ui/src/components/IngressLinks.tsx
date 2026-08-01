@@ -1,4 +1,5 @@
 import { openExternalUrl, type IngressInfo } from "@/lib/ingress";
+import { useT } from "@/lib/i18n";
 
 export function IngressLinksCard({
   ingress,
@@ -7,11 +8,13 @@ export function IngressLinksCard({
   ingress: IngressInfo | null;
   loading?: boolean;
 }) {
+  const t = useT();
+
   if (loading && !ingress) {
     return (
       <div className="card ingress-card">
-        <p className="stack-status-kicker">Ingress</p>
-        <p className="muted">URLs werden geladen…</p>
+        <p className="stack-status-kicker">{t("ingress.kicker")}</p>
+        <p className="muted">{t("ingress.loading")}</p>
       </div>
     );
   }
@@ -24,10 +27,12 @@ export function IngressLinksCard({
     <div className="card ingress-card">
       <div className="ingress-head">
         <div>
-          <p className="stack-status-kicker">Ingress</p>
-          <h2 className="ingress-title">Services</h2>
+          <p className="stack-status-kicker">{t("ingress.kicker")}</p>
+          <h2 className="ingress-title">{t("ingress.title")}</h2>
         </div>
-        <span className="muted">{ingress.routes.length} URLs</span>
+        <span className="muted">
+          {t("ingress.urlCount", { n: ingress.routes.length })}
+        </span>
       </div>
 
       <ul className="ingress-list">

@@ -1,10 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useT } from "@/lib/i18n";
 import { listImages, imageKeys } from "@/lib/images";
 import { formatOpenedAt, listProjects, projectKeys } from "@/lib/projects";
 import { listVms, vmKeys } from "@/lib/vms";
 
 export function DashboardPage() {
+  const t = useT();
   const projectsQuery = useQuery({
     queryKey: projectKeys.all,
     queryFn: listProjects,
@@ -27,47 +29,47 @@ export function DashboardPage() {
 
   return (
     <section>
-      <h2 className="section-title">Dashboard</h2>
-      <p className="muted">Überblick über lokale vzctl-Umgebungen.</p>
+      <h2 className="section-title">{t("dashboard.title")}</h2>
+      <p className="muted">{t("dashboard.subtitle")}</p>
 
       <div className="dash-grid">
         <div className="card">
-          <h2>Stacks</h2>
+          <h2>{t("dashboard.stacks")}</h2>
           <p className="dash-stat">{projects.length}</p>
-          <Link to="/projects">Alle Stacks →</Link>
+          <Link to="/projects">{t("dashboard.allStacks")}</Link>
         </div>
         <div className="card">
-          <h2>VMs</h2>
+          <h2>{t("dashboard.vms")}</h2>
           <p className="dash-stat">
-            {vmsQuery.isError ? "—" : vms.length}
+            {vmsQuery.isError ? t("common.emDash") : vms.length}
             {!vmsQuery.isError && vms.length > 0 ? (
               <span className="muted" style={{ fontSize: "0.9rem", marginLeft: "0.4rem" }}>
-                ({running} running)
+                {t("dashboard.runningCount", { n: running })}
               </span>
             ) : null}
           </p>
-          <Link to="/vms">Zu VMs →</Link>
+          <Link to="/vms">{t("dashboard.toVms")}</Link>
         </div>
         <div className="card">
-          <h2>Networks</h2>
-          <p className="muted">Netz-Übersicht folgt.</p>
-          <Link to="/networks">Zu Networks →</Link>
+          <h2>{t("dashboard.networks")}</h2>
+          <p className="muted">{t("dashboard.networksHint")}</p>
+          <Link to="/networks">{t("dashboard.toNetworks")}</Link>
         </div>
         <div className="card">
-          <h2>Images</h2>
+          <h2>{t("dashboard.images")}</h2>
           <p className="dash-stat">
-            {imagesQuery.isError ? "—" : images.length}
+            {imagesQuery.isError ? t("common.emDash") : images.length}
           </p>
-          <Link to="/images">Zu Images →</Link>
+          <Link to="/images">{t("dashboard.toImages")}</Link>
         </div>
       </div>
 
       <div className="card">
-        <h2>Zuletzt geöffnet</h2>
+        <h2>{t("dashboard.recent")}</h2>
         {recent.length === 0 ? (
           <p className="muted">
-            Noch keine Stacks.{" "}
-            <Link to="/projects">Stack hinzufügen</Link>
+            {t("dashboard.noStacks")}{" "}
+            <Link to="/projects">{t("dashboard.addStack")}</Link>
           </p>
         ) : (
           <ul className="project-list">

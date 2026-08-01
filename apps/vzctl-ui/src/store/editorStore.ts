@@ -4,6 +4,7 @@ import {
   emptyDiagramState,
   type DiagramState,
 } from "@/domain/diagram/types";
+import type { ConnectionHint } from "@/application/commands/mutations";
 import type { ValidationIssue } from "@/application/validation/topology";
 import {
   applyAttachNic,
@@ -50,7 +51,7 @@ type EditorStore = {
   reset: () => void;
   setSelection: (selection: SelectionState) => void;
   setPaletteFilter: (filter: string) => void;
-  setConnectionHint: (hint: string | null) => void;
+  setConnectionHint: (hint: ConnectionHint) => void;
   setProjecting: (value: boolean) => void;
   setLastError: (error: string | null) => void;
   markSaved: () => void;

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import {
   createVm,
   createdVmId,
@@ -21,6 +22,7 @@ export function VmForm({
   onCancel: () => void;
   onSubmitReplace?: (input: CreateVmInput) => Promise<void>;
 }) {
+  const t = useT();
   const [id, setId] = useState(initial?.id ?? "");
   const [from, setFrom] = useState(initial?.from ?? "ubuntu-latest");
   const [dataDiskGib, setDataDiskGib] = useState(initial?.dataDiskGib ?? 8);
@@ -68,16 +70,18 @@ export function VmForm({
 
   return (
     <form className="card vm-form" onSubmit={(e) => void submit(e)}>
-      <h3>{mode === "replace" ? "VM ersetzen" : "VM erstellen"}</h3>
+      <h3>{mode === "replace" ? t("vmForm.replaceTitle") : t("vmForm.createTitle")}</h3>
       <p className="muted">
         {mode === "replace"
-          ? "Löscht die bestehende VM und legt sie neu an."
-          : `Image-Alias z. B. ${IMAGE_ALIAS_HINTS.slice(0, 4).join(", ")}.`}
+          ? t("vmForm.replaceHint")
+          : t("vmForm.createHint", {
+              aliases: IMAGE_ALIAS_HINTS.slice(0, 4).join(", "),
+            })}
       </p>
 
       <div className="form-grid">
         <label>
-          ID
+          {t("vmForm.id")}
           <input
             required
             value={id}
@@ -87,7 +91,7 @@ export function VmForm({
           />
         </label>
         <label>
-          From (sealed / alias)
+          {t("vmForm.from")}
           <input
             required
             value={from}
@@ -103,7 +107,7 @@ export function VmForm({
           </datalist>
         </label>
         <label>
-          Data disk (GiB)
+          {t("vmForm.dataDisk")}
           <input
             type="number"
             min={1}
@@ -114,7 +118,7 @@ export function VmForm({
           />
         </label>
         <label>
-          CPUs
+          {t("vmForm.cpus")}
           <input
             type="number"
             min={1}
@@ -124,7 +128,7 @@ export function VmForm({
           />
         </label>
         <label>
-          Memory (MiB oder 2G)
+          {t("vmForm.memory")}
           <input
             value={memory}
             disabled={busy}
@@ -132,7 +136,7 @@ export function VmForm({
           />
         </label>
         <label>
-          Network
+          {t("vmForm.network")}
           <input
             value={network}
             disabled={busy}
@@ -141,7 +145,7 @@ export function VmForm({
           />
         </label>
         <label>
-          Roles (comma)
+          {t("vmForm.roles")}
           <input
             value={roles}
             disabled={busy}
@@ -150,7 +154,7 @@ export function VmForm({
           />
         </label>
         <label>
-          Project
+          {t("vmForm.project")}
           <input
             value={project}
             disabled={busy}
@@ -158,12 +162,11 @@ export function VmForm({
             placeholder="edge-dmz"
           />
           <span className="muted">
-            Mit Project wird die Runtime-ID zu{" "}
-            <code>{`{project}/{id}`}</code>.
+            {t("vmForm.projectHint", { project: "{project}", id: "{id}" })}
           </span>
         </label>
         <label>
-          Root password
+          {t("vmForm.rootPassword")}
           <input
             type="password"
             value={rootPassword}
@@ -180,11 +183,11 @@ export function VmForm({
         <button type="submit" disabled={busy}>
           {busy
             ? mode === "replace"
-              ? "Ersetzen…"
-              : "Erstellen…"
+              ? t("vmForm.replaceBusy")
+              : t("vmForm.createBusy")
             : mode === "replace"
-              ? "Ersetzen"
-              : "Erstellen"}
+              ? t("vmForm.replace")
+              : t("vmForm.create")}
         </button>
         <button
           type="button"
@@ -192,7 +195,7 @@ export function VmForm({
           disabled={busy}
           onClick={onCancel}
         >
-          Abbrechen
+          {t("common.cancel")}
         </button>
       </div>
     </form>

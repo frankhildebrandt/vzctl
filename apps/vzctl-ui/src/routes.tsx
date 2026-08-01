@@ -30,6 +30,7 @@ import {
   IconTrash,
 } from "@/components/IconButton";
 import { DoctorPage } from "@/components/DoctorPage";
+import { ErrorsPage } from "@/components/ErrorsPage";
 import { ResultPanel, type ResultModel } from "@/components/ResultPanel";
 import { IngressLinksCard } from "@/components/IngressLinks";
 import { SettingsPage } from "@/components/SettingsPage";
@@ -70,6 +71,7 @@ import {
   requestHostReboot,
 } from "@/lib/vmnetOrphanRecovery";
 import { TopologyEditor } from "@/features/topology-editor/TopologyEditor";
+import { useT } from "@/lib/i18n";
 import { useEditorStore } from "@/store/editorStore";
 import { DEMO_PROJECT_PATH, enableDemoMode } from "@/lib/demo";
 
@@ -184,6 +186,12 @@ export const doctorRoute = createRoute({
   component: DoctorPage,
 });
 
+export const errorsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/errors",
+  component: ErrorsPage,
+});
+
 export const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -228,6 +236,7 @@ export const envRoute = createRoute({
 });
 
 function ProjectListPage() {
+  const t = useT();
   const navigate = projectsRoute.useNavigate();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -262,9 +271,9 @@ function ProjectListPage() {
   const createMutation = useMutation({
     mutationFn: async () => {
       const name = createName.trim();
-      if (!name) throw new Error("Name angeben");
+      if (!name) throw new Error(t("projects.nameRequired"));
       const { pickDirectory } = await import("@/lib/dialogs");
-      const parent = await pickDirectory("Zielordner für neues Projekt");
+      const parent = await pickDirectory(t("projects.pickParent"));
       if (!parent) return null;
       const sep = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
       const slug = name
@@ -307,10 +316,9 @@ function ProjectListPage() {
     <section>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div>
-          <h2 className="section-title">Stacks</h2>
+          <h2 className="section-title">{t("projects.title")}</h2>
           <p className="muted">
-            Environments mit <code>hypernetwork.config.yaml</code> — Topologie
-            bearbeiten und Apply.
+            {t("projects.subtitle")}
           </p>
         </div>
         <div className="row" style={{ gap: "0.5rem" }}>
@@ -323,25 +331,22 @@ function ProjectListPage() {
               addMutation.mutate();
             }}
           >
-            {addMutation.isPending ? "Öffnen…" : "Öffnen…"}
+            {addMutation.isPending ? t("projects.openBusy") : t("projects.open")}
           </button>
         </div>
       </div>
 
       <div className="card create-project-card">
-        <h3>Neues Projekt</h3>
-        <p className="muted">
-          Legt Ordner + Minimal-<code>hypernetwork.config.yaml</code> an und
-          öffnet den Topologie-Editor.
-        </p>
+        <h3>{t("projects.newTitle")}</h3>
+        <p className="muted">{t("projects.newHint")}</p>
         <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
           <label className="topology-field" style={{ flex: "1 1 12rem" }}>
-            <span className="sr-only">Projektname</span>
+            <span className="sr-only">{t("projects.nameLabel")}</span>
             <input
               value={createName}
               onChange={(e) => setCreateName(e.target.value)}
-              placeholder="Projektname (z. B. edge-lab)"
-              aria-label="Projektname"
+              placeholder={t("projects.namePlaceholder")}
+              aria-label={t("projects.nameLabel")}
               disabled={busy}
             />
           </label>
@@ -353,25 +358,22 @@ function ProjectListPage() {
               createMutation.mutate();
             }}
           >
-            {createMutation.isPending ? "Anlegen…" : "Anlegen…"}
+            {createMutation.isPending ? t("projects.createBusy") : t("projects.create")}
           </button>
         </div>
       </div>
 
       {error ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("common.error")}</h3>
           <p>{error}</p>
         </div>
       ) : null}
 
       {projects.length === 0 ? (
         <div className="card">
-          <h2>Noch keine Stacks</h2>
-          <p className="muted">
-            Öffne ein Verzeichnis mit <code>hypernetwork.config.yaml</code>.
-            Die Auswahl bleibt lokal gespeichert.
-          </p>
+          <h2>{t("projects.emptyTitle")}</h2>
+          <p className="muted">{t("projects.emptyHint")}</p>
         </div>
       ) : (
         <ul className="project-list">
@@ -385,7 +387,7 @@ function ProjectListPage() {
                 <span className="project-name">{project.name}</span>
                 <span className="path">{project.path}</span>
                 <span className="muted project-meta">
-                  Zuletzt: {formatOpenedAt(project.openedAt)}
+                  {t("stack.openedAt", { date: formatOpenedAt(project.openedAt) })}
                 </span>
               </Link>
               <button
@@ -396,7 +398,7 @@ function ProjectListPage() {
                   setPendingRemove({ path: project.path, name: project.name })
                 }
               >
-                Entfernen
+                {t("projects.remove")}
               </button>
             </li>
           ))}
@@ -405,13 +407,13 @@ function ProjectListPage() {
 
       <ConfirmDialog
         open={pendingRemove != null}
-        title="Aus Liste entfernen"
+        title={t("projects.removeTitle")}
         message={
           pendingRemove
-            ? `„${pendingRemove.name}“ aus der Liste entfernen? Die Dateien und der Stack bleiben erhalten.`
+            ? t("projects.removeMessage", { name: pendingRemove.name })
             : ""
         }
-        confirmLabel="Entfernen"
+        confirmLabel={t("projects.removeLabel")}
         busy={removeMutation.isPending}
         onCancel={() => {
           if (!removeMutation.isPending) setPendingRemove(null);
@@ -425,6 +427,7 @@ function ProjectListPage() {
 }
 
 function ProjectDetailPage() {
+  const t = useT();
   const { path, tab: tabParam } = envRoute.useSearch();
   const tab = tabParam ?? "ops";
   const navigate = envRoute.useNavigate();
@@ -458,7 +461,7 @@ function ProjectDetailPage() {
     rememberProject(path);
     void queryClient.invalidateQueries({ queryKey: projectKeys.all });
     setResult({ kind: "idle", raw: "" });
-    setBusyLabel("Status laden…");
+    setBusyLabel(t("stack.statusLoading"));
     setLogOpen(false);
     progress.reset();
     setTopologyError(null);
@@ -508,6 +511,7 @@ function ProjectDetailPage() {
         applyActive: progress.state.active,
         applyMode: progress.state.mode,
         applyFailed: Boolean(progress.state.finished && progress.state.error),
+        t,
       }),
     [
       inventory,
@@ -515,6 +519,7 @@ function ProjectDetailPage() {
       progress.state.mode,
       progress.state.finished,
       progress.state.error,
+      t,
     ],
   );
 
@@ -526,7 +531,7 @@ function ProjectDetailPage() {
 
   useEffect(() => {
     if (statusQuery.isLoading) {
-      setBusyLabel("Status laden…");
+      setBusyLabel(t("stack.statusLoading"));
       return;
     }
     if (statusQuery.isError) {
@@ -565,7 +570,7 @@ function ProjectDetailPage() {
       purge?: boolean;
     }) => runVzctl(path, command, { force, purge }),
     onMutate: ({ command, purge }) => {
-      setBusyLabel(purge ? "stack entfernen…" : `${command}…`);
+      setBusyLabel(purge ? t("apply.busy.down") : t("apply.busy.mode", { mode: command }));
       setOrphan(null);
       setOrphanError(null);
       if (command === "up" || command === "apply" || command === "down") {
@@ -621,7 +626,7 @@ function ProjectDetailPage() {
     orphanBusy;
 
   async function runStatus() {
-    setBusyLabel("Status laden…");
+    setBusyLabel(t("stack.statusLoading"));
     try {
       const response = await statusQuery.refetch();
       if (response.error) throw response.error;
@@ -635,7 +640,7 @@ function ProjectDetailPage() {
   }
 
   async function runDiff() {
-    setBusyLabel("Diff laden…");
+    setBusyLabel(t("stack.diffLoading"));
     try {
       const response = await diffQuery.refetch();
       if (response.error) throw response.error;
@@ -657,41 +662,38 @@ function ProjectDetailPage() {
     switch (confirm) {
       case "up":
         return {
-          title: "Stack up",
-          message:
-            "Stack up ausführen? Breaking Changes (z. B. Recreate) werden mit --force übernommen.",
-          confirmLabel: "Up ausführen",
+          title: t("stack.confirmUpTitle"),
+          message: t("stack.confirmUpMessage"),
+          confirmLabel: t("stack.confirmUpLabel"),
           tone: "default",
         };
       case "apply":
         return {
-          title: "Stack apply",
-          message:
-            "Stack apply ausführen? Breaking Changes (z. B. VM-Recreate) werden mit --force übernommen.",
-          confirmLabel: "Apply ausführen",
+          title: t("stack.confirmApplyTitle"),
+          message: t("stack.confirmApplyMessage"),
+          confirmLabel: t("stack.confirmApplyLabel"),
           tone: "default",
         };
       case "down":
         return {
-          title: "Stack down",
-          message: "Stack down — laufende VMs stoppen? Ressourcen bleiben erhalten.",
-          confirmLabel: "Down ausführen",
+          title: t("stack.confirmDownTitle"),
+          message: t("stack.confirmDownMessage"),
+          confirmLabel: t("stack.confirmDownLabel"),
           tone: "danger",
         };
       case "purge":
         return {
-          title: "Stack entfernen",
-          message:
-            "Stack hart stoppen und löschen (VMs inkl. Disks, Netze, Ports, Ingress, OIDC, DNS)? Kein graceful Shutdown — Datenverlust ist egal. Das Projektverzeichnis bleibt erhalten.",
-          confirmLabel: "Stack entfernen",
+          title: t("stack.confirmPurgeTitle"),
+          message: t("stack.confirmPurgeMessage"),
+          confirmLabel: t("stack.confirmPurgeLabel"),
           tone: "danger",
         };
       case "remove":
       default:
         return {
-          title: "Projekt entfernen",
-          message: `„${title}“ aus der Liste entfernen? Die Dateien auf der Festplatte bleiben erhalten.`,
-          confirmLabel: "Entfernen",
+          title: t("stack.confirmRemoveTitle"),
+          message: t("stack.confirmRemoveMessage", { name: title }),
+          confirmLabel: t("stack.confirmRemoveLabel"),
           tone: "danger",
         };
     }
@@ -720,7 +722,11 @@ function ProjectDetailPage() {
       setOrphan(null);
       setResult({
         kind: "text",
-        raw: `CIDR ${orphan.cidr} → ${result.newCidr} (${result.networkNames.join(", ")}); starte up erneut…`,
+        raw: t("stack.orphanRecovery", {
+          old: orphan.cidr,
+          new: result.newCidr,
+          nets: result.networkNames.join(", "),
+        }),
       });
       mutate.mutate({ command: "up", force: true });
     } catch (err) {
@@ -737,10 +743,10 @@ function ProjectDetailPage() {
           <Breadcrumbs
             items={[
               {
-                label: "Stacks",
+                label: t("projects.title"),
                 node: (
                   <Link to="/projects" className="crumb-link">
-                    Stacks
+                    {t("projects.title")}
                   </Link>
                 ),
               },
@@ -753,7 +759,7 @@ function ProjectDetailPage() {
               <p className="path detail-path">{path}</p>
               {project ? (
                 <p className="muted detail-meta">
-                  Zuletzt geöffnet: {formatOpenedAt(project.openedAt)}
+                  {t("stack.lastOpened", { date: formatOpenedAt(project.openedAt) })}
                 </p>
               ) : null}
             </>
@@ -761,7 +767,7 @@ function ProjectDetailPage() {
             <>
               <h2 className="detail-title">{title}</h2>
               <p className="path detail-path">{path}</p>
-              <p className="muted detail-meta">Stack-Konfiguration</p>
+              <p className="muted detail-meta">{t("stack.configMeta")}</p>
             </>
           ) : null}
         </div>
@@ -771,10 +777,10 @@ function ProjectDetailPage() {
             <div
               className="detail-toolbar"
               role="toolbar"
-              aria-label="Projektaktionen"
+              aria-label={t("stack.toolbarAria")}
             >
               <IconButton
-                label="Diff"
+                label={t("stack.diff")}
                 showLabel
                 disabled={busy}
                 tone="quiet"
@@ -783,7 +789,7 @@ function ProjectDetailPage() {
                 <IconDiff />
               </IconButton>
               <IconButton
-                label="Up"
+                label={t("stack.up")}
                 showLabel
                 disabled={busy}
                 tone="quiet"
@@ -792,7 +798,7 @@ function ProjectDetailPage() {
                 <IconPlay />
               </IconButton>
               <IconButton
-                label="Apply"
+                label={t("stack.apply")}
                 showLabel
                 disabled={busy}
                 tone="primary"
@@ -801,7 +807,7 @@ function ProjectDetailPage() {
                 <IconApply />
               </IconButton>
               <IconButton
-                label="Down"
+                label={t("stack.down")}
                 showLabel
                 disabled={busy}
                 tone="danger"
@@ -810,7 +816,7 @@ function ProjectDetailPage() {
                 <IconStop />
               </IconButton>
               <IconButton
-                label="Stack entfernen"
+                label={t("stack.remove")}
                 showLabel
                 disabled={busy}
                 tone="danger"
@@ -819,7 +825,7 @@ function ProjectDetailPage() {
                 <IconPurge />
               </IconButton>
               <IconButton
-                label="DNS / OIDC / CA Status"
+                label={t("stack.statusBtn")}
                 disabled={busy}
                 tone="quiet"
                 onClick={() => void runStatus()}
@@ -828,7 +834,7 @@ function ProjectDetailPage() {
               </IconButton>
               <span className="toolbar-sep" aria-hidden />
               <IconButton
-                label="Aus Liste entfernen"
+                label={t("stack.removeFromList")}
                 disabled={busy}
                 tone="quiet"
                 onClick={() => setConfirm("remove")}
@@ -840,10 +846,10 @@ function ProjectDetailPage() {
             <div
               className="detail-toolbar"
               role="toolbar"
-              aria-label="Stack Config"
+              aria-label={t("stack.configToolbarAria")}
             >
               <IconButton
-                label="Aus Liste entfernen"
+                label={t("stack.removeFromList")}
                 disabled={busy}
                 tone="quiet"
                 onClick={() => setConfirm("remove")}
@@ -855,7 +861,7 @@ function ProjectDetailPage() {
             <div
               className="detail-toolbar"
               role="toolbar"
-              aria-label="Topologie"
+              aria-label={t("stack.topologyToolbarAria")}
             >
               <div
                 className="detail-toolbar-slot"
@@ -863,7 +869,7 @@ function ProjectDetailPage() {
               />
               <span className="toolbar-sep" aria-hidden />
               <IconButton
-                label="Aus Liste entfernen"
+                label={t("stack.removeFromList")}
                 disabled={busy}
                 tone="quiet"
                 onClick={() => setConfirm("remove")}
@@ -878,7 +884,7 @@ function ProjectDetailPage() {
       {tab === "topology" ? (
         topologyError ? (
           <div className="card error-card">
-            <h3>Topologie konnte nicht geladen werden</h3>
+            <h3>{t("stack.topologyLoadFail")}</h3>
             <p>{topologyError}</p>
           </div>
         ) : (
@@ -889,12 +895,8 @@ function ProjectDetailPage() {
         )
       ) : tab === "config" ? (
         <section>
-          <h2 className="section-title">Stack Config</h2>
-          <p className="muted">
-            Stack-spezifische Einstellungen in{" "}
-            <code>hypernetwork.config.yaml</code>. Host-Defaults unter{" "}
-            <Link to="/settings">Settings</Link>.
-          </p>
+          <h2 className="section-title">{t("stack.configTitle")}</h2>
+          <p className="muted">{t("stack.configSubtitle")}</p>
           <ProjectOidcUplinkSection projectPath={path} />
         </section>
       ) : (
@@ -902,9 +904,7 @@ function ProjectDetailPage() {
       <StackStatusCard
         title={title}
         path={path}
-        openedAt={
-          project ? formatOpenedAt(project.openedAt) : null
-        }
+        openedAt={project?.openedAt ?? null}
         phase={stack.phase}
         label={stack.label}
         inventory={stack.inventory}
@@ -930,8 +930,12 @@ function ProjectDetailPage() {
         <div className="apply-banner" role="status">
           <span>
             {progress.state.error
-              ? `${progress.state.mode ?? "apply"} fehlgeschlagen`
-              : `${progress.state.mode ?? "apply"} fertig`}
+              ? t("apply.finished.fail", {
+                  mode: progress.state.mode ?? t("apply.modeDefault"),
+                })
+              : t("apply.finished.ok", {
+                  mode: progress.state.mode ?? t("apply.modeDefault"),
+                })}
           </span>
           <div className="apply-banner-actions">
             <button
@@ -939,7 +943,7 @@ function ProjectDetailPage() {
               className="debug-btn"
               onClick={() => setLogOpen((open) => !open)}
             >
-              {logOpen ? "Log aus" : "Log"}
+              {logOpen ? t("apply.logOff") : t("apply.logOn")}
             </button>
             <button
               type="button"
@@ -949,7 +953,7 @@ function ProjectDetailPage() {
                 setLogOpen(false);
               }}
             >
-              Schließen
+              {t("apply.close")}
             </button>
           </div>
         </div>

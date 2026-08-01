@@ -9,6 +9,12 @@ import type { DiagramState } from "@/domain/diagram/types";
 import { networkCellId, vmCellId, attachmentEdgeId } from "@/domain/hypernetwork/ids";
 import { validateEnvironment, type ValidationIssue } from "@/application/validation/topology";
 import { ipInCidr, parseCidr } from "@/application/validation/topology";
+import { getT, type MessageKey, type MessageParams } from "@/lib/i18n";
+
+export type ConnectionHint = {
+  key: MessageKey;
+  params?: MessageParams;
+} | null;
 
 export type EditorSnapshot = {
   env: Environment;
@@ -25,8 +31,12 @@ export type EditorUiState = {
   projecting: boolean;
   paletteFilter: string;
   lastError: string | null;
-  connectionHint: string | null;
+  connectionHint: ConnectionHint;
 };
+
+function mutationError(key: MessageKey, params?: MessageParams): never {
+  throw new Error(getT()(key, params));
+}
 
 function cloneEnv(env: Environment): Environment {
   return structuredClone(env);
@@ -54,9 +64,9 @@ function hostOffsetIp(
 /** Next free guest IP (.10+), or .2 for docker-backend networks. */
 function nextIp(env: Environment, networkName: string): string {
   const net = env.spec.networks[networkName];
-  if (!net) throw new Error(`Netz ${networkName} fehlt`);
+  if (!net) mutationError("topo.mutation.netMissing", { name: networkName });
   const parsed = parseCidr(net.cidr);
-  if (!parsed) throw new Error(`Ungültiges CIDR ${net.cidr}`);
+  if (!parsed) mutationError("topo.mutation.invalidCidr", { cidr: net.cidr });
   const used = new Set<string>();
   for (const vm of Object.values(env.spec.vms)) {
     for (const nic of vm.networks) {
@@ -66,10 +76,10 @@ function nextIp(env: Environment, networkName: string): string {
   if (net.backend === "docker") {
     const bip = hostOffsetIp(net.cidr, 2);
     if (!bip || !ipInCidr(bip, net.cidr)) {
-      throw new Error(`Kein Router-.2 in ${networkName}`);
+      mutationError("topo.mutation.noRouterIp", { name: networkName });
     }
     if (used.has(bip)) {
-      throw new Error(`Docker-Netz ${networkName} hat bereits einen Owner (.2)`);
+      mutationError("topo.mutation.dockerOwnerExists", { name: networkName });
     }
     return bip;
   }
@@ -77,7 +87,7 @@ function nextIp(env: Environment, networkName: string): string {
     const ip = hostOffsetIp(net.cidr, host);
     if (ip && !used.has(ip) && ipInCidr(ip, net.cidr)) return ip;
   }
-  throw new Error(`Kein freier IP-Slot in ${networkName}`);
+  mutationError("topo.mutation.noFreeIp", { name: networkName });
 }
 
 export function applyCreateNetwork(
@@ -94,7 +104,7 @@ export function applyCreateNetwork(
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
-  if (env.spec.networks[name]) throw new Error(`Netz ${name} existiert`);
+  if (env.spec.networks[name]) mutationError("topo.mutation.netExists", { name });
   const backend = opts?.backend ?? "vmnet";
   const natEgress = backend === "docker" ? false : (opts?.natEgress ?? true);
   env.spec.networks[name] = {
@@ -138,7 +148,7 @@ export function applyCreateVm(
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
-  if (env.spec.vms[name]) throw new Error(`VM ${name} existiert`);
+  if (env.spec.vms[name]) mutationError("topo.mutation.vmExists", { name });
   const networks = [];
   if (opts.networkName && env.spec.networks[opts.networkName]) {
     networks.push({
@@ -147,7 +157,7 @@ export function applyCreateVm(
     });
   } else {
     const firstNet = Object.keys(env.spec.networks)[0];
-    if (!firstNet) throw new Error("Kein Netzwerk vorhanden — zuerst Netz anlegen");
+    if (!firstNet) mutationError("topo.mutation.noNetworkFirst");
     networks.push({ name: firstNet, ip: nextIp(env, firstNet) });
   }
   env.spec.vms[name] = {
@@ -251,10 +261,12 @@ export function applyAttachNic(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const vm = env.spec.vms[vmName];
-  if (!vm) throw new Error(`VM ${vmName} fehlt`);
-  if (!env.spec.networks[networkName]) throw new Error(`Netz ${networkName} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: vmName });
+  if (!env.spec.networks[networkName]) {
+    mutationError("topo.mutation.netMissing", { name: networkName });
+  }
   if (vm.networks.some((n) => n.name === networkName)) {
-    throw new Error("Attachment existiert bereits");
+    mutationError("topo.mutation.attachmentExists");
   }
   const becameMulti = vm.networks.length === 1;
   vm.networks.push({
@@ -283,15 +295,15 @@ export function applyReassignNic(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const vm = env.spec.vms[vmName];
-  if (!vm) throw new Error(`VM ${vmName} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: vmName });
   if (!env.spec.networks[toNetwork]) {
-    throw new Error(`Netz ${toNetwork} fehlt`);
+    mutationError("topo.mutation.netMissing", { name: toNetwork });
   }
   if (vm.networks.some((n) => n.name === toNetwork)) {
-    throw new Error("Attachment existiert bereits");
+    mutationError("topo.mutation.attachmentExists");
   }
   const idx = vm.networks.findIndex((n) => n.name === fromNetwork);
-  if (idx < 0) throw new Error(`Interface ${fromNetwork} fehlt`);
+  if (idx < 0) mutationError("topo.mutation.interfaceMissing", { name: fromNetwork });
   vm.networks[idx] = {
     name: toNetwork,
     ip: nextIp(env, toNetwork),
@@ -316,9 +328,9 @@ export function applyDetachNic(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const vm = env.spec.vms[vmName];
-  if (!vm) throw new Error(`VM ${vmName} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: vmName });
   if (vm.networks.length <= 1) {
-    throw new Error("Letztes Interface kann nicht entfernt werden");
+    mutationError("topo.mutation.lastNic");
   }
   vm.networks = vm.networks.filter((n) => n.name !== networkName);
   delete diagram.edges[attachmentEdgeId(vmName, networkName)];
@@ -349,9 +361,9 @@ export function applyAssignPrimaryNetwork(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const vm = env.spec.vms[vmName];
-  if (!vm) throw new Error(`VM ${vmName} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: vmName });
   if (!env.spec.networks[networkName]) {
-    throw new Error(`Netz ${networkName} fehlt`);
+    mutationError("topo.mutation.netMissing", { name: networkName });
   }
   if (vm.networks[0]?.name === networkName) {
     if (position) {
@@ -429,9 +441,7 @@ export function applyResizeNode(
 function assertValidResourceName(name: string): string {
   const trimmed = name.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(trimmed)) {
-    throw new Error(
-      "Name: 1–63 Zeichen, startet alphanumerisch ([A-Za-z0-9._-])",
-    );
+    mutationError("topo.mutation.nameInvalid");
   }
   return trimmed;
 }
@@ -463,8 +473,10 @@ export function applyRenameVm(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const vm = env.spec.vms[oldName];
-  if (!vm) throw new Error(`VM ${oldName} fehlt`);
-  if (env.spec.vms[newName]) throw new Error(`VM ${newName} existiert bereits`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: oldName });
+  if (env.spec.vms[newName]) {
+    mutationError("topo.mutation.vmExistsRename", { name: newName });
+  }
 
   env.spec.vms[newName] = vm;
   delete env.spec.vms[oldName];
@@ -501,9 +513,9 @@ export function applyRenameNetwork(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const net = env.spec.networks[oldName];
-  if (!net) throw new Error(`Netz ${oldName} fehlt`);
+  if (!net) mutationError("topo.mutation.netMissing", { name: oldName });
   if (env.spec.networks[newName]) {
-    throw new Error(`Netz ${newName} existiert bereits`);
+    mutationError("topo.mutation.netExistsRename", { name: newName });
   }
 
   env.spec.networks[newName] = net;
@@ -551,7 +563,7 @@ export function applyUpdateVm(
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const vm = env.spec.vms[name];
-  if (!vm) throw new Error(`VM ${name} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name });
   Object.assign(vm, patch);
   return { env, diagram: snap.diagram };
 }
@@ -570,7 +582,7 @@ export function applyUpdateNetwork(
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   const net = env.spec.networks[name];
-  if (!net) throw new Error(`Netz ${name} fehlt`);
+  if (!net) mutationError("topo.mutation.netMissing", { name });
   Object.assign(net, patch);
   if (patch.backend === "docker") {
     net.natEgress = false;
@@ -605,9 +617,9 @@ export function applyUpdateNicIp(
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const vm = env.spec.vms[vmName];
-  if (!vm) throw new Error(`VM ${vmName} fehlt`);
+  if (!vm) mutationError("topo.mutation.vmMissing", { name: vmName });
   const nic = vm.networks.find((n) => n.name === networkName);
-  if (!nic) throw new Error(`NIC ${networkName} fehlt`);
+  if (!nic) mutationError("topo.mutation.nicMissing", { name: networkName });
   nic.ip = ip;
   return { env, diagram: snap.diagram };
 }
@@ -669,7 +681,7 @@ export function applySetAllowRules(
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const policy = env.spec.policies.find((p) => p.name === policyName);
-  if (!policy) throw new Error(`Policy ${policyName} fehlt`);
+  if (!policy) mutationError("topo.mutation.policyMissing", { name: policyName });
   policy.allow = allow;
   return { env, diagram: snap.diagram };
 }

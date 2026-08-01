@@ -1,41 +1,9 @@
 import { useForm, useFieldArray } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import type { AllowRule, Protocol } from "@/domain/hypernetwork/schema";
-
-const RuleFormSchema = z.object({
-  rules: z.array(
-    z
-      .object({
-        to: z.string().min(1, "Zielnetz wählen"),
-        proto: z.enum(["tcp", "udp", "icmp"]),
-        portsText: z.string(),
-      })
-      .superRefine((val, ctx) => {
-        if (val.proto === "icmp") {
-          if (val.portsText.trim()) {
-            ctx.addIssue({
-              code: "custom",
-              message: "ICMP ohne Ports",
-              path: ["portsText"],
-            });
-          }
-          return;
-        }
-        const ports = parsePorts(val.portsText);
-        if (ports.length === 0) {
-          ctx.addIssue({
-            code: "custom",
-            message: "Mindestens ein Port (1–65535)",
-            path: ["portsText"],
-          });
-        }
-      }),
-  ),
-});
-
-type RuleForm = z.infer<typeof RuleFormSchema>;
+import { useT } from "@/lib/i18n";
 
 function parsePorts(text: string): number[] {
   return text
@@ -65,6 +33,45 @@ export function PolicyRuleEditor({
   allow,
   onChange,
 }: Props) {
+  const t = useT();
+
+  const RuleFormSchema = useMemo(
+    () =>
+      z.object({
+        rules: z.array(
+          z
+            .object({
+              to: z.string().min(1, t("firewall.error.target")),
+              proto: z.enum(["tcp", "udp", "icmp"]),
+              portsText: z.string(),
+            })
+            .superRefine((val, ctx) => {
+              if (val.proto === "icmp") {
+                if (val.portsText.trim()) {
+                  ctx.addIssue({
+                    code: "custom",
+                    message: t("firewall.error.icmpNoPorts"),
+                    path: ["portsText"],
+                  });
+                }
+                return;
+              }
+              const ports = parsePorts(val.portsText);
+              if (ports.length === 0) {
+                ctx.addIssue({
+                  code: "custom",
+                  message: t("firewall.error.portRequired"),
+                  path: ["portsText"],
+                });
+              }
+            }),
+        ),
+      }),
+    [t],
+  );
+
+  type RuleForm = z.infer<typeof RuleFormSchema>;
+
   const form = useForm<RuleForm>({
     resolver: zodResolver(RuleFormSchema),
     defaultValues: {
@@ -103,9 +110,7 @@ export function PolicyRuleEditor({
   return (
     <div className="policy-editor">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h4>
-          Policy <code>{policyName}</code>
-        </h4>
+        <h4>{t("firewall.policyTitle", { name: policyName })}</h4>
         <button
           type="button"
           className="secondary"
@@ -119,27 +124,27 @@ export function PolicyRuleEditor({
             })
           }
         >
-          Regel +
+          {t("firewall.addRule")}
         </button>
       </div>
       <p className="muted">
-        Netzwerk <strong>{networkName}</strong> · forward: deny-all
+        {t("firewall.networkForward", { name: networkName })}
       </p>
       <form onSubmit={submit} className="policy-form">
         {fields.length === 0 ? (
-          <p className="muted">Keine Allow-Regeln.</p>
+          <p className="muted">{t("firewall.noRules")}</p>
         ) : (
           <ol className="policy-rule-list">
             {fields.map((field, index) => (
               <li key={field.id} className="policy-rule">
                 <div className="policy-rule-head">
-                  <span>#{index + 1}</span>
+                  <span>{t("firewall.ruleN", { n: index + 1 })}</span>
                   <div className="row" style={{ gap: "0.35rem" }}>
                     <button
                       type="button"
                       className="secondary"
                       disabled={index === 0}
-                      aria-label="Nach oben"
+                      aria-label={t("firewall.moveUp")}
                       onClick={() => move(index, index - 1)}
                     >
                       ↑
@@ -148,7 +153,7 @@ export function PolicyRuleEditor({
                       type="button"
                       className="secondary"
                       disabled={index === fields.length - 1}
-                      aria-label="Nach unten"
+                      aria-label={t("firewall.moveDown")}
                       onClick={() => move(index, index + 1)}
                     >
                       ↓
@@ -156,28 +161,28 @@ export function PolicyRuleEditor({
                     <button
                       type="button"
                       className="secondary"
-                      aria-label="Duplizieren"
+                      aria-label={t("firewall.duplicate")}
                       onClick={() => {
                         const current = form.getValues(`rules.${index}`);
                         append({ ...current });
                       }}
                     >
-                      Duplizieren
+                      {t("firewall.duplicate")}
                     </button>
                     <button
                       type="button"
                       className="secondary"
-                      aria-label="Löschen"
+                      aria-label={t("common.delete")}
                       onClick={() => remove(index)}
                     >
-                      Löschen
+                      {t("common.delete")}
                     </button>
                   </div>
                 </div>
                 <label className="topology-field">
-                  <span>Ziel</span>
+                  <span>{t("firewall.target")}</span>
                   <select {...form.register(`rules.${index}.to`)}>
-                    <option value="internet">internet</option>
+                    <option value="internet">{t("firewall.targetInternet")}</option>
                     {networks
                       .filter((n) => n !== networkName)
                       .map((n) => (
@@ -185,11 +190,13 @@ export function PolicyRuleEditor({
                           {n}
                         </option>
                       ))}
-                    <option value={networkName}>{networkName} (self)</option>
+                    <option value={networkName}>
+                      {t("firewall.targetSelf", { name: networkName })}
+                    </option>
                   </select>
                 </label>
                 <label className="topology-field">
-                  <span>Protokoll</span>
+                  <span>{t("firewall.proto")}</span>
                   <select {...form.register(`rules.${index}.proto`)}>
                     <option value="tcp">tcp</option>
                     <option value="udp">udp</option>
@@ -197,10 +204,10 @@ export function PolicyRuleEditor({
                   </select>
                 </label>
                 <label className="topology-field">
-                  <span>Ports</span>
+                  <span>{t("firewall.ports")}</span>
                   <input
                     {...form.register(`rules.${index}.portsText`)}
-                    placeholder="80, 443"
+                    placeholder={t("firewall.portsPlaceholder")}
                     aria-invalid={
                       Boolean(form.formState.errors.rules?.[index]?.portsText)
                     }
@@ -220,7 +227,7 @@ export function PolicyRuleEditor({
             ))}
           </ol>
         )}
-        <button type="submit">Regeln übernehmen</button>
+        <button type="submit">{t("firewall.applyRules")}</button>
       </form>
     </div>
   );

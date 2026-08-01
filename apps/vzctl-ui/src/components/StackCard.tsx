@@ -13,6 +13,7 @@ import {
   IconStop,
 } from "@/components/IconButton";
 import { StackVmList } from "@/components/StackVmList";
+import { useT } from "@/lib/i18n";
 import {
   formatOpenedAt,
   type Project,
@@ -42,6 +43,7 @@ export function StackCard({
 }: {
   project: Project;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,8 +71,9 @@ export function StackCard({
         applyActive: busyMode != null,
         applyMode: busyMode,
         applyFailed: false,
+        t,
       }),
-    [inventory, busyMode],
+    [inventory, busyMode, t],
   );
 
   const suggestedCidr = useMemo(() => {
@@ -136,30 +139,30 @@ export function StackCard({
     switch (confirm) {
       case "up":
         return {
-          title: "Stack starten",
-          message: `„${project.name}“ starten (up --force)?`,
-          confirmLabel: "Starten",
+          title: t("stackCard.confirmUpTitle"),
+          message: t("stackCard.confirmUpMessage", { name: project.name }),
+          confirmLabel: t("stackCard.confirmUpLabel"),
           tone: "default",
         };
       case "down":
         return {
-          title: "Stack stoppen",
-          message: `„${project.name}“ stoppen? Ressourcen bleiben erhalten.`,
-          confirmLabel: "Stoppen",
+          title: t("stackCard.confirmDownTitle"),
+          message: t("stackCard.confirmDownMessage", { name: project.name }),
+          confirmLabel: t("stackCard.confirmDownLabel"),
           tone: "danger",
         };
       case "purge":
         return {
-          title: "Stack löschen",
-          message: `„${project.name}“ hart stoppen und löschen (VMs inkl. Disks, Netze, Ports, Ingress, OIDC, DNS)? Kein graceful Shutdown. Das Verzeichnis bleibt erhalten.`,
-          confirmLabel: "Löschen",
+          title: t("stackCard.confirmPurgeTitle"),
+          message: t("stackCard.confirmPurgeMessage", { name: project.name }),
+          confirmLabel: t("stackCard.confirmPurgeLabel"),
           tone: "danger",
         };
       default:
         return {
           title: "",
           message: "",
-          confirmLabel: "OK",
+          confirmLabel: t("dialog.confirmDefault"),
           tone: "default",
         };
     }
@@ -194,12 +197,40 @@ export function StackCard({
 
   const copy = confirmCopy();
 
+  const vmSummary =
+    vms != null
+      ? t("stackCard.summary", {
+          running: vms.running,
+          desired: vms.desired,
+          starting:
+            vms.starting > 0
+              ? t("stackCard.summaryStarting", { n: vms.starting })
+              : "",
+          stopping:
+            vms.stopping > 0
+              ? t("stackCard.summaryStopping", { n: vms.stopping })
+              : "",
+          stopped:
+            vms.stopped > 0
+              ? t("stackCard.summaryStopped", { n: vms.stopped })
+              : "",
+          missing:
+            vms.missing > 0
+              ? t("stackCard.summaryMissing", { n: vms.missing })
+              : "",
+        })
+      : statusQuery.isError
+        ? t("stackCard.statusUnreadable")
+        : statusQuery.isFetching
+          ? t("stackCard.statusLoading")
+          : t("stackCard.noInventory");
+
   return (
     <>
       <article className={`card stack-card phase-${phase}`}>
         <div className="stack-card-head">
           <div className="stack-card-title">
-            <p className="stack-status-kicker">Stack</p>
+            <p className="stack-status-kicker">{t("stackCard.kicker")}</p>
             <Link
               to="/env"
               search={{ path: project.path }}
@@ -213,27 +244,13 @@ export function StackCard({
             </p>
           </div>
           <span className={`stack-pill phase-${phase}`}>
-            {statusQuery.isFetching && !inventory ? "…" : stack.label}
+            {statusQuery.isFetching && !inventory
+              ? t("common.ellipsis")
+              : stack.label}
           </span>
         </div>
 
-        {vms ? (
-          <p className="muted stack-status-summary">
-            {vms.running}/{vms.desired} running
-            {vms.starting > 0 ? ` · ${vms.starting} starting` : ""}
-            {vms.stopping > 0 ? ` · ${vms.stopping} stopping` : ""}
-            {vms.stopped > 0 ? ` · ${vms.stopped} stopped` : ""}
-            {vms.missing > 0 ? ` · ${vms.missing} missing` : ""}
-          </p>
-        ) : (
-          <p className="muted stack-status-summary">
-            {statusQuery.isError
-              ? "Status nicht lesbar"
-              : statusQuery.isFetching
-                ? "Status wird geladen…"
-                : "Kein Stack-Inventar"}
-          </p>
-        )}
+        <p className="muted stack-status-summary">{vmSummary}</p>
 
         <StackVmList items={items} stackPath={project.path} />
 
@@ -244,10 +261,10 @@ export function StackCard({
         <div
           className="stack-card-actions"
           role="toolbar"
-          aria-label="Stack-Aktionen"
+          aria-label={t("stackCard.toolbarAria")}
         >
           <IconButton
-            label="Starten"
+            label={t("stackCard.start")}
             showLabel
             disabled={busy}
             tone="primary"
@@ -259,7 +276,7 @@ export function StackCard({
             <IconPlay />
           </IconButton>
           <IconButton
-            label="Stoppen"
+            label={t("stackCard.stop")}
             showLabel
             disabled={busy}
             tone="danger"
@@ -271,7 +288,7 @@ export function StackCard({
             <IconStop />
           </IconButton>
           <IconButton
-            label="Löschen"
+            label={t("stackCard.purge")}
             showLabel
             disabled={busy}
             tone="danger"
@@ -287,7 +304,7 @@ export function StackCard({
             search={{ path: project.path }}
             className="stack-card-open"
           >
-            Details →
+            {t("stackCard.details")}
           </Link>
         </div>
       </article>
@@ -328,7 +345,7 @@ export function StackCard({
 }
 
 export function StackCardsSection({
-  title = "Stacks",
+  title,
   projects,
   emptyHint,
 }: {
@@ -336,15 +353,18 @@ export function StackCardsSection({
   projects: Project[];
   emptyHint?: ReactNode;
 }) {
+  const t = useT();
+  const sectionTitle = title ?? t("projects.title");
+
   if (projects.length === 0) {
     return (
       <div className="card">
-        {title ? <h2>{title}</h2> : null}
+        {sectionTitle ? <h2>{sectionTitle}</h2> : null}
         <p className="muted">
           {emptyHint ?? (
             <>
-              Noch keine Stacks.{" "}
-              <Link to="/projects">Stack hinzufügen</Link>
+              {t("stackCard.emptyTitle")}{" "}
+              <Link to="/projects">{t("stackCard.emptyLink")}</Link>
             </>
           )}
         </p>
@@ -354,7 +374,7 @@ export function StackCardsSection({
 
   return (
     <section className="stack-cards-section">
-      {title ? <h2 className="section-title">{title}</h2> : null}
+      {sectionTitle ? <h2 className="section-title">{sectionTitle}</h2> : null}
       <div className="stack-cards">
         {projects.map((project) => (
           <StackCard key={project.path} project={project} />

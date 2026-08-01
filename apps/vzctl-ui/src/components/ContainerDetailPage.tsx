@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
+import { getT, useT } from "@/lib/i18n";
 import {
   dockerKeys,
   inspectContainer,
@@ -30,6 +31,7 @@ export function ContainerDetailPage({
   containerId: string;
   stackPath?: string;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const project = projectFromVmId(vmId);
   const [showShell, setShowShell] = useState(false);
@@ -93,7 +95,7 @@ export function ContainerDetailPage({
 
   const lifecycle = useMutation({
     mutationFn: async (action: "start" | "stop" | "restart") => {
-      if (!project) throw new Error("Docker nur mit Projekt");
+      if (!project) throw new Error(getT()("containers.dockerProjectOnly"));
       if (action === "start") return startContainer(project, containerId);
       if (action === "stop") return stopContainer(project, containerId);
       return restartContainer(project, containerId);
@@ -115,15 +117,15 @@ export function ContainerDetailPage({
   const crumbs = stackPath
     ? [
         {
-          label: "Stacks",
+          label: t("crumb.stacks"),
           node: (
             <Link to="/projects" className="crumb-link">
-              Stacks
+              {t("crumb.stacks")}
             </Link>
           ),
         },
         {
-          label: stackName ?? "Stack",
+          label: stackName ?? t("nav.stackFallback"),
           node: (
             <Link
               to="/env"
@@ -148,7 +150,7 @@ export function ContainerDetailPage({
           ),
         },
         {
-          label: "Containers",
+          label: t("nav.containers"),
           node: (
             <Link
               to="/vms/$vmId/containers"
@@ -156,7 +158,7 @@ export function ContainerDetailPage({
               search={stackPath ? { stackPath } : {}}
               className="crumb-link"
             >
-              Containers
+              {t("nav.containers")}
             </Link>
           ),
         },
@@ -164,10 +166,10 @@ export function ContainerDetailPage({
       ]
     : [
         {
-          label: "VMs",
+          label: t("crumb.vms"),
           node: (
             <Link to="/vms" className="crumb-link">
-              VMs
+              {t("crumb.vms")}
             </Link>
           ),
         },
@@ -184,14 +186,14 @@ export function ContainerDetailPage({
           ),
         },
         {
-          label: "Containers",
+          label: t("nav.containers"),
           node: (
             <Link
               to="/vms/$vmId/containers"
               params={{ vmId: encodeVmIdParam(vmId) }}
               className="crumb-link"
             >
-              Containers
+              {t("nav.containers")}
             </Link>
           ),
         },
@@ -203,9 +205,7 @@ export function ContainerDetailPage({
       <section>
         <Breadcrumbs items={crumbs} />
         <h2 className="section-title">{displayName}</h2>
-        <div className="card error-card">
-          Docker-Context braucht eine Projekt-VM (`project/vm`).
-        </div>
+        <div className="card error-card">{t("containers.noProject")}</div>
       </section>
     );
   }
@@ -218,7 +218,7 @@ export function ContainerDetailPage({
           <h2 className="section-title">{displayName}</h2>
           <p className="muted">
             <span className={`vm-state ${up ? "state-running" : "state-stopped"}`}>
-              {listed?.status || state || "—"}
+              {listed?.status || state || t("common.emDash")}
             </span>
             {" · "}
             <span className="mono">{shortContainerId(containerId)}</span>
@@ -233,7 +233,7 @@ export function ContainerDetailPage({
                 disabled={busy != null || !running}
                 onClick={() => setPending("stop")}
               >
-                {busy === "stop" ? "Stop…" : "Stop"}
+                {busy === "stop" ? `${t("containers.stop")}…` : t("containers.stop")}
               </button>
               <button
                 type="button"
@@ -241,7 +241,7 @@ export function ContainerDetailPage({
                 disabled={busy != null || !running}
                 onClick={() => setPending("restart")}
               >
-                {busy === "restart" ? "Restart…" : "Restart"}
+                {busy === "restart" ? `${t("containers.restart")}…` : t("containers.restart")}
               </button>
             </>
           ) : (
@@ -250,7 +250,7 @@ export function ContainerDetailPage({
               disabled={busy != null || !running}
               onClick={() => lifecycle.mutate("start")}
             >
-              {busy === "start" ? "Start…" : "Start"}
+              {busy === "start" ? t("containers.startBusy") : t("containers.start")}
             </button>
           )}
           <button
@@ -259,7 +259,7 @@ export function ContainerDetailPage({
             disabled={!running || !up || busy != null}
             onClick={() => setShowShell((v) => !v)}
           >
-            Shell
+            {t("vmDetail.shell")}
           </button>
         </div>
       </div>
@@ -267,7 +267,7 @@ export function ContainerDetailPage({
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
         <div className="card error-card">
-          <h3>Fehler</h3>
+          <h3>{t("common.error")}</h3>
           <p>{error}</p>
         </div>
       ) : null}
@@ -275,13 +275,13 @@ export function ContainerDetailPage({
       {showShell ? (
         <div className="card terminal-card">
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <h3>Container Shell</h3>
+            <h3>{t("containerDetail.shellTitle")}</h3>
             <button
               type="button"
               className="secondary"
               onClick={() => setShowShell(false)}
             >
-              Schließen
+              {t("common.close")}
             </button>
           </div>
           <Terminal
@@ -294,13 +294,13 @@ export function ContainerDetailPage({
 
       <div className="dash-grid">
         <div className="card">
-          <h3>Overview</h3>
+          <h3>{t("containerDetail.overview")}</h3>
           <dl className="kv">
-            <dt>ID</dt>
+            <dt>{t("containerDetail.id")}</dt>
             <dd className="mono">{containerId}</dd>
-            <dt>Name</dt>
+            <dt>{t("containerDetail.name")}</dt>
             <dd>{displayName}</dd>
-            <dt>Image</dt>
+            <dt>{t("containerDetail.image")}</dt>
             <dd className="mono">
               {listed?.image ||
                 (typeof inspectQuery.data?.Config === "object" &&
@@ -308,17 +308,17 @@ export function ContainerDetailPage({
                 typeof (inspectQuery.data.Config as Record<string, unknown>).Image ===
                   "string"
                   ? String((inspectQuery.data.Config as Record<string, unknown>).Image)
-                  : "—")}
+                  : t("common.emDash"))}
             </dd>
-            <dt>Ports</dt>
-            <dd className="mono">{listed?.ports || "—"}</dd>
+            <dt>{t("containerDetail.ports")}</dt>
+            <dd className="mono">{listed?.ports || t("common.emDash")}</dd>
           </dl>
         </div>
 
         <div className="card">
-          <h3>Inspect</h3>
+          <h3>{t("containerDetail.inspect")}</h3>
           {inspectQuery.isLoading ? (
-            <p className="muted">Laden…</p>
+            <p className="muted">{t("common.loading")}</p>
           ) : inspectQuery.isError ? (
             <p className="muted">{String(inspectQuery.error)}</p>
           ) : (
@@ -331,9 +331,9 @@ export function ContainerDetailPage({
 
       <ConfirmDialog
         open={pending != null}
-        title={pending === "stop" ? "Container stoppen?" : "Container neu starten?"}
-        message={`${pending === "stop" ? "Stop" : "Restart"} ${displayName}`}
-        confirmLabel={pending === "stop" ? "Stop" : "Restart"}
+        title={pending === "stop" ? t("containerDetail.stopTitle") : t("containerDetail.restartTitle")}
+        message={`${pending === "stop" ? t("containers.stopConfirm") : t("containers.restartConfirm")} ${displayName}`}
+        confirmLabel={pending === "stop" ? t("containers.stopConfirm") : t("containers.restartConfirm")}
         tone="danger"
         busy={busy != null}
         onCancel={() => {

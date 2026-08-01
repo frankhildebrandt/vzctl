@@ -97,12 +97,17 @@ export function assertEnvelopeOk(envelope: VzctlEnvelope, fallback = "vzctl fail
   }
 }
 
-type JobResponse = {
+export type JobResponse = {
   jobId: string;
   kind?: string;
   status: string;
   result?: unknown;
   error?: string;
+  log?: string[];
+};
+
+export type WaitForJobOptions = {
+  onUpdate?: (job: JobResponse) => void;
 };
 
 export async function ensureStackId(path: string): Promise<string> {
@@ -113,9 +118,13 @@ export async function ensureStackId(path: string): Promise<string> {
   return created.id;
 }
 
-export async function waitForJob(jobId: string): Promise<VzctlEnvelope> {
+export async function waitForJob(
+  jobId: string,
+  options: WaitForJobOptions = {},
+): Promise<VzctlEnvelope> {
   for (let i = 0; i < 3_600; i += 1) {
     const job = await api.get<JobResponse>(`/v1/jobs/${encodeId(jobId)}`);
+    options.onUpdate?.(job);
     if (job.status === "succeeded") {
       return parseEnvelope(job.result ?? { status: "ok", exit_code: 0 });
     }
@@ -240,10 +249,11 @@ export async function pickEnvironment(): Promise<string | null> {
   const { isDemoMode, DEMO_PROJECT_PATH } = await import("@/lib/demo");
   if (isDemoMode()) return DEMO_PROJECT_PATH;
   const { open } = await import("@tauri-apps/plugin-dialog");
+  const { getT } = await import("@/lib/i18n");
   const selected = await open({
     directory: true,
     multiple: false,
-    title: "Open vzctl Environment",
+    title: getT()("dialog.openEnvironment"),
   });
   if (!selected) return null;
   return typeof selected === "string" ? selected : String(selected);

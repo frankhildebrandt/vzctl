@@ -33,6 +33,7 @@ import {
   IconSave,
   IconUndo,
 } from "@/components/IconButton";
+import { useT } from "@/lib/i18n";
 
 type Props = {
   projectPath: string;
@@ -51,6 +52,7 @@ function focusInspectorName() {
 }
 
 export function TopologyEditor({ projectPath, toolbarHost }: Props) {
+  const t = useT();
   const graphRef = useRef<Graph | null>(null);
   const dndRef = useRef<Dnd | null>(null);
   const env = useEditorStore((s) => s.env);
@@ -192,7 +194,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
 
   const onSave = async () => {
     if (!env) return;
-    setBusy("Speichern…");
+    setBusy(t("topo.saveBusy"));
     setValidateMsg(null);
     try {
       await saveProjectFlexible(projectPath, env, diagram);
@@ -201,14 +203,12 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
         const raw = await runVzctl(projectPath, "validate");
         const envelope = parseEnvelope(raw);
         if (envelope.status === "fail" || (envelope.exit_code ?? 0) !== 0) {
-          setValidateMsg(
-            "Gespeichert — CLI-Validate meldet Fehler (siehe Summary).",
-          );
+          setValidateMsg(t("topo.savedValidateFail"));
         } else {
-          setValidateMsg("Gespeichert und validiert.");
+          setValidateMsg(t("topo.savedValidated"));
         }
       } catch {
-        setValidateMsg("Gespeichert (CLI-Validate nicht verfügbar).");
+        setValidateMsg(t("topo.savedNoValidate"));
       }
     } catch (err) {
       setLastError(String(err instanceof Error ? err.message : err));
@@ -231,7 +231,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
   };
 
   const errorCount = validation.filter((v) => v.severity === "error").length;
-  const saveLabel = busy ?? (dirty ? "Speichern*" : "Speichern");
+  const saveLabel = busy ?? (dirty ? t("topo.saveDirty") : t("topo.save"));
   const showHints = validation.length > 0 || Boolean(validateMsg);
 
   const toolbar = (
@@ -246,7 +246,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
         <IconSave />
       </IconButton>
       <IconButton
-        label="Undo"
+        label={t("topo.undo")}
         showLabel
         disabled={pastLen === 0}
         tone="quiet"
@@ -255,7 +255,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
         <IconUndo />
       </IconButton>
       <IconButton
-        label="Redo"
+        label={t("topo.redo")}
         showLabel
         disabled={futureLen === 0}
         tone="quiet"
@@ -263,11 +263,11 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
       >
         <IconRedo />
       </IconButton>
-      <IconButton label="Fit View" showLabel tone="quiet" onClick={onFit}>
+      <IconButton label={t("topo.fitView")} showLabel tone="quiet" onClick={onFit}>
         <IconFit />
       </IconButton>
       <IconButton
-        label="Auto-Layout"
+        label={t("topo.autoLayout")}
         showLabel
         tone="quiet"
         onClick={onAutoLayout}
@@ -280,9 +280,9 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
           aria-live="polite"
         >
           {errorCount > 0
-            ? `${errorCount} Fehler`
+            ? t("topo.errorsCount", { n: errorCount })
             : validation.length > 0
-              ? `${validation.length} Hinweise`
+              ? t("topo.hintsCount", { n: validation.length })
               : null}
           {validateMsg
             ? `${validation.length > 0 || errorCount > 0 ? " · " : ""}${validateMsg}`
@@ -302,7 +302,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
       ) : null}
       {connectionHint ? (
         <div className="topology-banner warn" role="status">
-          {connectionHint}
+          {t(connectionHint.key, connectionHint.params)}
         </div>
       ) : null}
       <div className="topology-body">

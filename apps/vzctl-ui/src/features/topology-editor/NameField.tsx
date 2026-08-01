@@ -1,4 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
+import { useT } from "@/lib/i18n";
 
 type Props = {
   label?: string;
@@ -9,11 +10,13 @@ type Props = {
 
 /** Local draft; commits on blur or Enter. Escape resets. */
 export function NameField({
-  label = "Name",
+  label,
   value,
   onCommit,
   disabled,
 }: Props) {
+  const t = useT();
+  const fieldLabel = label ?? t("topo.field.name");
   const [draft, setDraft] = useState(value);
 
   useEffect(() => {
@@ -41,14 +44,14 @@ export function NameField({
 
   return (
     <label className="topology-field">
-      <span>{label}</span>
+      <span>{fieldLabel}</span>
       <input
         type="text"
         value={draft}
         disabled={disabled}
         spellCheck={false}
         autoComplete="off"
-        aria-label={label}
+        aria-label={fieldLabel}
         data-topology-name=""
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}

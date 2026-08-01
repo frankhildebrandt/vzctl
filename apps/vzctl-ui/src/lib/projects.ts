@@ -1,4 +1,7 @@
 import { api, encodeId } from "@/lib/api";
+import { localeToBcp47 } from "@/lib/i18n/detect";
+import type { LocaleId } from "@/lib/i18n/types";
+import { useSettingsStore } from "@/store/settingsStore";
 import { basename } from "@/lib/vzctl";
 
 const STORAGE_KEY = "vzctl.ui.projects.v1";
@@ -110,13 +113,16 @@ export function getProject(path: string): Project | undefined {
   return readLocal().find((project) => project.path === path);
 }
 
-export function formatOpenedAt(openedAt: number): string {
+export function formatOpenedAt(
+  openedAt: number,
+  locale: LocaleId = useSettingsStore.getState().locale,
+): string {
   try {
-    return new Intl.DateTimeFormat(undefined, {
+    return new Intl.DateTimeFormat(localeToBcp47(locale), {
       dateStyle: "medium",
       timeStyle: "short",
     }).format(new Date(openedAt));
   } catch {
-    return new Date(openedAt).toLocaleString();
+    return new Date(openedAt).toLocaleString(localeToBcp47(locale));
   }
 }

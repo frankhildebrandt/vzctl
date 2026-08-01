@@ -927,6 +927,78 @@ button.secondary:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+.errors-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.error-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.error-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.error-entry-code {
+  font-size: 0.8rem;
+}
+
+.error-entry-message {
+  margin: 0 0 0.75rem !important;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.error-entry-kv {
+  margin: 0 0 0.5rem;
+}
+
+.error-entry-details,
+.error-entry-stack pre {
+  margin: 0.5rem 0 0;
+  padding: 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.error-entry-stack {
+  margin-top: 0.5rem;
+}
+
+.error-entry-stack summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted, #666);
+}
+
+.out-copy-inline {
+  flex-shrink: 0;
+}
+
 .out {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -2479,6 +2551,15 @@ button:focus-visible,
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+.locale-card {
+  min-height: 4.5rem;
+  justify-content: center;
+}
+
+.locale-card .theme-card-meta {
+  gap: 0.25rem;
 }
 
 .theme-preview {

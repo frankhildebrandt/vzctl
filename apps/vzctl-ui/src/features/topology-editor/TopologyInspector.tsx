@@ -2,8 +2,12 @@ import { useMemo, useState } from "react";
 import { useEditorStore } from "@/store/editorStore";
 import { PolicyRuleEditor } from "@/features/firewall-rules/PolicyRuleEditor";
 import { NameField } from "@/features/topology-editor/NameField";
+import { formatValidationIssue } from "@/application/validation/formatIssue";
+import type { ValidationIssue } from "@/application/validation/topology";
+import { useT } from "@/lib/i18n";
 
 export function TopologyInspector() {
+  const t = useT();
   const env = useEditorStore((s) => s.env);
   const selection = useEditorStore((s) => s.selection);
   const validation = useEditorStore((s) => s.validation);
@@ -41,9 +45,9 @@ export function TopologyInspector() {
 
   if (!env) {
     return (
-      <aside className="topology-inspector" aria-label="Inspector">
-        <h3 className="topology-panel-title">Inspector</h3>
-        <p className="muted">Kein Projekt geladen.</p>
+      <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+        <h3 className="topology-panel-title">{t("topo.inspector")}</h3>
+        <p className="muted">{t("topo.noProject")}</p>
       </aside>
     );
   }
@@ -58,11 +62,11 @@ export function TopologyInspector() {
       (n) => !vm.networks.some((x) => x.name === n),
     );
     return (
-      <aside className="topology-inspector" aria-label="Inspector">
-        <h3 className="topology-panel-title">VM · {name}</h3>
+      <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+        <h3 className="topology-panel-title">{t("topo.vmTitle", { name })}</h3>
         <NameField value={name} onCommit={(next) => renameVm(name, next)} />
         <label className="topology-field">
-          <span>CPUs</span>
+          <span>{t("topo.field.cpus")}</span>
           <input
             type="number"
             min={1}
@@ -73,7 +77,7 @@ export function TopologyInspector() {
           />
         </label>
         <label className="topology-field">
-          <span>Memory</span>
+          <span>{t("topo.field.memory")}</span>
           <input
             type="text"
             value={String(vm.memory ?? "2048MiB")}
@@ -81,7 +85,7 @@ export function TopologyInspector() {
           />
         </label>
         <label className="topology-field">
-          <span>dataDisk</span>
+          <span>{t("topo.field.dataDisk")}</span>
           <input
             type="text"
             value={vm.dataDisk}
@@ -89,7 +93,7 @@ export function TopologyInspector() {
           />
         </label>
         <fieldset className="topology-fieldset">
-          <legend>Roles</legend>
+          <legend>{t("topo.field.roles")}</legend>
           {(["router", "docker"] as const).map((role) => (
             <label key={role} className="topology-check">
               <input
@@ -106,13 +110,13 @@ export function TopologyInspector() {
             </label>
           ))}
         </fieldset>
-        <h4>Interfaces</h4>
+        <h4>{t("topo.interfaces")}</h4>
         <ul className="topology-nic-list">
           {vm.networks.map((nic) => (
             <li key={nic.name}>
               <strong>{nic.name}</strong>
               <input
-                aria-label={`IP für ${nic.name}`}
+                aria-label={t("topo.ipFor", { name: nic.name })}
                 value={nic.ip}
                 onChange={(e) => updateNicIp(name, nic.name, e.target.value)}
               />
@@ -122,14 +126,14 @@ export function TopologyInspector() {
                 disabled={vm.networks.length <= 1}
                 onClick={() => detachNic(name, nic.name)}
               >
-                Trennen
+                {t("topo.detach")}
               </button>
             </li>
           ))}
         </ul>
         {unusedNets.length > 0 ? (
           <label className="topology-field">
-            <span>Netz anhängen</span>
+            <span>{t("topo.attachNet")}</span>
             <select
               defaultValue=""
               onChange={(e) => {
@@ -137,7 +141,7 @@ export function TopologyInspector() {
                 e.target.value = "";
               }}
             >
-              <option value="">— wählen —</option>
+              <option value="">{t("topo.attachSelect")}</option>
               {unusedNets.map((n) => (
                 <option key={n} value={n}>
                   {n}
@@ -163,21 +167,21 @@ export function TopologyInspector() {
     const policy =
       env.spec.policies.find((p) => p.network === name) ?? null;
     return (
-      <aside className="topology-inspector" aria-label="Inspector">
-        <h3 className="topology-panel-title">Netz · {name}</h3>
+      <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+        <h3 className="topology-panel-title">{t("topo.netTitle", { name })}</h3>
         <NameField
           value={name}
           onCommit={(next) => renameNetwork(name, next)}
         />
         <label className="topology-field">
-          <span>CIDR</span>
+          <span>{t("topo.field.cidr")}</span>
           <input
             value={net.cidr}
             onChange={(e) => updateNetwork(name, { cidr: e.target.value })}
           />
         </label>
         <label className="topology-field">
-          <span>Mode</span>
+          <span>{t("topo.field.mode")}</span>
           <select
             value={net.mode}
             onChange={(e) =>
@@ -186,12 +190,12 @@ export function TopologyInspector() {
               })
             }
           >
-            <option value="shared">shared</option>
-            <option value="host">host</option>
+            <option value="shared">{t("topo.mode.shared")}</option>
+            <option value="host">{t("topo.mode.host")}</option>
           </select>
         </label>
         <label className="topology-field">
-          <span>Backend</span>
+          <span>{t("topo.field.backend")}</span>
           <select
             value={net.backend ?? "vmnet"}
             onChange={(e) =>
@@ -200,17 +204,12 @@ export function TopologyInspector() {
               })
             }
           >
-            <option value="vmnet">vmnet</option>
-            <option value="docker">docker (Bridge/bip)</option>
+            <option value="vmnet">{t("topo.backend.vmnet")}</option>
+            <option value="docker">{t("topo.backend.docker")}</option>
           </select>
         </label>
         {net.backend === "docker" ? (
-          <p className="muted">
-            Logisches Docker-Netz: Owner-VM braucht{" "}
-            <code>roles: [docker, router]</code>, Attachment-IP{" "}
-            <code>.2</code>, plus ein vmnet-Parent. NAT-Egress und DHCP sind
-            aus.
-          </p>
+          <p className="muted">{t("topo.dockerBackendHint")}</p>
         ) : null}
         <label className="topology-check">
           <input
@@ -219,7 +218,7 @@ export function TopologyInspector() {
             disabled={net.backend === "docker"}
             onChange={(e) => updateNetwork(name, { dhcp: e.target.checked })}
           />
-          DHCP
+          {t("topo.field.dhcp")}
         </label>
         <label className="topology-check">
           <input
@@ -230,12 +229,12 @@ export function TopologyInspector() {
               updateNetwork(name, { natEgress: e.target.checked })
             }
           />
-          Internet (NAT-Egress)
+          {t("topo.field.natEgress")}
         </label>
-        <h4>Firewall-Policy</h4>
+        <h4>{t("topo.firewallPolicy")}</h4>
         {!policy ? (
           <button type="button" onClick={() => ensurePolicy(name)}>
-            Policy anlegen
+            {t("topo.createPolicy")}
           </button>
         ) : (
           <PolicyRuleEditor
@@ -264,20 +263,19 @@ export function TopologyInspector() {
 
   if (selectedNodeId?.startsWith("igw:")) {
     return (
-      <aside className="topology-inspector" aria-label="Inspector">
-        <h3 className="topology-panel-title">Internet (Wolke)</h3>
+      <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+        <h3 className="topology-panel-title">{t("topo.igwTitle")}</h3>
         <p className="muted">
-          Visuell: Host-Gateway <code>.0</code> auf Netz{" "}
-          <code>{selectedNodeId.slice(4)}</code>. Nicht in YAML gespeichert.
+          {t("topo.igwHint", { net: selectedNodeId.slice(4) })}
         </p>
       </aside>
     );
   }
 
   return (
-    <aside className="topology-inspector" aria-label="Inspector">
-      <h3 className="topology-panel-title">Inspector</h3>
-      <p className="muted">Element auswählen, um Eigenschaften zu bearbeiten.</p>
+    <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+      <h3 className="topology-panel-title">{t("topo.inspector")}</h3>
+      <p className="muted">{t("topo.selectHint")}</p>
       <IssuesList
         issues={validation}
         onFocus={(nodeId) =>
@@ -289,9 +287,10 @@ export function TopologyInspector() {
 }
 
 function EmptyInspector() {
+  const t = useT();
   return (
-    <aside className="topology-inspector" aria-label="Inspector">
-      <p className="muted">Auswahl ungültig.</p>
+    <aside className="topology-inspector" aria-label={t("topo.inspector")}>
+      <p className="muted">{t("topo.invalidSelection")}</p>
     </aside>
   );
 }
@@ -300,25 +299,21 @@ function IssuesList({
   issues,
   onFocus,
 }: {
-  issues: Array<{
-    id: string;
-    severity: string;
-    message: string;
-    nodeId?: string;
-  }>;
+  issues: ValidationIssue[];
   onFocus: (nodeId?: string) => void;
 }) {
+  const t = useT();
   if (issues.length === 0) {
     return (
       <div className="topology-issues">
-        <h4>Validierung</h4>
-        <p className="muted">Keine Probleme.</p>
+        <h4>{t("topo.validation")}</h4>
+        <p className="muted">{t("topo.noIssues")}</p>
       </div>
     );
   }
   return (
     <div className="topology-issues">
-      <h4>Validierung ({issues.length})</h4>
+      <h4>{t("topo.validationCount", { n: issues.length })}</h4>
       <ul>
         {issues.map((issue) => (
           <li key={issue.id}>
@@ -328,7 +323,7 @@ function IssuesList({
               onClick={() => onFocus(issue.nodeId)}
             >
               <span className="issue-sev">{issue.severity}</span>
-              {issue.message}
+              {formatValidationIssue(issue, t)}
             </button>
           </li>
         ))}
@@ -348,6 +343,7 @@ function RouteSection({
   onUpsert: (r: { name: string; from: string; to: string; via: string }) => void;
   onDelete: (name: string) => void;
 }) {
+  const t = useT();
   const routes = env.spec.routes.filter(
     (r) => r.from === networkName || r.to === networkName,
   );
@@ -360,9 +356,9 @@ function RouteSection({
 
   return (
     <div className="topology-routes">
-      <h4>Routes</h4>
+      <h4>{t("topo.routes")}</h4>
       {routes.length === 0 ? (
-        <p className="muted">Keine Routes für dieses Netz.</p>
+        <p className="muted">{t("topo.noRoutes")}</p>
       ) : (
         <ul>
           {routes.map((r) => (
@@ -375,7 +371,7 @@ function RouteSection({
                 className="secondary"
                 onClick={() => onDelete(r.name)}
               >
-                Löschen
+                {t("topo.routeDelete")}
               </button>
             </li>
           ))}
@@ -384,7 +380,7 @@ function RouteSection({
       {routers.length > 0 && nets.length > 1 ? (
         <div className="topology-route-form">
           <label className="topology-field">
-            <span>Zielnetz</span>
+            <span>{t("topo.routeTarget")}</span>
             <select value={to} onChange={(e) => setTo(e.target.value)}>
               {nets
                 .filter((n) => n !== networkName)
@@ -396,7 +392,7 @@ function RouteSection({
             </select>
           </label>
           <label className="topology-field">
-            <span>Via Router</span>
+            <span>{t("topo.routeVia")}</span>
             <select value={via} onChange={(e) => setVia(e.target.value)}>
               {routers.map((n) => (
                 <option key={n} value={n}>
@@ -417,11 +413,11 @@ function RouteSection({
               })
             }
           >
-            Route anlegen
+            {t("topo.routeCreate")}
           </button>
         </div>
       ) : (
-        <p className="muted">Route braucht Router-VM und ≥2 Netze.</p>
+        <p className="muted">{t("topo.routeNeedsRouter")}</p>
       )}
     </div>
   );
