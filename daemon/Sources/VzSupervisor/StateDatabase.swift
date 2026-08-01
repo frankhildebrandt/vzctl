@@ -104,6 +104,18 @@ final class StateDatabase {
                     name TEXT NOT NULL,
                     opened_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS edge_projects (
+                    project TEXT PRIMARY KEY,
+                    host_services_json TEXT NOT NULL DEFAULT '[]',
+                    ingress_json TEXT,
+                    oidc_json TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS edge_meta (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    generation INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT OR IGNORE INTO edge_meta (singleton, generation) VALUES (1, 0);
                 """
             )
             // Older DBs: add nat_egress if missing (ignore duplicate-column errors).
@@ -459,6 +471,106 @@ final class StateDatabase {
             }
             return records
         }
+    }
+
+    func edgeProjects() throws -> [EdgeProjectRecord] {
+        try withStatement(
+            """
+            SELECT project, host_services_json, ingress_json, oidc_json, updated_at
+            FROM edge_projects ORDER BY project;
+            """
+        ) { statement in
+            var records: [EdgeProjectRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                records.append(
+                    EdgeProjectRecord(
+                        project: text(statement, 0),
+                        hostServices: try decodeJSON(text(statement, 1)),
+                        ingress: try optionalText(statement, 2).map { try decodeJSON($0) },
+                        oidc: try optionalText(statement, 3).map { try decodeJSON($0) },
+                        updatedAt: text(statement, 4)
+                    )
+                )
+            }
+            return records
+        }
+    }
+
+    func setEdgeHostServices(project: String, hosts: JSONValue) throws {
+        try upsertEdgeProject(project: project, column: "host_services_json", value: hosts)
+    }
+
+    func setEdgeIngress(project: String, value: JSONValue?) throws {
+        try upsertEdgeProject(project: project, column: "ingress_json", value: value)
+    }
+
+    func setEdgeOIDC(project: String, value: JSONValue?) throws {
+        try upsertEdgeProject(project: project, column: "oidc_json", value: value)
+    }
+
+    func nextEdgeGeneration() throws -> Int64 {
+        try reconcileLock.withLock {
+            try execute("BEGIN IMMEDIATE;")
+            do {
+                try execute("UPDATE edge_meta SET generation = generation + 1 WHERE singleton = 1;")
+                let generation = try withStatement(
+                    "SELECT generation FROM edge_meta WHERE singleton = 1;"
+                ) { statement -> Int64 in
+                    guard sqlite3_step(statement) == SQLITE_ROW else { throw databaseError() }
+                    return sqlite3_column_int64(statement, 0)
+                }
+                try execute("COMMIT;")
+                return generation
+            } catch {
+                try? execute("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    private func upsertEdgeProject(project: String, column: String, value: JSONValue?) throws {
+        guard ["host_services_json", "ingress_json", "oidc_json"].contains(column) else {
+            throw SupervisorError.database("invalid edge project column")
+        }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let encoded = try value.map(encodeJSON)
+        let defaultHosts = try encodeJSON(.array([]))
+        try withStatement(
+            """
+            INSERT OR IGNORE INTO edge_projects
+                (project, host_services_json, updated_at)
+            VALUES (?, ?, ?);
+            """
+        ) { statement in
+            try bind(project, at: 1, to: statement)
+            try bind(defaultHosts, at: 2, to: statement)
+            try bind(now, at: 3, to: statement)
+            try stepDone(statement)
+        }
+        try withStatement(
+            "UPDATE edge_projects SET \(column) = ?, updated_at = ? WHERE project = ?;"
+        ) { statement in
+            if let encoded { try bind(encoded, at: 1, to: statement) }
+            else { sqlite3_bind_null(statement, 1) }
+            try bind(now, at: 2, to: statement)
+            try bind(project, at: 3, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    private func encodeJSON(_ value: JSONValue) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw SupervisorError.database("cannot encode edge JSON")
+        }
+        return text
+    }
+
+    private func decodeJSON(_ value: String) throws -> JSONValue {
+        guard let data = value.data(using: .utf8) else {
+            throw SupervisorError.database("cannot decode edge JSON")
+        }
+        return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 
     func stackState(stackID: String) throws -> StackStateRecord {
@@ -929,6 +1041,14 @@ enum ReconcileDatabaseError: Error {
     case generationChanged
     case noIncomplete
     case leaseLost
+}
+
+struct EdgeProjectRecord: Sendable {
+    let project: String
+    let hostServices: JSONValue
+    let ingress: JSONValue?
+    let oidc: JSONValue?
+    let updatedAt: String
 }
 
 struct StackStateRecord {

@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import VzDaemonKit
 
@@ -29,14 +30,12 @@ final class SupervisorServer: @unchecked Sendable {
     private let stateDirectory: URL
     private let startedAt = ContinuousClock.now
     private let stateLock = NSLock()
+    private let edgeReconcileLock = NSLock()
     private var listener: Int32 = -1
     private var ownsSocket = false
     private let database: StateDatabase
     private let networkRegistry: NetworkRegistry
-    private let dnsServer: DNSServer
-    private let portProxy = PortForwardProxy()
-    private let gatewayIngressProxy = HostGatewayIngressProxy()
-    private let embeddedProcesses = EmbeddedProcessManager()
+    private let edgeClient: VzEdgeClient
     private var helpers: [String: HelperRecord] = [:]
     private var helperProcesses: [String: Process] = [:]
     private var subscribers: [UUID: EventSubscriber] = [:]
@@ -60,7 +59,9 @@ final class SupervisorServer: @unchecked Sendable {
         databasePath = stateDirectory.appendingPathComponent("state.sqlite").path
         database = try StateDatabase(path: databasePath)
         networkRegistry = try NetworkRegistry(database: database, stateDirectory: stateDirectory)
-        dnsServer = DNSServer()
+        edgeClient = VzEdgeClient(
+            socketPath: VzEdgeClient.defaultSocketPath(stateDirectory: stateDirectory)
+        )
         apiListenSpec = try apiListen ?? RestConfig.resolve(
             stateDirectory: stateDirectory,
             flagValue: nil
@@ -94,8 +95,7 @@ final class SupervisorServer: @unchecked Sendable {
             guard Darwin.listen(fd, 16) == 0 else {
                 throw SupervisorError.system("listen", errno)
             }
-            reloadDNS(reason: "startup")
-            reloadPorts(reason: "startup")
+            reconcileEdge(reason: "startup")
 
             restRouter.server = self
             let rest = RestServer(listenSpec: apiListenSpec, router: restRouter)
@@ -157,10 +157,6 @@ final class SupervisorServer: @unchecked Sendable {
         for client in state.2 {
             Darwin.shutdown(client, SHUT_RDWR)
         }
-        dnsServer.shutdown()
-        portProxy.shutdown()
-        gatewayIngressProxy.shutdown()
-        embeddedProcesses.shutdown()
         networkRegistry.shutdown()
         restServer?.stop()
         restServer = nil
@@ -249,21 +245,23 @@ final class SupervisorServer: @unchecked Sendable {
             let orphanedNetworks = networkSnapshot?.networks.filter {
                 $0.runtimeState != "active"
             }.count ?? 0
-            let dnsHealth = dnsServer.health()
+            let edgeHealth = vzEdgeHealth()
             let netHealth = vzNetHealth()
             // CP `ok` tracks local health; vz-net is reported separately so doctor
             // can WARN without treating the control plane as down.
             return JSONRPCResponse(
                 result: .object([
-                    "ok": .bool(dnsHealth.ok),
+                    "ok": .bool(true),
                     "version": .string(VzDaemonKit.version),
                     "pid": .number(Double(getpid())),
                     "uptime_ms": .number(Double(uptimeMilliseconds)),
                     "db_ok": .bool(true),
                     "networks": .number(Double(networkSnapshot?.networks.count ?? 0)),
                     "network_orphans": .number(Double(orphanedNetworks)),
-                    "dns_ok": .bool(dnsHealth.ok),
-                    "dns": dnsHealth.json,
+                    "dns_ok": .bool(edgeHealth.ok),
+                    "dns": edgeHealth.dns,
+                    "vz_edge_ok": .bool(edgeHealth.ok),
+                    "vz_edge": edgeHealth.json,
                     "vz_net_ok": .bool(netHealth.ok),
                     "vz_net": netHealth.json,
                 ]),
@@ -271,22 +269,14 @@ final class SupervisorServer: @unchecked Sendable {
             )
         case "dns.status":
             return JSONRPCResponse(
-                result: dnsServer.health().json,
+                result: vzEdgeHealth().dns,
                 id: request.id ?? .null
             )
         case "dns.lookup":
             do {
                 let params = try networkParams(request.params)
                 let name = try requiredString("name", from: params)
-                let result = dnsServer.lookup(name)
-                return JSONRPCResponse(
-                    result: .object([
-                        "name": .string(DNSZoneBuilder.canonicalName(name)),
-                        "host": result.host.map { .array($0.map(JSONValue.string)) } ?? .null,
-                        "guest": result.guest.map { .array($0.map(JSONValue.string)) } ?? .null,
-                    ]),
-                    id: request.id ?? .null
-                )
+                return JSONRPCResponse(result: try edgeClient.lookup(name: name), id: request.id ?? .null)
             } catch {
                 return networkErrorResponse(error, request: request)
             }
@@ -425,9 +415,8 @@ final class SupervisorServer: @unchecked Sendable {
                 }
 
                 let detached = try networkRegistry.detachAll(vmID: vmID, vmIsStopped: true)
-                portProxy.purge(vmID: vmID)
                 let portsRemoved = try database.deletePortForwards(vmID: vmID)
-                reloadDNS(reason: "vm.purge")
+                try reconcileEdgeThrowing(reason: "vm.purge")
                 emit(
                     type: "vm.purged",
                     data: [
@@ -463,7 +452,7 @@ final class SupervisorServer: @unchecked Sendable {
                     project: try optionalString("project", from: params),
                     stack: try optionalString("stack", from: params)
                 )
-                reloadDNS(reason: "net.create")
+                reconcileEdge(reason: "net.create")
                 emit(type: "net.created", data: ["network": .string(record.name)])
                 return JSONRPCResponse(result: record.json, id: request.id ?? .null)
             } catch {
@@ -482,7 +471,7 @@ final class SupervisorServer: @unchecked Sendable {
                     stack: try optionalString("stack", from: params),
                     vmIsStopped: vmIsStopped(vmID)
                 )
-                reloadDNS(reason: "net.attach")
+                reconcileEdge(reason: "net.attach")
                 emit(
                     type: "net.attached",
                     data: [
@@ -505,7 +494,7 @@ final class SupervisorServer: @unchecked Sendable {
                     networkName: network,
                     vmIsStopped: vmIsStopped(vmID)
                 )
-                reloadDNS(reason: "net.detach")
+                reconcileEdge(reason: "net.detach")
                 emit(
                     type: "net.detached",
                     data: ["vm_id": .string(vmID), "network": .string(network)]
@@ -526,7 +515,7 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let name = try requiredString("name", from: params)
                 try networkRegistry.delete(name: name)
-                reloadDNS(reason: "net.delete")
+                reconcileEdge(reason: "net.delete")
                 emit(type: "net.deleted", data: ["network": .string(name)])
                 return JSONRPCResponse(
                     result: .object(["name": .string(name), "deleted": .bool(true)]),
@@ -564,7 +553,7 @@ final class SupervisorServer: @unchecked Sendable {
                     cidr: try requiredString("cidr", from: params)
                 )
                 let network = try networkRegistry.defaultNetwork()?.1
-                reloadDNS(reason: "net.default.set")
+                reconcileEdge(reason: "net.default.set")
                 emit(type: "net.default.changed", data: [
                     "network": .string(configured.name),
                     "cidr": .string(configured.cidr),
@@ -610,23 +599,18 @@ final class SupervisorServer: @unchecked Sendable {
                         )
                     )
                 }
-                let active = try portProxy.ensure(records)
-                try database.replacePortForwards(project: project, stack: stack, records: active)
+                try database.replacePortForwards(project: project, stack: stack, records: records)
+                try reconcileEdgeThrowing(reason: "port.ensure")
                 emit(
                     type: "port.ensured",
                     data: [
                         "project": .string(project),
                         "stack": .string(stack),
-                        "count": .number(Double(active.count)),
+                        "count": .number(Double(records.count)),
                     ]
                 )
                 return JSONRPCResponse(
-                    result: .object(["ports": .array(active.map(\.json))]),
-                    id: request.id ?? .null
-                )
-            } catch let error as PortProxyError {
-                return JSONRPCResponse(
-                    error: JSONRPCError(code: -32020, message: error.description),
+                    result: .object(["ports": .array(records.map(\.json))]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -638,13 +622,8 @@ final class SupervisorServer: @unchecked Sendable {
                 let project = try optionalString("project", from: params)
                 let stack = try optionalString("stack", from: params)
                 let records = try database.portForwards(project: project, stack: stack)
-                let live = portProxy.list()
-                let ports = live.isEmpty ? records : live.filter { record in
-                    (project == nil || record.project == project)
-                        && (stack == nil || record.stack == stack)
-                }
                 return JSONRPCResponse(
-                    result: .object(["ports": .array(ports.map(\.json))]),
+                    result: .object(["ports": .array(records.map(\.json))]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -655,8 +634,8 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
                 let stack = try requiredString("stack", from: params)
-                portProxy.purge(project: project, stack: stack)
                 try database.deletePortForwards(project: project, stack: stack)
+                try reconcileEdgeThrowing(reason: "port.purge")
                 emit(
                     type: "port.purged",
                     data: ["project": .string(project), "stack": .string(stack)]
@@ -675,6 +654,7 @@ final class SupervisorServer: @unchecked Sendable {
         case "dns.host_services.ensure":
             do {
                 let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
                 let hostsValue = params["hosts"] ?? .array([])
                 guard case let .array(items) = hostsValue else {
                     return JSONRPCResponse(
@@ -686,12 +666,14 @@ final class SupervisorServer: @unchecked Sendable {
                     if case let .string(value) = item { return value }
                     return nil
                 }
-                dnsServer.setHostServices(hosts)
-                reloadDNS(reason: "dns.host_services.ensure")
+                let hostsJSON = JSONValue.array(hosts.map(JSONValue.string))
+                try database.setEdgeHostServices(project: project, hosts: hostsJSON)
+                let edge = try reconcileEdgeThrowing(reason: "dns.host_services.ensure")
                 return JSONRPCResponse(
                     result: .object([
-                        "hosts": .array(hosts.map(JSONValue.string)),
-                        "dns": dnsServer.health().json,
+                        "project": .string(project),
+                        "hosts": hostsJSON,
+                        "dns": edgeDNS(from: edge),
                     ]),
                     id: request.id ?? .null
                 )
@@ -702,88 +684,26 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
-                let caddyfile = try requiredString("caddyfile", from: params)
-                let binary = try optionalString("binary", from: params)
-                    ?? stateDirectory.appendingPathComponent("bin/caddy").path
-                let httpPort = try optionalPort("http_port", from: params) ?? 80
-                let httpsPort = try optionalPort("https_port", from: params) ?? 443
-                let backendHttpPort = try optionalPort("backend_http_port", from: params) ?? httpPort
-                let backendHttpsPort =
-                    try optionalPort("backend_https_port", from: params) ?? httpsPort
-                let workDir = stateDirectory
-                    .appendingPathComponent("runtime/ingress/\(project)", isDirectory: true)
-                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-                let configPath = workDir.appendingPathComponent("Caddyfile").path
-                try caddyfile.write(toFile: configPath, atomically: true, encoding: .utf8)
-
-                // Start Caddy on unprivileged backend ports before binding public proxies.
-                let status = try embeddedProcesses.ensure(
-                    EmbeddedProcessManager.Spec(
-                        name: "caddy-\(project)",
-                        binary: binary,
-                        arguments: ["run", "--config", configPath, "--adapter", "caddyfile"],
-                        workDir: workDir.path,
-                        pidFile: workDir.appendingPathComponent("caddy.pid").path,
-                        env: [:]
-                    )
-                )
-
-                var bindings: [HostGatewayIngressProxy.Binding] = []
-                if case let .array(gateways) = params["gateways"] {
-                    for item in gateways {
-                        guard case let .string(ip) = item else { continue }
-                        bindings.append(
-                            .init(
-                                gatewayIP: ip,
-                                port: httpPort,
-                                backendHost: "127.0.0.1",
-                                backendPort: backendHttpPort
-                            )
-                        )
-                        bindings.append(
-                            .init(
-                                gatewayIP: ip,
-                                port: httpsPort,
-                                backendHost: "127.0.0.1",
-                                backendPort: backendHttpsPort
-                            )
-                        )
-                    }
+                _ = try requiredString("caddyfile", from: params)
+                var stored = params
+                if stored["binary"] == nil {
+                    stored["binary"] = .string(stateDirectory.appendingPathComponent("bin/caddy").path)
                 }
-                let ensureResult = gatewayIngressProxy.ensure(bindings)
-                let activeBindings = ensureResult.active
+                try database.setEdgeIngress(project: project, value: .object(stored))
+                let edge = try reconcileEdgeThrowing(reason: "ingress.ensure")
 
                 emit(
                     type: "ingress.ensured",
                     data: [
                         "project": .string(project),
-                        "bindings": .number(Double(activeBindings.count)),
-                        "skipped": .number(Double(ensureResult.skipped.count)),
+                        "edge": edge,
                     ]
                 )
                 return JSONRPCResponse(
                     result: .object([
                         "project": .string(project),
-                        "caddy": .object(status),
-                        "gateways": .array(activeBindings.map {
-                            .object([
-                                "gateway": .string($0.gatewayIP),
-                                "port": .number(Double($0.port)),
-                            ])
-                        }),
-                        "skipped": .array(ensureResult.skipped.map { binding, error in
-                            .object([
-                                "gateway": .string(binding.gatewayIP),
-                                "port": .number(Double(binding.port)),
-                                "error": .string(error),
-                            ])
-                        }),
+                        "edge": edge,
                     ]),
-                    id: request.id ?? .null
-                )
-            } catch let error as PortProxyError {
-                return JSONRPCResponse(
-                    error: JSONRPCError(code: -32021, message: error.description),
                     id: request.id ?? .null
                 )
             } catch {
@@ -793,10 +713,9 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
-                embeddedProcesses.stop(name: "caddy-\(project)")
-                gatewayIngressProxy.purge()
-                dnsServer.setHostServices([])
-                reloadDNS(reason: "ingress.purge")
+                try database.setEdgeIngress(project: project, value: nil)
+                try database.setEdgeHostServices(project: project, hosts: .array([]))
+                try reconcileEdgeThrowing(reason: "ingress.purge")
                 return JSONRPCResponse(
                     result: .object(["project": .string(project), "purged": .bool(true)]),
                     id: request.id ?? .null
@@ -808,40 +727,15 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
-                let config = try requiredString("config", from: params)
-                let configName = try optionalString("configName", from: params) ?? "config.yaml"
-                let binary = try optionalString("binary", from: params)
-                    ?? stateDirectory.appendingPathComponent("bin/dex").path
-                let processName = try optionalString("processName", from: params)
-                    ?? "dex-\(project)"
-                let pidFileName = try optionalString("pidFile", from: params) ?? "oidc.pid"
-                let argumentTemplates = try optionalStringArray("arguments", from: params)
-                    ?? ["serve", "{config}"]
-
-                let workDir = stateDirectory
-                    .appendingPathComponent("runtime/oidc/\(project)", isDirectory: true)
-                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-                let configPath = workDir.appendingPathComponent(configName).path
-                try config.write(toFile: configPath, atomically: true, encoding: .utf8)
-                let arguments = argumentTemplates.map { arg in
-                    arg.replacingOccurrences(of: "{config}", with: configPath)
+                _ = try requiredString("config", from: params)
+                var stored = params
+                if stored["binary"] == nil {
+                    stored["binary"] = .string(stateDirectory.appendingPathComponent("bin/dex").path)
                 }
-                // Keep a stable pid path for CLI status
-                let runtimeRoot = stateDirectory.appendingPathComponent("runtime/oidc", isDirectory: true)
-                try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
-                // Stop the alternate process name so mode switches don't leave orphans.
-                embeddedProcesses.stop(name: "dex-\(project)")
-                embeddedProcesses.stop(name: "oidc-simple-\(project)")
-                let status = try embeddedProcesses.ensure(
-                    EmbeddedProcessManager.Spec(
-                        name: processName,
-                        binary: binary,
-                        arguments: arguments,
-                        workDir: workDir.path,
-                        pidFile: runtimeRoot.appendingPathComponent(pidFileName).path,
-                        env: [:]
-                    )
-                )
+                if stored["processName"] == nil { stored["processName"] = .string("dex-\(project)") }
+                try database.setEdgeOIDC(project: project, value: .object(stored))
+                let edge = try reconcileEdgeThrowing(reason: "oidc.ensure")
+                let processName = try requiredString("processName", from: stored)
                 emit(type: "oidc.ensured", data: [
                     "project": .string(project),
                     "process": .string(processName),
@@ -850,7 +744,7 @@ final class SupervisorServer: @unchecked Sendable {
                     result: .object([
                         "project": .string(project),
                         "process": .string(processName),
-                        "status": .object(status),
+                        "edge": edge,
                     ]),
                     id: request.id ?? .null
                 )
@@ -861,8 +755,8 @@ final class SupervisorServer: @unchecked Sendable {
             do {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
-                embeddedProcesses.stop(name: "dex-\(project)")
-                embeddedProcesses.stop(name: "oidc-simple-\(project)")
+                try database.setEdgeOIDC(project: project, value: nil)
+                try reconcileEdgeThrowing(reason: "oidc.purge")
                 return JSONRPCResponse(
                     result: .object(["project": .string(project), "purged": .bool(true)]),
                     id: request.id ?? .null
@@ -880,7 +774,7 @@ final class SupervisorServer: @unchecked Sendable {
                     vmIsStopped: vmIsStopped(vmID)
                 )
                 if selection.created {
-                    reloadDNS(reason: "vm.network.ensure")
+                    reconcileEdge(reason: "vm.network.ensure")
                     emit(type: "net.attached", data: [
                         "vm_id": .string(selection.attachment.vmID),
                         "network": .string(selection.attachment.networkName),
@@ -1687,43 +1581,73 @@ final class SupervisorServer: @unchecked Sendable {
         }
     }
 
-    private func reloadDNS(reason: String) {
-        let health: DNSHealth
+    private func reconcileEdge(reason: String) {
         do {
-            health = dnsServer.reload(snapshot: try networkRegistry.snapshot())
+            let result = try reconcileEdgeThrowing(reason: reason)
+            emit(type: "edge.reconciled", data: [
+                "reason": .string(reason),
+                "status": result,
+            ])
         } catch {
-            emit(type: "dns.reload_failed", data: [
+            emit(type: "edge.reconcile_failed", data: [
                 "reason": .string(reason),
                 "error": .string(String(describing: error)),
             ])
-            return
         }
-        emit(type: health.ok ? "dns.reloaded" : "dns.reload_failed", data: [
-            "reason": .string(reason),
-            "ok": .bool(health.ok),
-            "records": .number(Double(health.records)),
-            "zones": .number(Double(health.zones)),
-            "listeners": .array(health.listeners.map(JSONValue.string)),
-            "ttl": .number(Double(health.ttl)),
-            "upstream": .string(health.upstream),
-            "error": health.lastError.map(JSONValue.string) ?? .null,
-        ])
     }
 
-    private func reloadPorts(reason: String) {
-        do {
-            let records = try database.portForwards()
-            _ = try portProxy.ensure(records)
-            emit(type: "port.reloaded", data: [
-                "reason": .string(reason),
-                "count": .number(Double(records.count)),
+    @discardableResult
+    private func reconcileEdgeThrowing(reason: String) throws -> JSONValue {
+        try edgeReconcileLock.withLock {
+            let projects = try database.edgeProjects()
+            let hostServices = try projects.flatMap { record -> [JSONValue] in
+                guard case let .array(values) = record.hostServices else {
+                    throw SupervisorError.database("edge host services must be an array")
+                }
+                return values
+            }
+            let ingress = projects.compactMap(\.ingress)
+            let oidc = projects.compactMap(\.oidc)
+            let ports = try database.portForwards()
+            let desired: JSONValue = .object([
+                "network_snapshot": try networkRegistry.snapshot().json,
+                "host_services": .array(hostServices),
+                "port_forwards": .array(ports.map(\.json)),
+                "ingress": .array(ingress),
+                "oidc": .array(oidc),
             ])
+            let generation = try database.nextEdgeGeneration()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(desired)
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return try edgeClient.reconcile(
+                generation: generation, digest: digest, desired: desired
+            )
+        }
+    }
+
+    private func vzEdgeHealth() -> (ok: Bool, json: JSONValue, dns: JSONValue) {
+        do {
+            let health = try edgeClient.health()
+            guard case let .object(values) = health else {
+                return (false, health, .object(["ok": .bool(false)]))
+            }
+            let ok = values["ok"] == .bool(true)
+            return (ok, health, values["dns"] ?? .object(["ok": .bool(false)]))
         } catch {
-            emit(type: "port.reload_failed", data: [
-                "reason": .string(reason),
+            let failure: JSONValue = .object([
+                "ok": .bool(false),
+                "socket": .string(edgeClient.socketPath),
                 "error": .string(String(describing: error)),
             ])
+            return (false, failure, failure)
         }
+    }
+
+    private func edgeDNS(from status: JSONValue) -> JSONValue {
+        guard case let .object(values) = status else { return .null }
+        return values["dns"] ?? .null
     }
 
     private func prepareSocketPath() throws {

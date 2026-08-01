@@ -1,6 +1,31 @@
 import Foundation
 import Testing
+import VzDaemonKit
 @testable import VzSupervisor
+
+@Test func edgeDesiredStateIsProjectScopedAndGenerationIsMonotonic() throws {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vzctl-edge-db-\(UUID().uuidString).sqlite")
+    defer { try? FileManager.default.removeItem(at: path) }
+    let database = try StateDatabase(path: path.path)
+    try database.setEdgeHostServices(
+        project: "alpha", hosts: .array([.string("web.svc.alpha.vz.test")])
+    )
+    try database.setEdgeIngress(
+        project: "alpha", value: .object(["project": .string("alpha")])
+    )
+    try database.setEdgeOIDC(
+        project: "beta", value: .object(["project": .string("beta")])
+    )
+    let records = try database.edgeProjects()
+    #expect(records.map(\.project) == ["alpha", "beta"])
+    #expect(records[0].ingress != nil)
+    #expect(records[0].oidc == nil)
+    #expect(records[1].ingress == nil)
+    #expect(records[1].oidc != nil)
+    #expect(try database.nextEdgeGeneration() == 1)
+    #expect(try database.nextEdgeGeneration() == 2)
+}
 
 @Test func applyJournalBlocksParallelHolderAndSupportsAbort() throws {
     let database = try temporaryDatabase()

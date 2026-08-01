@@ -10,7 +10,7 @@ enum VzSupervisorMain {
         switch args.first {
         case "version", nil:
             print("vz-supervisor \(VzDaemonKit.version) (macOS ≥ \(VzDaemonKit.minMacOSMajor))")
-            print("ownership: DNS+journal+orchestrate; vmnet refs via vz-net (ADR 0002)")
+            print("ownership: desired state + journal + orchestrate; runtime via vz-net/vz-edge")
         case "doctor":
             let v = ProcessInfo.processInfo.operatingSystemVersion
             print("host: macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)")
@@ -76,8 +76,8 @@ enum VzSupervisorMain {
                   VZCTL_STATE_DIR   state directory (default: ~/Library/Application Support/vzctl)
                   VZCTL_API_LISTEN  REST listen spec (default: unix:$VZCTL_STATE_DIR/api.sock)
 
-                Owns: DNS listeners, apply journal, REST control-plane, desired-state nets.
-                vmnet refs: vz-net (net.sock). Contract: docs/specs/vz-net-v1.md
+                Owns: apply journal, REST control-plane, desired state.
+                Runtime: vz-net (net.sock) + vz-edge (edge.sock).
                 Accepts: helper.hello/helper.state and exposes records via vm.list.
                 REST: docs/specs/supervisor-rest-v1.md
                 """
