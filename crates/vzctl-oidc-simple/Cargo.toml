@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.7", features = ["form"] }
 base64 = "0.22"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 rand = "0.8"
 rsa = { version = "0.9", features = ["pem"] }
 serde = { version = "1", features = ["derive"] }
