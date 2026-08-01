@@ -36,13 +36,21 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var active: [Binding] = []
         var skipped: [(Binding, String)] = []
         for binding in desired {
-            if let existing = listeners[binding.key], existing.matches(binding) {
-                active.append(binding)
-                continue
+            if let existing = listeners[binding.key] {
+                if existing.matches(binding) {
+                    active.append(binding)
+                    continue
+                }
+                // Same listen address — only backend changed; keep privileged bind.
+                if existing.sameListen(as: binding) {
+                    existing.retarget(binding)
+                    active.append(binding)
+                    continue
+                }
             }
             listeners.removeValue(forKey: binding.key)?.close()
             do {
-                let listener = try Listener(binding: binding)
+                let listener = try openListener(binding)
                 listeners[binding.key] = listener
                 active.append(binding)
             } catch {
@@ -53,6 +61,25 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             active: active.sorted { $0.key < $1.key },
             skipped: skipped.sorted { $0.0.key < $1.0.key }
         )
+    }
+
+    private func openListener(_ binding: Binding) throws -> Listener {
+        var lastError: Error?
+        for attempt in 0 ..< 8 {
+            do {
+                return try Listener(binding: binding)
+            } catch {
+                lastError = error
+                let text = "\(error)"
+                // dns-bind may still hold the port briefly after UDS close.
+                if text.contains("Address already in use") || text.contains("EADDRINUSE") {
+                    Thread.sleep(forTimeInterval: 0.15 + Double(attempt) * 0.05)
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastError ?? PortProxyError.bindFailed(binding.gatewayIP, binding.port, EADDRINUSE)
     }
 
     func list() -> [Binding] {
@@ -74,7 +101,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
     }
 
     private final class Listener: @unchecked Sendable {
-        let binding: Binding
+        private(set) var binding: Binding
         private let queue: DispatchQueue
         private var sessions: [UUID: Session] = [:]
         private let sessionLock = NSLock()
@@ -103,6 +130,18 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             queue.async { [self] in
                 self.acceptLoop()
             }
+        }
+
+        func matches(_ other: Binding) -> Bool {
+            binding == other
+        }
+
+        func sameListen(as other: Binding) -> Bool {
+            binding.gatewayIP == other.gatewayIP && binding.port == other.port
+        }
+
+        func retarget(_ other: Binding) {
+            binding = other
         }
 
         private static func bindLocally(address: String, port: UInt16) throws -> Int32 {
@@ -140,10 +179,6 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
                 throw PortProxyError.bindFailed(address, port, code)
             }
             return sock
-        }
-
-        func matches(_ other: Binding) -> Bool {
-            binding == other
         }
 
         func close() {
