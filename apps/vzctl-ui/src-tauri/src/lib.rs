@@ -288,6 +288,15 @@ fn validate_vzctl_argv(args: &[String]) -> Result<(), String> {
                 return Err(format!("unsupported {group} subcommand: {sub}"));
             }
         }
+        "docker" => {
+            if args.len() < 2 {
+                return Err("docker requires a subcommand".into());
+            }
+            let allowed = ["ps", "inspect", "start", "stop", "restart", "run"];
+            if !allowed.contains(&args[1].as_str()) {
+                return Err(format!("unsupported docker subcommand: {}", args[1]));
+            }
+        }
         other => return Err(format!("unsupported argv group: {other}")),
     }
     // Block interactive / streaming modes — use the terminal bridge instead.
@@ -304,7 +313,15 @@ fn validate_vzctl_argv(args: &[String]) -> Result<(), String> {
 
 fn ensure_json_format(args: &mut Vec<String>) {
     let has_format = args.windows(2).any(|pair| pair[0] == "--format");
-    if !has_format {
+    if has_format {
+        return;
+    }
+    // Keep UI-appended `--format json` before a passthrough `--` so it is not
+    // swallowed as container/command args (e.g. `docker run … -- cmd`).
+    if let Some(idx) = args.iter().position(|arg| arg == "--") {
+        args.insert(idx, "json".into());
+        args.insert(idx, "--format".into());
+    } else {
         args.push("--format".into());
         args.push("json".into());
     }

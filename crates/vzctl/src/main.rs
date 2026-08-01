@@ -380,6 +380,7 @@ Commands:
   dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
   dns install-bind-helper|uninstall-bind-helper [--format human|json]
+  docker [--project P] [--format human|json] <ps|inspect|start|stop|restart|run> ...
   docker [--project P] [--] <docker-args...>
   port list [--project P] [--stack S] [--format human|json]
   certs ca init|install [--force] [--format human|json]
@@ -1984,6 +1985,10 @@ fn prepare_vm_disks(
             })?;
         CloneMode::Full
     };
+    if options.roles.iter().any(|role| role == "docker") {
+        // Sealed Ubuntu cloud roots are ~3.5G; docker.io needs ~300MiB free on /.
+        ensure_root_disk_min_bytes(&root_disk_path, 8 * 1024 * 1024 * 1024)?;
+    }
     backend
         .create_sparse(&data_disk_path, size_bytes)
         .map_err(|error| {
@@ -2881,6 +2886,31 @@ fn render_cloud_init_network_config(
         ));
     }
     body
+}
+
+fn ensure_root_disk_min_bytes(path: &Path, min_bytes: u64) -> Result<(), VmCreateFailure> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        VmCreateFailure::new(
+            EXIT_VM_DISK_PREP_FAILED,
+            format!("cannot stat root disk {}: {error}", path.display()),
+        )
+    })?;
+    if metadata.len() >= min_bytes {
+        return Ok(());
+    }
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_len(min_bytes))
+        .map_err(|error| {
+            VmCreateFailure::new(
+                EXIT_VM_DISK_PREP_FAILED,
+                format!(
+                    "cannot grow root disk {} to {min_bytes} bytes: {error}",
+                    path.display()
+                ),
+            )
+        })
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), VmCreateFailure> {

@@ -409,11 +409,20 @@ Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`. Idempotente
 No-op-Installationen und -Deinstallationen liefern Exit `0`.
 
 ```bash
+vzctl docker [--project <name>] [--format human|json] ps [--all]
+vzctl docker [--project <name>] [--format human|json] inspect <id>
+vzctl docker [--project <name>] [--format human|json] start|stop|restart <id>
+vzctl docker [--project <name>] [--format human|json] run --image <img> [--name N] [-e K=V]... [-p host:guest]... [-- <cmd>...]
 vzctl docker [--project <name>] [--] <docker-args...>
 vzctl port list [--project <name>] [--stack <name>] [--format human|json]
 ```
 
-`docker` ist ein Passthrough auf das lokale `docker`-Binary mit Context
+Strukturierte Verben (`ps`, `inspect`, `start`, `stop`, `restart`, `run`) liefern
+bei `--format json` ein CLI-v1-Envelope (`command`: `docker.*`, Container-Liste
+unter `summary.containers`, Inspect unter `summary.inspect`, Run unter
+`summary.container_id`). `run` startet immer detached (`-d`).
+
+Passthrough (`--` oder unbekannte Args) bleibt: lokales `docker`-Binary mit Context
 `vzctl-{project}` (SSH). Exitcode folgt dem docker-Prozess; Setup-Fehler vor
 dem Exec nutzen Exit `24` / `3`. Siehe [`docs/docker.md`](../docker.md).
 

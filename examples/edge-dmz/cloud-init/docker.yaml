@@ -2,6 +2,33 @@
 # Local Docker Engine for roles:[docker]. SSH access is injected by vzctl
 # (user vzctl + authorized_keys). Do not publish TCP 2375.
 # With backend: docker, vzctl writes /etc/docker/daemon.json (bip=.2, iptables:false).
+#
+# Mount the data disk before apt so package caches /var/lib/docker stay off the
+# small sealed root; Ubuntu growpart expands a vzctl-grown 8GiB root on first boot.
+# Pick the largest writable non-root disk (skip cidata / RO media).
+bootcmd:
+  - |
+    (
+      set -e
+      if ! findmnt /var/lib/docker >/dev/null 2>&1; then
+        ROOT_DISK=$(findmnt -n -o SOURCE / | sed 's/[0-9]*$//;s#^/dev/##')
+        DEV=$(lsblk -ndo NAME,TYPE,RO,SIZE | awk -v root="$ROOT_DISK" '
+          $2=="disk" && $3==0 && $1!=root { print $1, $4 }' | sort -k2 -h | tail -n1 | awk '{print $1}')
+        if [ -n "$DEV" ] && [ -b "/dev/$DEV" ] && [ ! -b "/dev/${DEV}1" ]; then
+          parted -s "/dev/$DEV" mklabel gpt mkpart primary ext4 1MiB 100%
+          mkfs.ext4 -F "/dev/${DEV}1"
+        fi
+        if [ -n "$DEV" ] && [ -b "/dev/${DEV}1" ]; then
+          mkdir -p /var/lib/docker
+          grep -q ' /var/lib/docker ' /etc/fstab || \
+            echo "/dev/${DEV}1 /var/lib/docker ext4 defaults,nofail 0 2" >> /etc/fstab
+          mount /var/lib/docker || true
+        fi
+      fi
+      mkdir -p /var/lib/docker/apt-cache /var/lib/docker/apt-lists
+      printf 'Dir::Cache::Archives "/var/lib/docker/apt-cache";\n' > /etc/apt/apt.conf.d/00vzctl-cache
+      printf 'Dir::State::Lists "/var/lib/docker/apt-lists";\n' > /etc/apt/apt.conf.d/00vzctl-lists
+    ) || true
 package_update: true
 packages:
   - docker.io
@@ -9,5 +36,5 @@ packages:
   - nftables
 runcmd:
   - [systemctl, enable, --now, docker]
-  - [sh, -c, "if ! findmnt /var/lib/docker >/dev/null 2>&1; then DEV=$(lsblk -ndo NAME,TYPE | awk '$2==\"disk\"{print $1}' | tail -n1); if [ -n \"$DEV\" ] && [ ! -b /dev/${DEV}1 ]; then parted -s /dev/$DEV mklabel gpt mkpart primary ext4 1MiB 100% && mkfs.ext4 -F /dev/${DEV}1 && mkdir -p /var/lib/docker && echo \"/dev/${DEV}1 /var/lib/docker ext4 defaults,nofail 0 2\" >> /etc/fstab && mount /var/lib/docker; fi; fi"]
+  - [sh, -c, "getent group docker >/dev/null && usermod -aG docker vzctl-agent && (systemctl try-restart vzctl-agent || true) || true"]
   - [systemctl, restart, docker]
