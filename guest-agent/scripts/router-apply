@@ -54,4 +54,21 @@ if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
   changed=true
 fi
 sysctl -q -w net.ipv4.ip_forward=1
+
+# Install static routes from the plan (docker-backend CIDRs via peer).
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$routes_tmp" <<'PY' || true
+import json, subprocess, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    plan = json.load(handle)
+for route in plan.get("static_routes") or []:
+    dest = route.get("destination")
+    via = route.get("via")
+    if not dest or not via:
+        continue
+    subprocess.run(["ip", "route", "replace", dest, "via", via], check=False)
+PY
+fi
+
 printf 'changed=%s\n' "$changed"
