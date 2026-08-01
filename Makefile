@@ -10,7 +10,10 @@ LAUNCH_AGENTS_DIR ?= $(HOME)/Library/LaunchAgents
 LOG_DIR ?= $(HOME)/Library/Logs/vzctl
 STATE_DIR ?= $(HOME)/Library/Application Support/vzctl
 RUNTIME_BIN ?= $(STATE_DIR)/bin
+APPLICATIONS_DIR ?= $(HOME)/Applications
 ACTIVATE ?= 1
+
+TAURI_APP := apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app
 
 CADDY_VENDOR := daemon/Vendor/caddy/caddy
 DEX_VENDOR := daemon/Vendor/dex/dex
@@ -75,7 +78,7 @@ install-vendor: ## Vendor-Binaries nach Application Support/vzctl/bin/ kopieren
 		exit 3; \
 	fi
 
-install: release ## Installation erstellen/aktualisieren und Supervisor neu starten
+install: release ui-build ## CLI, Daemons und Tauri-App installieren/aktualisieren
 	PREFIX="$(PREFIX)" BINDIR="$(BINDIR)" \
 		LAUNCH_AGENTS_DIR="$(LAUNCH_AGENTS_DIR)" LOG_DIR="$(LOG_DIR)" \
 		ACTIVATE="$(ACTIVATE)" daemon/scripts/install.sh \
@@ -95,6 +98,10 @@ install: release ## Installation erstellen/aktualisieren und Supervisor neu star
 	else \
 		echo "note: skip install-vendor (run make vendor && make install-vendor for Ingress/OIDC)"; \
 	fi
+	@test -d "$(TAURI_APP)" || { echo "missing Tauri app: $(TAURI_APP)" >&2; exit 3; }
+	@mkdir -p "$(APPLICATIONS_DIR)"
+	@ditto "$(TAURI_APP)" "$(APPLICATIONS_DIR)/vzctl.app"
+	@echo "installed: $(APPLICATIONS_DIR)/vzctl.app"
 	@echo "note: guest DNS :53 → sudo $(BINDIR)/vzctl dns install-bind-helper"
 
 test: test-cli test-daemon test-agent ## Alle Tests ausführen
@@ -134,8 +141,8 @@ ui-install: ## Tauri-UI npm-Dependencies installieren
 ui-dev: ui-install ## Tauri-UI im Dev-Modus starten (braucht vzctl auf PATH)
 	cd apps/vzctl-ui && $(NPM) run tauri:dev
 
-ui-build: ui-install ## Tauri-UI bauen
-	cd apps/vzctl-ui && $(NPM) run tauri:build
+ui-build: ui-install ## Tauri-UI als Release-App bauen
+	cd apps/vzctl-ui && $(NPM) run tauri:build -- --bundles app
 
 clean: ## Rust- und Swift-Build-Artefakte entfernen
 	$(CARGO) clean
