@@ -10,6 +10,7 @@ import { getProject } from "@/lib/projects";
 import {
   createVm,
   deleteVm,
+  encodeVmIdParam,
   inspectVm,
   isRunning,
   listMounts,
@@ -299,6 +300,22 @@ export function VmDetailPage({
           >
             Shell
           </button>
+          {vm?.roles?.includes("docker") ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!running || busy != null}
+              onClick={() =>
+                void navigate({
+                  to: "/vms/$vmId/containers",
+                  params: { vmId: encodeVmIdParam(vmId) },
+                  search: stackPath ? { stackPath } : {},
+                })
+              }
+            >
+              Containers
+            </button>
+          ) : null}
           <button
             type="button"
             className="secondary"
