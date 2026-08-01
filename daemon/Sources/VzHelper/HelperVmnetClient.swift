@@ -21,7 +21,17 @@ enum HelperVmnetClient {
             params: .object(["vm_id": .string(vmID)]),
             id: .number(Double.random(in: 1...9_000_000))
         )
-        let response = try SupervisorRPC.send(request, socketPath: socketPath)
+        let response: JSONRPCResponse
+        do {
+            response = try SupervisorRPC.send(request, socketPath: socketPath)
+        } catch let error as HelperError {
+            // Standalone/builder helpers point at a missing supervisor sock on purpose.
+            // Soft-fail to empty attachments so VirtualMachineRuntime keeps NAT.
+            if case let .system(operation, _) = error, operation.hasPrefix("connect ") {
+                return []
+            }
+            throw error
+        }
         if let error = response.error {
             throw HelperError.invalid("helper.networks: \(error.message)")
         }

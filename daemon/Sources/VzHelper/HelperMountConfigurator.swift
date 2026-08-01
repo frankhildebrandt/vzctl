@@ -128,8 +128,26 @@ enum HelperMountConfigurator {
     ) async throws {
         let client = try await runtime.connectToGuestAgent(timeout: 10)
         defer { client.close() }
-        _ = try client.hello(token: token, helperVersion: VzDaemonKit.version)
-        try client.fsMount(
+        let hello = try client.hello(token: token, helperVersion: VzDaemonKit.version)
+        do {
+            try client.fsMount(
+                name: mount.name,
+                target: mount.target,
+                readOnly: mount.readOnly,
+                timeout: 30
+            )
+            return
+        } catch let GuestAgentError.remote(code, _, _) where code == "unsupported" {
+            // Sealed images may still ship agents without fs.mount; CLI falls
+            // back to exec+virtiofs-bind — match that here for boot apply.
+            fputs(
+                "fs.mount unsupported (agent=\(hello.version)); falling back to exec bind\n",
+                stderr
+            )
+        }
+        try execVirtiofsBind(
+            client: client,
+            action: "mount",
             name: mount.name,
             target: mount.target,
             readOnly: mount.readOnly
@@ -143,7 +161,47 @@ enum HelperMountConfigurator {
     ) async throws {
         let client = try await runtime.connectToGuestAgent(timeout: 10)
         defer { client.close() }
-        _ = try client.hello(token: token, helperVersion: VzDaemonKit.version)
-        try client.fsUnmount(name: mount.name, target: mount.target)
+        let hello = try client.hello(token: token, helperVersion: VzDaemonKit.version)
+        do {
+            try client.fsUnmount(name: mount.name, target: mount.target)
+            return
+        } catch let GuestAgentError.remote(code, _, _) where code == "unsupported" {
+            fputs(
+                "fs.unmount unsupported (agent=\(hello.version)); falling back to exec unmount\n",
+                stderr
+            )
+        }
+        try execVirtiofsBind(
+            client: client,
+            action: "unmount",
+            name: mount.name,
+            target: mount.target,
+            readOnly: false
+        )
+    }
+
+    /// Run `/usr/local/lib/vzctl/virtiofs-bind` via agent exec (PID-1 mount ns).
+    private static func execVirtiofsBind(
+        client: GuestAgentClient,
+        action: String,
+        name: String,
+        target: String,
+        readOnly: Bool
+    ) throws {
+        var argv = [
+            "sudo", "-n", "/usr/local/lib/vzctl/virtiofs-bind",
+            action, name, target,
+        ]
+        if action == "mount", readOnly {
+            argv.append("ro")
+        }
+        let result = try client.exec(argv: argv, timeoutMilliseconds: 30_000)
+        guard result.exit == 0 else {
+            let detail = result.stderr.isEmpty ? result.stdout : result.stderr
+            let message = detail.isEmpty ? "virtiofs-bind \(action) failed" : detail
+            throw HelperError.invalid(
+                "guest virtiofs \(action) \(name) → \(target): \(message)"
+            )
+        }
     }
 }

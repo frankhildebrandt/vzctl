@@ -232,16 +232,11 @@ enum VzHelperMain {
             } else {
                 timeSyncToken = nil
             }
-            let vmnetNICs: [HelperVmnetNIC]
-            if options.mock {
-                vmnetNICs = []
-            } else {
-                vmnetNICs = try HelperVmnetClient.fetchAttachments(
-                    vmID: options.vmID,
-                    socketPath: options.supervisorSocket,
-                    bundleURL: options.bundleURL
-                )
-            }
+            let vmnetNICs = try HelperVmnetClient.fetchAttachments(
+                vmID: options.vmID,
+                socketPath: options.supervisorSocket,
+                bundleURL: options.bundleURL
+            )
             if vmnetNICs.isEmpty {
                 fputs(
                     "vmnet attachments: none (NAT fallback for standalone helper)\n",
@@ -307,15 +302,6 @@ enum VzHelperMain {
             }
             try control?.start()
             defer { control?.stop() }
-            if let token = timeSyncToken {
-                Task {
-                    try? await Task.sleep(for: .seconds(8))
-                    try? await HelperMountConfigurator.applyManifestMounts(
-                        runtime: created,
-                        token: token
-                    )
-                }
-            }
             print(
                 "vm-id=\(options.vmID) state=running serial=\(created.serialLogURL.path)"
             )
@@ -383,6 +369,9 @@ enum VzHelperMain {
                 reporter: reporter,
                 connectTimeout: 90
             )
+            // Guest binds are not persistent across reboot; apply after agent is up.
+            // Fixed short sleep + try? previously raced boot and swallowed failures.
+            await applyManifestMountsWithRetry(runtime: runtime, token: token)
 
             var detector = HostWakeDetector()
             _ = detector.observe(Date())
@@ -400,8 +389,51 @@ enum VzHelperMain {
                         reporter: reporter,
                         connectTimeout: 30
                     )
+                    // VirtioFS can need a guest remount after host sleep/wake.
+                    await applyManifestMountsWithRetry(runtime: runtime, token: token)
                 }
             }
+        }
+    }
+
+    /// Wait/retry until manifest virtiofs binds land in the guest (or give up).
+    private static func applyManifestMountsWithRetry(
+        runtime: VirtualMachineRuntime,
+        token: String,
+        timeout: TimeInterval = 90
+    ) async {
+        let mounts = runtime.currentMounts()
+        guard !mounts.isEmpty else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        var attempt = 0
+        var lastError: Error?
+        while Date() < deadline {
+            if Task.isCancelled { return }
+            attempt += 1
+            do {
+                try await HelperMountConfigurator.applyManifestMounts(
+                    runtime: runtime,
+                    token: token
+                )
+                print(
+                    "event=vm.mounts_applied count=\(mounts.count) attempt=\(attempt)"
+                )
+                fflush(stdout)
+                return
+            } catch {
+                lastError = error
+                fputs(
+                    "mounts apply attempt=\(attempt) failed: \(error)\n",
+                    stderr
+                )
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        if let lastError {
+            fputs(
+                "mounts apply gave up after \(attempt) attempts: \(lastError)\n",
+                stderr
+            )
         }
     }
 
