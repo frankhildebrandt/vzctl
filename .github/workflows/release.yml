@@ -21,7 +21,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: guest-agent/go.mod
+          # macOS 26 dyld requires LC_UUID; Go <1.24 omits it → abort trap in tests.
+          go-version: "1.26.x"
+          cache: false
 
       - name: Setup Node
         uses: actions/setup-node@v6
