@@ -18,6 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: guest-agent/go.mod
+
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
