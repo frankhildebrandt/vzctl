@@ -17,6 +17,7 @@ export const APPLY_STEPS = [
   "attach_nets",
   "start_helpers",
   "await_agents",
+  "ensure_docker_project_mount",
   "ensure_ca",
   "ensure_oidc",
   "ensure_ingress",
@@ -52,6 +53,11 @@ export async function runVzctl(
   command: VzctlCommand,
   options: RunVzctlOptions = {},
 ): Promise<string> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) {
+    const { mockRunVzctl } = await import("@/lib/demoFixtures");
+    return mockRunVzctl(path, command, options);
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("run_vzctl", {
     path,
@@ -62,6 +68,11 @@ export async function runVzctl(
 }
 
 export async function runVzctlArgv(args: string[]): Promise<string> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) {
+    const { mockRunVzctlArgv } = await import("@/lib/demoFixtures");
+    return mockRunVzctlArgv(args);
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("run_vzctl_argv", { args });
 }
@@ -76,7 +87,18 @@ export type VzctlEnvelope = {
 };
 
 export function parseEnvelope(raw: string): VzctlEnvelope {
-  const value = JSON.parse(raw) as unknown;
+  const trimmed = raw.trim();
+  let value: unknown;
+  try {
+    value = JSON.parse(trimmed) as unknown;
+  } catch (first) {
+    // Some vzctl paths historically leaked diagnostics onto stdout before the
+    // envelope; recover the trailing JSON object when present.
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) throw first;
+    value = JSON.parse(trimmed.slice(start, end + 1)) as unknown;
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("vzctl envelope is not an object");
   }
@@ -99,11 +121,15 @@ export function assertEnvelopeOk(envelope: VzctlEnvelope, fallback = "vzctl fail
 }
 
 export async function subscribeEvents(): Promise<void> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("subscribe_events");
 }
 
 export async function pickEnvironment(): Promise<string | null> {
+  const { isDemoMode, DEMO_PROJECT_PATH } = await import("@/lib/demo");
+  if (isDemoMode()) return DEMO_PROJECT_PATH;
   const { open } = await import("@tauri-apps/plugin-dialog");
   const selected = await open({
     directory: true,

@@ -1,20 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import type { MouseEvent, ReactNode } from "react";
-
-const NAV: Array<{
-  to: "/" | "/vms" | "/projects" | "/networks" | "/images" | "/doctor";
-  label: string;
-  exact?: boolean;
-}> = [
-  { to: "/", label: "Dashboard", exact: true },
-  { to: "/vms", label: "VMs" },
-  { to: "/projects", label: "Stacks" },
-  { to: "/networks", label: "Networks" },
-  { to: "/images", label: "Images" },
-  { to: "/doctor", label: "Doctor" },
-];
+import { isDemoMode } from "@/lib/demo";
+import { useSidebarNav, type SidebarNavItem } from "@/lib/sidebarNav";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const demo = isDemoMode();
+  const nav = useSidebarNav();
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -33,20 +25,56 @@ export function AppShell({ children }: { children: ReactNode }) {
             </span>
           </div>
         </div>
-        <nav className="sidebar-nav">
-          {NAV.map((item) => (
+
+        <nav className="sidebar-nav" aria-label="Hauptnavigation">
+          <div key={nav.contextKey} className="sidebar-nav-panel">
+            {nav.back ? (
+              <Link
+                to={nav.back.to}
+                params={nav.back.params}
+                search={nav.back.search}
+                className="sidebar-link sidebar-back"
+              >
+                ← {nav.back.label}
+              </Link>
+            ) : null}
+
+            {nav.showDashboard ? (
+              <Link
+                to="/"
+                className="sidebar-link"
+                activeOptions={{ exact: true }}
+                activeProps={{ className: "sidebar-link active" }}
+              >
+                Dashboard
+              </Link>
+            ) : null}
+
+            {nav.title ? (
+              <div className="sidebar-context" title={nav.title}>
+                {nav.title}
+              </div>
+            ) : null}
+
+            {nav.items.map((item) => (
+              <NavLink key={item.id} item={item} />
+            ))}
+          </div>
+        </nav>
+
+        {nav.showSettingsBottom ? (
+          <div className="sidebar-bottom">
             <Link
-              key={item.to}
-              to={item.to}
-              activeOptions={{ exact: item.exact ?? false }}
+              to="/settings"
               className="sidebar-link"
               activeProps={{ className: "sidebar-link active" }}
             >
-              {item.label}
+              Settings
             </Link>
-          ))}
-        </nav>
-        <p className="sidebar-foot muted">CLI-backed · kein zweiter Reconciler</p>
+          </div>
+        ) : (
+          <div className="sidebar-bottom" aria-hidden />
+        )}
       </aside>
       <div className="main-column">
         <div
@@ -56,7 +84,40 @@ export function AppShell({ children }: { children: ReactNode }) {
         />
         <main className="content">{children}</main>
       </div>
+      {demo ? (
+        <span className="demo-watermark" role="status" aria-label="Demo-Modus">
+          Demo
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+function NavLink({ item }: { item: SidebarNavItem }) {
+  if (item.active !== undefined) {
+    return (
+      <Link
+        to={item.to}
+        params={item.params}
+        search={item.search}
+        className={item.active ? "sidebar-link active" : "sidebar-link"}
+      >
+        {item.label}
+      </Link>
+    );
+  }
+
+  return (
+    <Link
+      to={item.to}
+      params={item.params}
+      search={item.search}
+      activeOptions={{ exact: item.exact ?? false }}
+      className="sidebar-link"
+      activeProps={{ className: "sidebar-link active" }}
+    >
+      {item.label}
+    </Link>
   );
 }
 

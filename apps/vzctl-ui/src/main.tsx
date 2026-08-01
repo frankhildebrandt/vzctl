@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import {
+  demoRoute,
   doctorRoute,
   envRoute,
   imagesRoute,
@@ -10,19 +11,35 @@ import {
   networksRoute,
   projectsRoute,
   rootRoute,
+  settingsRoute,
+  vmContainerDetailRoute,
+  vmContainersRoute,
   vmDetailRoute,
   vmsRoute,
 } from "./routes";
+import { enableDemoMode, isDemoMode } from "./lib/demo";
+import { useSettingsStore } from "./store/settingsStore";
 import "./styles.css";
+
+// Ensure theme is applied before first paint of React tree.
+void useSettingsStore.getState();
+
+if (isDemoMode()) {
+  enableDemoMode();
+}
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
   vmsRoute,
+  vmContainerDetailRoute,
+  vmContainersRoute,
   vmDetailRoute,
   projectsRoute,
   networksRoute,
   imagesRoute,
   doctorRoute,
+  settingsRoute,
+  demoRoute,
   envRoute,
 ]);
 

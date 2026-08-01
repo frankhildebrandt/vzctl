@@ -32,8 +32,12 @@ import {
 import { DoctorPage } from "@/components/DoctorPage";
 import { ResultPanel, type ResultModel } from "@/components/ResultPanel";
 import { IngressLinksCard } from "@/components/IngressLinks";
+import { SettingsPage } from "@/components/SettingsPage";
+import { ProjectOidcUplinkSection } from "@/components/ProjectOidcUplinkSection";
 import { StackStatusCard } from "@/components/StackStatus";
 import { DashboardPage, PlaceholderPage } from "@/components/pages";
+import { ContainerDetailPage } from "@/components/ContainerDetailPage";
+import { ContainersPage } from "@/components/ContainersPage";
 import { VmDetailPage } from "@/components/VmDetailPage";
 import { VmListPage } from "@/components/VmListPage";
 import { parseIngressInfo } from "@/lib/ingress";
@@ -65,6 +69,7 @@ import {
 } from "@/lib/vmnetOrphanRecovery";
 import { TopologyEditor } from "@/features/topology-editor/TopologyEditor";
 import { useEditorStore } from "@/store/editorStore";
+import { DEMO_PROJECT_PATH, enableDemoMode } from "@/lib/demo";
 
 export const rootRoute = createRootRoute({
   component: RootLayout,
@@ -80,7 +85,7 @@ function RootLayout() {
 
 type EnvSearch = {
   path: string;
-  tab?: "topology" | "ops";
+  tab?: "topology" | "ops" | "config";
 };
 
 export const indexRoute = createRoute({
@@ -116,6 +121,49 @@ export const vmDetailRoute = createRoute({
   },
 });
 
+function vmStackSearch(search: Record<string, unknown>): { stackPath?: string } {
+  return {
+    stackPath:
+      typeof search.stackPath === "string" && search.stackPath.length > 0
+        ? search.stackPath
+        : undefined,
+  };
+}
+
+export const vmContainersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/vms/$vmId/containers",
+  validateSearch: vmStackSearch,
+  component: function VmContainersRoute() {
+    const { vmId: rawVmId } = vmContainersRoute.useParams();
+    const { stackPath } = vmContainersRoute.useSearch();
+    return (
+      <ContainersPage
+        vmId={decodeVmIdParam(rawVmId)}
+        stackPath={stackPath}
+      />
+    );
+  },
+});
+
+export const vmContainerDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/vms/$vmId/containers/$containerId",
+  validateSearch: vmStackSearch,
+  component: function VmContainerDetailRoute() {
+    const { vmId: rawVmId, containerId: rawContainerId } =
+      vmContainerDetailRoute.useParams();
+    const { stackPath } = vmContainerDetailRoute.useSearch();
+    return (
+      <ContainerDetailPage
+        vmId={decodeVmIdParam(rawVmId)}
+        containerId={decodeURIComponent(rawContainerId)}
+        stackPath={stackPath}
+      />
+    );
+  },
+});
+
 export const projectsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects",
@@ -139,6 +187,25 @@ export const doctorRoute = createRoute({
   component: DoctorPage,
 });
 
+export const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: SettingsPage,
+});
+
+export const demoRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/demo",
+  beforeLoad: () => {
+    enableDemoMode();
+    throw redirect({
+      to: "/env",
+      search: { path: DEMO_PROJECT_PATH, tab: "ops" },
+    });
+  },
+  component: () => null,
+});
+
 export const imagesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/images",
@@ -156,7 +223,7 @@ export const envRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): EnvSearch => ({
     path: typeof search.path === "string" ? search.path : "",
     tab:
-      search.tab === "topology" || search.tab === "ops"
+      search.tab === "topology" || search.tab === "ops" || search.tab === "config"
         ? search.tab
         : undefined,
   }),
@@ -698,37 +765,16 @@ function ProjectDetailPage() {
                 </p>
               ) : null}
             </>
+          ) : tab === "config" ? (
+            <>
+              <h2 className="detail-title">{title}</h2>
+              <p className="path detail-path">{path}</p>
+              <p className="muted detail-meta">Stack-Konfiguration</p>
+            </>
           ) : null}
         </div>
 
         <div className="detail-actions">
-          <div className="project-tabs" role="tablist" aria-label="Projektansicht">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "ops"}
-              className={tab === "ops" ? "active" : "secondary"}
-              onClick={() =>
-                void navigate({ search: (prev) => ({ ...prev, tab: "ops" }) })
-              }
-            >
-              Betrieb
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "topology"}
-              className={tab === "topology" ? "active" : "secondary"}
-              onClick={() =>
-                void navigate({
-                  search: (prev) => ({ ...prev, tab: "topology" }),
-                })
-              }
-            >
-              Topologie
-            </button>
-          </div>
-
           {tab === "ops" ? (
             <div
               className="detail-toolbar"
@@ -798,6 +844,21 @@ function ProjectDetailPage() {
                 <IconTrash />
               </IconButton>
             </div>
+          ) : tab === "config" ? (
+            <div
+              className="detail-toolbar"
+              role="toolbar"
+              aria-label="Stack Config"
+            >
+              <IconButton
+                label="Aus Liste entfernen"
+                disabled={busy}
+                tone="quiet"
+                onClick={() => setConfirm("remove")}
+              >
+                <IconTrash />
+              </IconButton>
+            </div>
           ) : (
             <div
               className="detail-toolbar"
@@ -834,6 +895,16 @@ function ProjectDetailPage() {
             toolbarHost={topologyToolbarHost}
           />
         )
+      ) : tab === "config" ? (
+        <section>
+          <h2 className="section-title">Stack Config</h2>
+          <p className="muted">
+            Stack-spezifische Einstellungen in{" "}
+            <code>hypernetwork.config.yaml</code>. Host-Defaults unter{" "}
+            <Link to="/settings">Settings</Link>.
+          </p>
+          <ProjectOidcUplinkSection projectPath={path} />
+        </section>
       ) : (
         <>
       <StackStatusCard
@@ -896,15 +967,6 @@ function ProjectDetailPage() {
         <ConsoleLog
           visible
           lines={progress.state.lines}
-          title={`${progress.state.mode ?? "apply"} — Log`}
-          onDismiss={
-            progress.state.active
-              ? undefined
-              : () => {
-                  progress.reset();
-                  setLogOpen(false);
-                }
-          }
         />
       ) : null}
 

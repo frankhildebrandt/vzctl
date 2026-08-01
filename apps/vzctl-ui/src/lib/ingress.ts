@@ -52,6 +52,11 @@ export function parseIngressInfo(
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode() || !("__TAURI_INTERNALS__" in window)) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_url", { url });
 }
