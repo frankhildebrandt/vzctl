@@ -1,7 +1,7 @@
-# Supervisor-DNS v1
+# vz-edge DNS v1
 
 Issue [#26](https://github.com/frankhildebrandt/vzctl/issues/26) implementiert
-den Supervisor-owned DNS aus ADR 0002. Der Server spricht UDP und hält parallel
+den `vz-edge`-owned DNS aus ADR 0002. Der Server spricht UDP und hält parallel
 den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 
 | Listener | Default | Zweck |
@@ -10,7 +10,7 @@ den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 | Guest | Bridge-`.0:53` | Standard-DNS der Guests |
 
 Port 53 (UDP) und Ingress-Ports 80/443 (TCP) sind privilegiert. Der
-unprivilegierte LaunchAgent-Supervisor nutzt den Root-LaunchDaemon
+unprivilegierte `vz-edge`-LaunchAgent nutzt den Root-LaunchDaemon
 `vz-dns-bind` (SCM_RIGHTS):
 
 - **UDP** (`:53`): Helper bindet und gibt den Socket-FD zurück (Guest-DNS auf
@@ -123,7 +123,7 @@ sudo vzctl dns uninstall-resolver
 
 Alternativ sind `--config <path>` und `--project <dns-label>` möglich.
 `--project` muss mit `spec.project` übereinstimmen, falls eine Config gelesen
-wird. `VZCTL_DNS_PORT` muss beim Supervisor und beim Installieren identisch
+wird. `VZCTL_DNS_PORT` muss bei `vz-edge` und beim Installieren identisch
 gesetzt sein; Default ist `15353`. Beide Commands unterstützen
 `--format human|json`.
 

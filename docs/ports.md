@@ -1,7 +1,8 @@
 # Port Forwards (Alpha)
 
-Host-Port-Forwards auf Guest-Services. Alpha bindet nur `127.0.0.1` (Userspace-Proxy
-im Supervisor). `0.0.0.0` ist Validate-Fehler; Ingress bleibt v0.2 Loopback-only.
+Host-Port-Forwards auf Guest-Services. Alpha bindet nur `127.0.0.1`
+(Userspace-Proxy in `vz-edge`). `0.0.0.0` ist Validate-Fehler; Ingress bleibt
+v0.2 Loopback-only.
 
 ## YAML
 
@@ -38,4 +39,5 @@ vzctl port list --project edge-dmz --format json
 
 - Apply-Step `ensure_ports` nach Agents (Guest-IP aus Attachments).
 - `down --purge` → `port.purge` (Listener + SQLite).
-- Persistenz: Supervisor-Tabelle `port_forwards`; Reload beim Supervisor-Start.
+- Desired State: Supervisor-Tabelle `port_forwards`.
+- Runtime und Listener-Recovery: `vz-edge` Last-good Manifest.

@@ -44,6 +44,8 @@ Wichtige Hinweise:
   [`specs/vz-net-v1.md`](specs/vz-net-v1.md).
 - Fehlt `net.sock` / ist `vz_net_ok=false`, warnt `doctor` zusätzlich
   (`supervisor.health` Details enthalten `vz_net`).
+- Fehlt `edge.sock` / ist `vz_edge_ok=false`, warnt `doctor` wegen ausgefallener
+  DNS-, Port-, Ingress- oder Caddy/Dex-Runtime (`vz_edge` enthält Details).
 - Ein nicht gestarteter Supervisor ist eine Warnung. Ein erreichbarer, aber
   defekter Socket bzw. eine schlechte DB-Health ist ein Fehler.
 - `certs.host_trust`: WARN, wenn die Local CA existiert, aber noch nicht in der

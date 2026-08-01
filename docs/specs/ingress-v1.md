@@ -54,5 +54,7 @@ upstream (e.g. `web.localhost`). Guests must not use `*.localhost`.
 
 ## Lifecycle
 
-Supervisor owns the Caddy child process. `ingress.ensure` writes Caddyfile +
-reloads on apply. WebSocket / gRPC pass-through via Caddy defaults.
+`vz-edge` owns the Caddy child process and guest-facing listeners. The control
+plane persists the project intent and reconciles a global generation. Caddyfile
+validation happens before replacement; a failed generation does not replace the
+last-good edge manifest. WebSocket / gRPC pass-through uses Caddy defaults.

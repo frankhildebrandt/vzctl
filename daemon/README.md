@@ -4,6 +4,10 @@
 bridges over `$VZCTL_STATE_DIR/net.sock`
 ([vz-net-v1](../docs/specs/vz-net-v1.md), [ADR 0002](../docs/adr/0002-process-ownership.md)).
 
+`vz-edge` owns DNS, host port/ingress listeners and the supervised Caddy,
+Dex and oidc-simple processes over `$VZCTL_STATE_DIR/edge.sock`
+([vz-edge-v1](../docs/specs/vz-edge-v1.md)).
+
 `vz-supervisor` owns durable desired state and accepts newline-framed JSON-RPC over its
 user-only UDS. Er broadcastet den versionierten
 [Event Stream v1](../docs/specs/events-v1.md) an `events.subscribe`-Clients.
@@ -12,7 +16,7 @@ Zusätzlich lauscht die [REST Control-Plane v1](../docs/specs/supervisor-rest-v1
 oder `--api-listen`).
 `vz-helper` owns exactly one `VZVirtualMachine` per process.
 
-Der Supervisor betreibt außerdem den autoritativen
+`vz-edge` betreibt außerdem den autoritativen
 [Dual-DNS](../docs/dns.md): Host `127.0.0.1:15353`, Guest-Bridge `.0:53`,
 Actual-State-A-Records und UDP-Forwarding. Guest-`:53` braucht den Root-Helper:
 
@@ -20,13 +24,14 @@ Actual-State-A-Records und UDP-Forwarding. Guest-`:53` braucht den Root-Helper:
 sudo vzctl dns install-bind-helper
 ```
 
-Für lokale unprivilegierte Läufe ohne Helper (beide Daemons nötig):
+Für lokale unprivilegierte Läufe ohne Bind-Helper:
 
 ```sh
 export VZCTL_STATE_DIR=/tmp/vzctl-dev
 daemon/.build/debug/vz-net serve &
 VZCTL_DNS_GUEST_PORT=15353 \
 VZCTL_DNS_UPSTREAM=system \
+daemon/.build/debug/vz-edge serve &
 daemon/.build/debug/vz-supervisor serve
 ```
 
@@ -37,25 +42,27 @@ swift build --package-path daemon
 daemon/scripts/codesign-helper.sh daemon/.build/debug/vz-helper
 codesign --force --sign - --entitlements daemon/VzHelper.entitlements \
   daemon/.build/debug/vz-net daemon/.build/debug/vz-supervisor
+codesign --force --sign - daemon/.build/debug/vz-edge
 ```
 
 The development signature contains `com.apple.security.virtualization` and
 intentionally does **not** contain `com.apple.vm.networking`.
 
-Für eine Release-Installation inklusive aktivem `vz-net` + Supervisor:
+Für eine Release-Installation inklusive `vz-net`, `vz-edge` und Supervisor:
 
 ```sh
 make install
 launchctl print "gui/$(id -u)/com.vzctl.supervisor"
+launchctl print "gui/$(id -u)/com.vzctl.edge"
 sudo vzctl dns install-bind-helper
 ```
 
-CLI, Supervisor, Helper und `vz-dns-bind` landen standardmäßig in `~/.local/bin`.
+CLI, `vz-net`, `vz-edge`, Supervisor, Helper und `vz-dns-bind` landen standardmäßig in `~/.local/bin`.
 `install-bind-helper` kopiert den Bind-Helper nach `/usr/local/libexec/vzctl/`
 und aktiviert LaunchDaemon `com.vzctl.dns-bind`. Das Ziel kann mit `PREFIX` oder
 `BINDIR` überschrieben werden. `ACTIVATE=0` installiert und validiert den
 LaunchAgent, ohne ihn zu laden. Wiederholtes `make install` ersetzt die Binaries
-atomar und startet `com.vzctl.supervisor` neu. Laufende VM-Helper bleiben
+atomar und startet Net-, Edge- und Control-Plane-LaunchAgents neu. Laufende VM-Helper bleiben
 unangetastet, damit keine VM für ein Tool-Update stoppt.
 
 ## VM bundle and run
@@ -119,6 +126,7 @@ daemon/scripts/smoke-helper-isolation.sh
 daemon/scripts/smoke-helper-rpc.sh
 daemon/scripts/smoke-helper-launchd.sh
 daemon/scripts/smoke-helper-two-vms.sh /path/to/source.raw /path/to/cidata.iso
+daemon/scripts/smoke-edge-cp-crash.sh
 ```
 
 The quick isolation smoke uses two mock helpers only to test process/lock
@@ -126,7 +134,7 @@ isolation. The two-VM smoke clones the supplied G0 raw Ubuntu disk into two
 temporary bundle directories, verifies serial output, kills A with `SIGKILL`,
 then cleanly stops B with `SIGTERM`.
 
-Supervisor-owned vmnet CRUD and desired attachments are implemented in #31;
+Control-plane-owned vmnet CRUD and desired attachments are implemented in #31;
 see [`docs/network.md`](../docs/network.md). Router and policy plans from
 #32/#33 are rendered as nftables and sent Supervisor → per-VM helper →
 Guest-Agent over vsock; see [`docs/routes.md`](../docs/routes.md). The existing standalone helper command

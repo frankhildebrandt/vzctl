@@ -82,7 +82,7 @@ Live `vmnet_network_ref` + Host-Bridge liegen in **`vz-net`** (LaunchAgent
 `com.vzctl.net`, Socket `$VZCTL_STATE_DIR/net.sock`). Der Control-Plane-Supervisor
 hält Desired State in SQLite und orchestriert über
 [`docs/specs/vz-net-v1.md`](specs/vz-net-v1.md) (`net.acquire` /
-`net.release` / `net.serialize`). DNS-Listener bleiben im Supervisor und binden
+`net.release` / `net.serialize`). DNS-Listener liegen in `vz-edge` und binden
 erst nach erfolgreichem Acquire auf Bridge-`.0`.
 
 ## Unclean Exit

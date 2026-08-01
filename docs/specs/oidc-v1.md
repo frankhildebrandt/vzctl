@@ -22,6 +22,10 @@ Never `https://auth.localhost`. Token `iss` and Guest Discovery must match.
 The IdP listens on `127.0.0.1:5556` (configurable). Caddy terminates TLS for
 `auth.svc.…` and reverse-proxies to the IdP.
 
+`vz-edge` owns the Dex/oidc-simple child process. It keeps the applied IdP
+running across control-plane restarts, restarts unexpected exits with bounded
+backoff and restores the last-good runtime manifest after its own restart.
+
 ## Config — embedded Dex
 
 ```yaml
