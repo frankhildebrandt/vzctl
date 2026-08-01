@@ -803,17 +803,21 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
         .keys()
         .map(|name| vm_runtime_id(environment, name))
         .collect::<BTreeSet<_>>();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Boot + vsock agent; docker-role cloud-init can lag, but agent itself is early.
+    let has_docker = environment
+        .spec
+        .vms
+        .values()
+        .any(|vm| vm.roles.iter().any(|role| role == "docker"));
+    let budget = if has_docker { 180 } else { 120 };
+    let deadline = Instant::now() + Duration::from_secs(budget);
     loop {
         let records = rpc(socket_path, "vm.list", json!({}))?;
         let running = records
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|record| {
-                let state = record["state"].as_str().unwrap_or("");
-                state == "running" || state == "starting"
-            })
+            .filter(|record| record["state"].as_str() == Some("running"))
             .filter_map(|record| {
                 record["vm_id"]
                     .as_str()
@@ -821,17 +825,30 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
                     .map(str::to_string)
             })
             .collect::<BTreeSet<_>>();
-        if wanted.is_subset(&running) {
+        let mut ready = BTreeSet::new();
+        let mut pending = Vec::new();
+        for vm_id in &wanted {
+            if !running.contains(vm_id) {
+                pending.push(format!("{vm_id} (helper)"));
+                continue;
+            }
+            match rpc(socket_path, "vm.agent.health", json!({ "vm_id": vm_id })) {
+                Ok(_) => {
+                    ready.insert(vm_id.clone());
+                }
+                Err(_) => pending.push(format!("{vm_id} (agent)")),
+            }
+        }
+        if ready.len() == wanted.len() {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            let missing = wanted.difference(&running).cloned().collect::<Vec<_>>();
             return Err(Failure::new(
                 EXIT_STEP,
-                format!("helpers/agents not ready: {}", missing.join(", ")),
+                format!("helpers/agents not ready: {}", pending.join(", ")),
             ));
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -879,21 +896,48 @@ fn ensure_docker_project_mount(
                 ));
             }
         }
-        run_self(&[
-            "vm",
-            "mount",
-            &runtime_id,
-            "--source",
-            &source,
-            "--target",
-            &target,
-            "--tag",
-            crate::mounts::DOCKER_PROJECT_MOUNT_TAG,
-            "--format",
-            "json",
-        ])?;
+        run_self_retrying(
+            &[
+                "vm",
+                "mount",
+                &runtime_id,
+                "--source",
+                &source,
+                "--target",
+                &target,
+                "--tag",
+                crate::mounts::DOCKER_PROJECT_MOUNT_TAG,
+                "--format",
+                "json",
+            ],
+            Duration::from_secs(90),
+            |failure| {
+                failure.message.contains("is not running")
+                    || failure.message.contains("guest agent unavailable")
+                    || failure.message.contains("Connection reset")
+                    || failure.message.contains("Connection refused")
+            },
+        )?;
     }
     Ok(())
+}
+
+/// Retry `run_self` while `retryable` matches, until `budget` elapses.
+fn run_self_retrying(
+    args: &[&str],
+    budget: Duration,
+    retryable: impl Fn(&Failure) -> bool,
+) -> Result<Value, Failure> {
+    let deadline = Instant::now() + budget;
+    loop {
+        match run_self(args) {
+            Ok(value) => return Ok(value),
+            Err(failure) if retryable(&failure) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
 }
 
 fn stop_helpers(environment: &Environment, socket_path: &Path, force: bool) -> Result<(), Failure> {
@@ -1485,7 +1529,8 @@ fn apply_routes(environment: &Environment, socket_path: &Path) -> Result<(), Fai
             Err(error) => {
                 let retryable = error.message.contains("no new privileges")
                     || error.message.contains("guest agent unavailable")
-                    || error.message.contains("Connection reset");
+                    || error.message.contains("Connection reset")
+                    || error.message.contains("is not running");
                 if !retryable || Instant::now() >= deadline {
                     return Err(error);
                 }

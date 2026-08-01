@@ -2294,8 +2294,8 @@ fn bundle_path(id: &str) -> PathBuf {
 fn helper_is_running(vm_id: &str, socket_path: &Path) -> Result<bool, Failure> {
     match rpc(socket_path, "vm.list", json!({})) {
         Ok(records) => Ok(records.as_array().into_iter().flatten().any(|record| {
-            record["vm_id"] == vm_id
-                && matches!(record["state"].as_str(), Some("starting" | "running"))
+            // Live mount/exec need helper.state == running — "starting" is too early.
+            record["vm_id"] == vm_id && record["state"].as_str() == Some("running")
         })),
         Err(failure) if failure.code == EXIT_SUPERVISOR => Ok(false),
         Err(failure) => Err(failure),
