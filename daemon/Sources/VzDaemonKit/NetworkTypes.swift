@@ -210,6 +210,23 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
     }
 }
 
+public struct NetworkSnapshot: Sendable {
+    public let networks: [NetworkRecord]
+    public let attachments: [NetworkAttachmentRecord]
+
+    public init(networks: [NetworkRecord], attachments: [NetworkAttachmentRecord]) {
+        self.networks = networks
+        self.attachments = attachments
+    }
+
+    public var json: JSONValue {
+        .object([
+            "networks": .array(networks.map(\.json)),
+            "attachments": .array(attachments.map(\.json)),
+        ])
+    }
+}
+
 public struct DefaultNetworkRecord: Equatable, Sendable {
     public var name: String
     public var cidr: String

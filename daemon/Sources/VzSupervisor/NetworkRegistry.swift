@@ -87,18 +87,6 @@ struct RemoteVzNetBackend: NetworkRuntimeBackend {
     }
 }
 
-struct NetworkSnapshot: Sendable {
-    let networks: [NetworkRecord]
-    let attachments: [NetworkAttachmentRecord]
-
-    var json: JSONValue {
-        .object([
-            "networks": .array(networks.map(\.json)),
-            "attachments": .array(attachments.map(\.json)),
-        ])
-    }
-}
-
 struct SerializedVmnetAttachment: Sendable {
     let networkName: String
     let ip: String
