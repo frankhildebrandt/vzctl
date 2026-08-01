@@ -20,6 +20,8 @@ struct RestJob: Sendable {
 }
 
 final class RestJobRunner: @unchecked Sendable {
+    static let maxLogLines = 500
+
     private let lock = NSLock()
     private var jobs: [String: RestJob] = [:]
     private let stateDirectory: URL
@@ -65,12 +67,10 @@ final class RestJobRunner: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: vzctl)
         process.arguments = arguments
-        var env = ProcessInfo.processInfo.environment
-        for (k, v) in environment {
-            env[k] = v
-        }
-        env["VZCTL_STATE_DIR"] = stateDirectory.path
-        process.environment = env
+        process.environment = Self.jobEnvironment(
+            stateDirectory: stateDirectory,
+            overrides: environment
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -83,19 +83,62 @@ final class RestJobRunner: @unchecked Sendable {
         return (process.terminationStatus, stdout, stderr)
     }
 
+    /// LaunchAgents inherit a minimal PATH (`/usr/bin:/bin:…`). Homebrew tools
+    /// such as `docker` live under `/opt/homebrew/bin` and must be visible to
+    /// spawned `vzctl` apply jobs (e.g. `ensure_docker_context`).
+    /// Image bake/seal/pull jobs also get `VZCTL_PROGRESS=1` so phase lines reach job logs.
+    static func jobEnvironment(
+        stateDirectory: URL,
+        overrides: [String: String] = [:],
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var env = processEnvironment
+        for (key, value) in overrides {
+            env[key] = value
+        }
+        env["VZCTL_STATE_DIR"] = stateDirectory.path
+        env["VZCTL_PROGRESS"] = "1"
+        env["PATH"] = userToolPath(existing: env["PATH"])
+        return env
+    }
+
+    static func userToolPath(existing: String?) -> String {
+        var parts: [String] = []
+        let preferred = [
+            "\(NSHomeDirectory())/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        let fallback = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let existingParts = (existing ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+        for candidate in preferred + existingParts + fallback where !parts.contains(candidate) {
+            parts.append(candidate)
+        }
+        return parts.joined(separator: ":")
+    }
+
+    /// Keep the newest `maxLogLines` entries (FIFO trim from the front).
+    static func cappedLogAppending(existing: [String], lines: [String], limit: Int = maxLogLines) -> [String] {
+        guard !lines.isEmpty else { return existing }
+        var next = existing
+        next.append(contentsOf: lines)
+        if next.count > limit {
+            next = Array(next.suffix(limit))
+        }
+        return next
+    }
+
     private func run(jobId: String, arguments: [String], environment: [String: String]) {
         update(jobId) { job in
             job.status = .running
             job.updatedAt = isoNow()
         }
         do {
-            let result = try runSync(arguments: arguments, environment: environment)
-            let combined = [result.stdout, result.stderr]
-                .flatMap { $0.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) }
-                .filter { !$0.isEmpty }
+            let result = try runStreaming(jobId: jobId, arguments: arguments, environment: environment)
             let parsed = parseJSONValue(result.stdout)
             update(jobId) { job in
-                job.log.append(contentsOf: combined.suffix(500))
                 job.updatedAt = isoNow()
                 if result.exitCode == 0 {
                     job.status = .succeeded
@@ -123,6 +166,68 @@ final class RestJobRunner: @unchecked Sendable {
         }
     }
 
+    private func runStreaming(
+        jobId: String,
+        arguments: [String],
+        environment: [String: String]
+    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let vzctl = try resolveVzctl()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: vzctl)
+        process.arguments = arguments
+        process.environment = Self.jobEnvironment(
+            stateDirectory: stateDirectory,
+            overrides: environment
+        )
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        let stderrBox = StringBox()
+        let accumulator = LineAccumulator { [weak self] line in
+            stderrBox.append(line)
+            self?.appendLog(jobId, lines: [line])
+        }
+
+        let stderrDone = DispatchSemaphore(value: 0)
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                accumulator.flush()
+                stderrDone.signal()
+                return
+            }
+            accumulator.append(data)
+        }
+
+        try process.run()
+        process.waitUntilExit()
+
+        // EOF on the pipe closes the read end after the process exits; wait for drain.
+        let waitResult = stderrDone.wait(timeout: .now() + 5)
+        if waitResult == .timedOut {
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            accumulator.flush()
+        }
+
+        let stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = stderrBox.joined(separator: "\n")
+        return (process.terminationStatus, stdout, stderr)
+    }
+
+    private func appendLog(_ id: String, lines: [String]) {
+        let filtered = lines.filter { !$0.isEmpty }
+        guard !filtered.isEmpty else { return }
+        update(id) { job in
+            job.log = Self.cappedLogAppending(existing: job.log, lines: filtered)
+            job.updatedAt = isoNow()
+        }
+    }
+
     private func update(_ id: String, mutate: (inout RestJob) -> Void) {
         lock.withLock {
             guard var job = jobs[id] else { return }
@@ -147,8 +252,8 @@ final class RestJobRunner: @unchecked Sendable {
         if FileManager.default.isExecutableFile(atPath: sibling) {
             return sibling
         }
-        // PATH lookup
-        let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
+        // PATH lookup (include Homebrew / ~/.local even under LaunchAgent PATH).
+        let pathEnv = Self.userToolPath(existing: ProcessInfo.processInfo.environment["PATH"])
         for dir in pathEnv.split(separator: ":") {
             let candidate = "\(dir)/vzctl"
             if FileManager.default.isExecutableFile(atPath: candidate) {
@@ -190,6 +295,59 @@ final class RestJobRunner: @unchecked Sendable {
     }
 }
 
+/// Accumulates pipe chunks into newline-delimited log lines.
+final class LineAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var partial = ""
+    private let onLine: @Sendable (String) -> Void
+
+    init(onLine: @escaping @Sendable (String) -> Void) {
+        self.onLine = onLine
+    }
+
+    func append(_ data: Data) {
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+        lock.withLock {
+            partial += text
+            while let range = partial.range(of: "\n") {
+                let line = String(partial[..<range.lowerBound])
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+                partial.removeSubrange(..<range.upperBound)
+                if !line.isEmpty {
+                    onLine(line)
+                }
+            }
+        }
+    }
+
+    func flush() {
+        lock.withLock {
+            let line = partial.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            partial = ""
+            if !line.isEmpty {
+                onLine(line)
+            }
+        }
+    }
+}
+
+final class StringBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.withLock { lines.append(line) }
+    }
+
+    func joined(separator: String) -> String {
+        lock.withLock { lines.joined(separator: separator) }
+    }
+
+    func snapshot() -> [String] {
+        lock.withLock { lines }
+    }
+}
+
 extension RestJob {
     var json: JSONValue {
         var obj: [String: JSONValue] = [
@@ -198,6 +356,7 @@ extension RestJob {
             "status": .string(status.rawValue),
             "createdAt": .string(createdAt),
             "updatedAt": .string(updatedAt),
+            "log": .array(log.map { .string($0) }),
         ]
         if let result { obj["result"] = result }
         if let error { obj["error"] = .string(error) }

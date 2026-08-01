@@ -61,8 +61,10 @@ Stabile Error-Codes: `bad_request`, `not_found`, `conflict`, `unauthorized`,
 
 | Method | Path | Beschreibung |
 |---|---|---|
-| `GET` | `/v1/jobs/{jobId}` | Job-Status (`queued`/`running`/`succeeded`/`failed`) |
-| `GET` | `/v1/jobs/{jobId}/log` | SSE Log-Zeilen (Console) |
+| `GET` | `/v1/jobs/{jobId}` | Job-Status (`queued`/`running`/`succeeded`/`failed`) plus `log[]` (bisherige Console-Zeilen) |
+| `GET` | `/v1/jobs/{jobId}/log` | SSE Log-Zeilen (Console); live während `running` |
+
+Job-Worker setzen `VZCTL_PROGRESS=1`, damit Image-Phasen (bake/seal/pull) auch bei `--format json` auf stderr landen und in `log[]` / SSE erscheinen. stderr wird zeilenweise gestreamt; stdout bleibt das JSON-Ergebnis.
 
 ### Stacks
 
@@ -116,8 +118,8 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 |---|---|---|
 | `GET` | `/v1/images` | List |
 | `POST` | `/v1/images/{alias}/pull` | Pull → Job |
-| `POST` | `/v1/images/{alias}/bake` | Bake → Job |
-| `POST` | `/v1/images/{alias}/seal` | Seal → Job |
+| `POST` | `/v1/images/{alias}/bake` | Bake → Job; Body `{ "tag": "v1" }` Pflicht |
+| `POST` | `/v1/images/{alias}/seal` | Seal → Job; Body `{ "tag": "v1" }` Pflicht |
 
 ### Docker
 

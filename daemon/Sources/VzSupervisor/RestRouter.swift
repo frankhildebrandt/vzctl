@@ -81,7 +81,7 @@ final class RestRouter: @unchecked Sendable {
             return try rpcOK("port.list")
         }
         if rest.first == "images" {
-            return try routeImages(method: method, rest: rest)
+            return try routeImages(request: request, method: method, rest: rest)
         }
         if rest.first == "projects" {
             return try routeProjects(request: request, method: method, rest: rest)
@@ -423,7 +423,11 @@ final class RestRouter: @unchecked Sendable {
 
     // MARK: - Images
 
-    private func routeImages(method: String, rest: [String]) throws -> RestHTTPResponse {
+    private func routeImages(
+        request: RestHTTPRequest,
+        method: String,
+        rest: [String]
+    ) throws -> RestHTTPResponse {
         if rest.count == 1, method == "GET" {
             return try workerJSON(["image", "list", "--format", "json"])
         }
@@ -435,9 +439,18 @@ final class RestRouter: @unchecked Sendable {
         guard ["pull", "bake", "seal"].contains(action) else {
             throw RestRouteError(404, .notFound, "unknown image action")
         }
+        var arguments = ["image", action, alias]
+        if action == "bake" || action == "seal" {
+            let body = try bodyObject(request)
+            guard case let .string(tag)? = body["tag"], !tag.isEmpty else {
+                throw RestRouteError(400, .badRequest, "image \(action) requires body.tag")
+            }
+            arguments += ["--tag", tag]
+        }
+        arguments += ["--format", "json"]
         let jobId = jobs.start(
             kind: "image.\(action)",
-            arguments: ["image", action, alias, "--format", "json"]
+            arguments: arguments
         )
         return try RestHTTPResponse.jsonValue(202, .object(["jobId": .string(jobId)]))
     }
