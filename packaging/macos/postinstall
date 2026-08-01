@@ -1,0 +1,140 @@
+#!/bin/sh
+# Install LaunchAgents for the console user after the pkg payload lands
+# under /usr/local/bin and /Applications/vzctl.app.
+set -eu
+
+label_net=com.vzctl.net
+label_edge=com.vzctl.edge
+label_supervisor=com.vzctl.supervisor
+
+console_user=$(stat -f%Su /dev/console)
+if [ -z "$console_user" ] || [ "$console_user" = root ]; then
+  console_user=${USER:-}
+fi
+if [ -z "$console_user" ] || [ "$console_user" = root ]; then
+  echo "postinstall: no console user; skip LaunchAgent setup" >&2
+  exit 0
+fi
+
+console_home=$(dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+if [ -z "$console_home" ] || [ ! -d "$console_home" ]; then
+  echo "postinstall: cannot resolve home for $console_user" >&2
+  exit 0
+fi
+
+uid=$(id -u "$console_user")
+domain="gui/$uid"
+launch_agents_dir="$console_home/Library/LaunchAgents"
+log_dir="$console_home/Library/Logs/vzctl"
+user_apps="$console_home/Applications"
+bindir=/usr/local/bin
+agent_path="${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+mkdir -p "$launch_agents_dir" "$log_dir" "$user_apps"
+chmod 700 "$log_dir"
+chown "$console_user" "$log_dir" "$user_apps" 2>/dev/null || true
+
+# Prefer /Applications; also mirror into ~/Applications for parity with make install.
+if [ -d /Applications/vzctl.app ]; then
+  ditto /Applications/vzctl.app "$user_apps/vzctl.app"
+  chown -R "$console_user" "$user_apps/vzctl.app" 2>/dev/null || true
+fi
+
+write_agent_plist() {
+  plist=$1
+  label=$2
+  binary=$3
+  command=$4
+  log_name=$5
+  plutil -create xml1 "$plist"
+  plutil -insert Label -string "$label" "$plist"
+  plutil -insert ProgramArguments -array "$plist"
+  plutil -insert ProgramArguments.0 -string "$binary" "$plist"
+  plutil -insert ProgramArguments.1 -string "$command" "$plist"
+  plutil -insert RunAtLoad -bool true "$plist"
+  plutil -insert KeepAlive -bool true "$plist"
+  plutil -insert ProcessType -string Background "$plist"
+  plutil -insert EnvironmentVariables -dictionary "$plist"
+  plutil -insert EnvironmentVariables.PATH -string "$agent_path" "$plist"
+  plutil -insert StandardOutPath -string "$log_dir/${log_name}.log" "$plist"
+  plutil -insert StandardErrorPath -string "$log_dir/${log_name}.error.log" "$plist"
+  plutil -lint "$plist"
+  chmod 0644 "$plist"
+  chown "$console_user" "$plist"
+}
+
+agent_loaded() {
+  launchctl print "$domain/$1" >/dev/null 2>&1
+}
+
+wait_agent_gone() {
+  label=$1
+  timeout_tenths=$2
+  i=0
+  while [ "$i" -lt "$timeout_tenths" ]; do
+    if ! agent_loaded "$label"; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_sock() {
+  path=$1
+  timeout_tenths=$2
+  i=0
+  while [ "$i" -lt "$timeout_tenths" ]; do
+    if [ -S "$path" ]; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+# Stop existing agents before rewriting plists (vz-net graceful only).
+if agent_loaded "$label_supervisor"; then
+  launchctl bootout "$domain/$label_supervisor" >/dev/null 2>&1 || true
+  wait_agent_gone "$label_supervisor" 100 || true
+fi
+if agent_loaded "$label_edge"; then
+  launchctl bootout "$domain/$label_edge" >/dev/null 2>&1 || true
+  wait_agent_gone "$label_edge" 100 || true
+fi
+if agent_loaded "$label_net"; then
+  launchctl bootout "$domain/$label_net" >/dev/null 2>&1 || true
+  wait_agent_gone "$label_net" 600 || true
+fi
+
+net_plist="$launch_agents_dir/$label_net.plist"
+edge_plist="$launch_agents_dir/$label_edge.plist"
+supervisor_plist="$launch_agents_dir/$label_supervisor.plist"
+
+write_agent_plist "$net_plist" "$label_net" "$bindir/vz-net" serve net
+write_agent_plist "$edge_plist" "$label_edge" "$bindir/vz-edge" serve edge
+write_agent_plist "$supervisor_plist" "$label_supervisor" "$bindir/vz-supervisor" serve supervisor
+
+state_dir="$console_home/Library/Application Support/vzctl"
+net_sock="$state_dir/net.sock"
+edge_sock="$state_dir/edge.sock"
+mkdir -p "$state_dir"
+chown "$console_user" "$state_dir" 2>/dev/null || true
+
+launchctl bootstrap "$domain" "$net_plist" 2>/dev/null || launchctl enable "$domain/$label_net" 2>/dev/null || true
+launchctl kickstart "$domain/$label_net" 2>/dev/null || true
+wait_sock "$net_sock" 100 || true
+
+launchctl bootstrap "$domain" "$edge_plist" 2>/dev/null || true
+launchctl kickstart -k "$domain/$label_edge" 2>/dev/null || true
+wait_sock "$edge_sock" 100 || true
+
+launchctl bootstrap "$domain" "$supervisor_plist" 2>/dev/null || true
+launchctl kickstart -k "$domain/$label_supervisor" 2>/dev/null || true
+
+echo "postinstall: LaunchAgents for $console_user under $launch_agents_dir"
+echo "postinstall: app at /Applications/vzctl.app (and $user_apps/vzctl.app)"
+echo "postinstall: guest DNS :53 → sudo vzctl dns install-bind-helper"
+exit 0

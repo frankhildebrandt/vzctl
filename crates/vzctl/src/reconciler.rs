@@ -564,21 +564,18 @@ fn ensure_vms(
             continue;
         }
         let image_cfg = &environment.spec.images[&vm.from];
-        let sealed_path = crate::image::resolve_alias_tag(
-            &crate::images_dir(),
-            &image_cfg.from,
-            &image_cfg.tag,
-        )
-        .map_err(|error| Failure::new(EXIT_STEP, error))?
-        .ok_or_else(|| {
-            Failure::new(
-                EXIT_STEP,
-                format!(
-                    "sealed image {}:{} missing after ensure_images",
-                    image_cfg.from, image_cfg.tag
-                ),
-            )
-        })?;
+        let sealed_path =
+            crate::image::resolve_alias_tag(&crate::images_dir(), &image_cfg.from, &image_cfg.tag)
+                .map_err(|error| Failure::new(EXIT_STEP, error))?
+                .ok_or_else(|| {
+                    Failure::new(
+                        EXIT_STEP,
+                        format!(
+                            "sealed image {}:{} missing after ensure_images",
+                            image_cfg.from, image_cfg.tag
+                        ),
+                    )
+                })?;
         let size = data_disk_gib(&vm.data_disk)?;
         let mut owned = vec![
             "vm".to_string(),
@@ -677,13 +674,9 @@ fn ensure_attachments(
         .iter()
         .flat_map(|(config_name, vm)| {
             let runtime_id = vm_runtime_id(environment, config_name);
-            vm.networks.iter().map(move |network| {
-                (
-                    runtime_id.clone(),
-                    network.name.clone(),
-                    network.ip.clone(),
-                )
-            })
+            vm.networks
+                .iter()
+                .map(move |network| (runtime_id.clone(), network.name.clone(), network.ip.clone()))
         })
         .collect::<BTreeSet<_>>();
     // Up and apply both converge attachments. Detach stack-owned drift first so
@@ -692,7 +685,10 @@ fn ensure_attachments(
         for attachment in snapshot["attachments"].as_array().into_iter().flatten() {
             let current = (
                 attachment["vm_id"].as_str().unwrap_or_default().to_string(),
-                attachment["network"].as_str().unwrap_or_default().to_string(),
+                attachment["network"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
                 attachment["ip"].as_str().unwrap_or_default().to_string(),
             );
             if attachment["project"] == environment.spec.project
@@ -900,11 +896,7 @@ fn ensure_docker_project_mount(
     Ok(())
 }
 
-fn stop_helpers(
-    environment: &Environment,
-    socket_path: &Path,
-    force: bool,
-) -> Result<(), Failure> {
+fn stop_helpers(environment: &Environment, socket_path: &Path, force: bool) -> Result<(), Failure> {
     let mut order = dependency_order(&environment.spec.vms)?;
     order.reverse();
     for name in order {
@@ -934,11 +926,7 @@ fn wait_stopped(vm_id: &str, socket_path: &Path) -> Result<(), Failure> {
     wait_stopped_until(vm_id, socket_path, Duration::from_secs(30))
 }
 
-fn wait_stopped_until(
-    vm_id: &str,
-    socket_path: &Path,
-    timeout: Duration,
-) -> Result<(), Failure> {
+fn wait_stopped_until(vm_id: &str, socket_path: &Path, timeout: Duration) -> Result<(), Failure> {
     let deadline = Instant::now() + timeout;
     loop {
         let records = rpc(socket_path, "vm.list", json!({}))?;
@@ -988,14 +976,7 @@ fn purge_managed(environment: &Environment, socket_path: &Path) -> Result<(), Fa
     for name in environment.spec.vms.keys() {
         let runtime_id = vm_runtime_id(environment, name);
         // Hard delete: SIGKILL via vm.purge + wipe managed bundle (no graceful stop).
-        match run_self(&[
-            "vm",
-            "delete",
-            &runtime_id,
-            "--force",
-            "--format",
-            "json",
-        ]) {
+        match run_self(&["vm", "delete", &runtime_id, "--force", "--format", "json"]) {
             Ok(_) => {}
             Err(failure) => {
                 // Already gone after a partial purge is fine.
@@ -1118,16 +1099,8 @@ fn ensure_ports(environment: &Environment, socket_path: &Path) -> Result<(), Fai
 }
 
 fn ensure_ca(environment: &Environment) -> Result<(), Failure> {
-    let enabled = environment
-        .spec
-        .certs
-        .as_ref()
-        .is_some_and(|c| c.enabled)
-        || environment
-            .spec
-            .ingress
-            .as_ref()
-            .is_some_and(|i| i.enabled)
+    let enabled = environment.spec.certs.as_ref().is_some_and(|c| c.enabled)
+        || environment.spec.ingress.as_ref().is_some_and(|i| i.enabled)
         || environment.spec.oidc.as_ref().is_some_and(|o| o.enabled);
     if !enabled {
         return Ok(());
@@ -1316,25 +1289,16 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
 }
 
 fn ensure_ca_rollout(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
-    let enabled = environment
-        .spec
-        .certs
-        .as_ref()
-        .is_some_and(|c| c.enabled)
-        || environment
-            .spec
-            .ingress
-            .as_ref()
-            .is_some_and(|i| i.enabled)
+    let enabled = environment.spec.certs.as_ref().is_some_and(|c| c.enabled)
+        || environment.spec.ingress.as_ref().is_some_and(|i| i.enabled)
         || environment.spec.oidc.as_ref().is_some_and(|o| o.enabled);
     if !enabled {
         return Ok(());
     }
     let state_dir = crate::state_dir();
-    let pem = crate::certs::read_ca_pem(&state_dir)
-        .map_err(|e| Failure::new(EXIT_STEP, e))?;
-    let fingerprint = crate::certs::read_fingerprint(&state_dir)
-        .map_err(|e| Failure::new(EXIT_STEP, e))?;
+    let pem = crate::certs::read_ca_pem(&state_dir).map_err(|e| Failure::new(EXIT_STEP, e))?;
+    let fingerprint =
+        crate::certs::read_fingerprint(&state_dir).map_err(|e| Failure::new(EXIT_STEP, e))?;
     for name in environment.spec.vms.keys() {
         let runtime_id = vm_runtime_id(environment, name);
         // Best-effort live inject via supervisor → helper → agent exec.

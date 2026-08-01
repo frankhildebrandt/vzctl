@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -439,7 +439,7 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
         .spawn()
         .map_err(|error| BuilderFailure::new(12, format!("cannot start vz-helper: {error}")))?;
 
-    let result = match wait_for_result(&mut child, &vm_id, options.timeout) {
+    let result = match wait_for_result(&mut child, &vm_id, options.timeout, options.progress) {
         Ok(result) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -480,9 +480,11 @@ fn wait_for_result(
     child: &mut Child,
     vm_id: &str,
     timeout: Duration,
+    progress: bool,
 ) -> Result<BuilderResult, BuilderFailure> {
     let started = Instant::now();
     let mut serial_path: Option<PathBuf> = None;
+    let mut serial_offset: u64 = 0;
     let mut stdout_buf = String::new();
 
     if let Some(stdout) = child.stdout.as_mut() {
@@ -532,6 +534,9 @@ fn wait_for_result(
         }
 
         if let Some(path) = &serial_path {
+            if progress {
+                emit_builder_serial_progress(path, &mut serial_offset);
+            }
             if let Some(result) = find_builder_result(path) {
                 return Ok(result);
             }
@@ -540,6 +545,9 @@ fn wait_for_result(
         match child.try_wait() {
             Ok(Some(status)) => {
                 if let Some(path) = &serial_path {
+                    if progress {
+                        emit_builder_serial_progress(path, &mut serial_offset);
+                    }
                     if let Some(result) = find_builder_result(path) {
                         return Ok(result);
                     }
@@ -575,6 +583,62 @@ fn wait_for_result(
             }
         }
         thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Whether a serial line should be mirrored to stderr when progress is on.
+fn should_emit_builder_serial_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Result marker becomes the envelope/error; skip noisy duplicates.
+    if trimmed.contains(BUILDER_RESULT_PREFIX.trim_end()) {
+        return false;
+    }
+    true
+}
+
+/// Read newly completed lines from `path` starting at `offset` (byte position).
+/// Incomplete trailing fragments are left unread for the next poll.
+fn read_new_serial_lines(path: &Path, offset: &mut u64) -> Vec<String> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Vec::new();
+    };
+    if *offset > meta.len() {
+        // Truncated / rotated log — restart from the beginning.
+        *offset = 0;
+    }
+    let Ok(mut file) = File::open(path) else {
+        return Vec::new();
+    };
+    if file.seek(SeekFrom::Start(*offset)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() || buf.is_empty() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = Vec::new();
+    let mut consumed = 0usize;
+    for chunk in text.split_inclusive('\n') {
+        if !chunk.ends_with('\n') {
+            break;
+        }
+        let clean = chunk.trim_end_matches(['\r', '\n']);
+        lines.push(clean.to_string());
+        consumed += chunk.len();
+    }
+    *offset += consumed as u64;
+    lines
+}
+
+fn emit_builder_serial_progress(path: &Path, offset: &mut u64) {
+    for line in read_new_serial_lines(path, offset) {
+        if should_emit_builder_serial_line(&line) {
+            eprintln!("builder: {line}");
+        }
     }
 }
 
@@ -937,6 +1001,60 @@ mod tests {
     fn rejects_malformed_builder_result() {
         assert!(parse_builder_result_line("VZCTL_BUILDER_RESULT not-json").is_none());
         assert!(parse_builder_result_line("other line").is_none());
+    }
+
+    #[test]
+    fn filters_empty_and_result_marker_serial_lines() {
+        assert!(!should_emit_builder_serial_line(""));
+        assert!(!should_emit_builder_serial_line("   "));
+        assert!(!should_emit_builder_serial_line(
+            "VZCTL_BUILDER_RESULT {\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"bake\"}"
+        ));
+        assert!(!should_emit_builder_serial_line(
+            "vzctl-builder login: VZCTL_BUILDER_RESULT {\"ok\":false,\"phase\":\"bake\",\"exit\":13}"
+        ));
+        assert!(should_emit_builder_serial_line("target root /dev/vdb1"));
+        assert!(should_emit_builder_serial_line(
+            "cloud-init: running modules"
+        ));
+    }
+
+    #[test]
+    fn serial_offset_reader_returns_only_new_complete_lines() {
+        let dir = std::env::temp_dir().join(format!(
+            "vzctl-builder-serial-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Guard(dir.clone());
+        let path = dir.join("serial.log");
+
+        fs::write(&path, "line-one\nline-two\nincompl").unwrap();
+        let mut offset = 0u64;
+        let first = read_new_serial_lines(&path, &mut offset);
+        assert_eq!(first, vec!["line-one", "line-two"]);
+        assert_eq!(offset, b"line-one\nline-two\n".len() as u64);
+
+        // Incomplete fragment stays until newline arrives.
+        let second = read_new_serial_lines(&path, &mut offset);
+        assert!(second.is_empty());
+
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        write!(file, "ete\nline-three\n").unwrap();
+        drop(file);
+
+        let third = read_new_serial_lines(&path, &mut offset);
+        assert_eq!(third, vec!["incomplete", "line-three"]);
     }
 
     #[test]

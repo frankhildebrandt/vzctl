@@ -23,11 +23,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          # macOS 26 dyld requires LC_UUID; Go <1.24 omits it → abort trap in tests.
+          go-version: "1.26.x"
+          cache: false
+
       - name: Tool versions
         run: |
           rustc --version
           cargo --version
           swift --version
+          go version
 
       - name: CI
         run: make ci

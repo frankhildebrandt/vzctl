@@ -261,9 +261,7 @@ pub(crate) enum IngressUpstream {
 impl IngressUpstream {
     pub(crate) fn parse(raw: &str) -> Result<Self, String> {
         let Some((left, right)) = raw.split_once(':') else {
-            return Err(
-                "ingress route to must be vm:port or oidc:<port>".to_string(),
-            );
+            return Err("ingress route to must be vm:port or oidc:<port>".to_string());
         };
         if left.is_empty() || right.is_empty() {
             return Err("ingress route to must be vm:port or oidc:<port>".to_string());
@@ -309,7 +307,10 @@ pub(crate) struct ImageConfig {
     pub(crate) from: String,
     pub(crate) role: ImageRole,
     /// Artifact pin for the sealed bake/seal product (`sealed/<alias>@<tag>.raw`).
-    #[schemars(length(min = 1, max = 64), regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$"))]
+    #[schemars(
+        length(min = 1, max = 64),
+        regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    )]
     pub(crate) tag: String,
 }
 
@@ -1064,7 +1065,11 @@ fn validate_references(
             .spec
             .vms
             .iter()
-            .filter(|(_, vm)| vm.networks.iter().any(|attachment| attachment.name == *name))
+            .filter(|(_, vm)| {
+                vm.networks
+                    .iter()
+                    .any(|attachment| attachment.name == *name)
+            })
             .map(|(vm_name, _)| vm_name.as_str())
             .collect::<Vec<_>>();
         if owners.len() != 1 {
@@ -1252,10 +1257,7 @@ fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<Valid
             if !oidc.listen.starts_with("127.0.0.1:") {
                 issues.push(ValidationIssue::new(
                     format!("{base}.listen"),
-                    format!(
-                        "oidc.listen must bind 127.0.0.1 (got {:?})",
-                        oidc.listen
-                    ),
+                    format!("oidc.listen must bind 127.0.0.1 (got {:?})", oidc.listen),
                     "semantic",
                 ));
             }
@@ -1294,10 +1296,7 @@ fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<Valid
                             } else if !seen.insert(user.username.clone()) {
                                 issues.push(ValidationIssue::new(
                                     format!("{ubase}.username"),
-                                    format!(
-                                        "duplicate oidc user username {:?}",
-                                        user.username
-                                    ),
+                                    format!("duplicate oidc user username {:?}", user.username),
                                     "semantic",
                                 ));
                             }
@@ -2052,7 +2051,9 @@ spec:
       roles: [docker]
 "#;
         let issues = validate_source(source).unwrap_err();
-        assert!(issues.iter().any(|issue| issue.message.contains("docker, router")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("docker, router")));
     }
 
     #[test]
@@ -2259,10 +2260,7 @@ spec:
         - { name: lan, ip: 10.90.0.2 }
 "#;
         let environment = validate_source(source).unwrap();
-        assert_eq!(
-            environment.spec.policies[0].via.as_deref(),
-            Some("router")
-        );
+        assert_eq!(environment.spec.policies[0].via.as_deref(), Some("router"));
     }
 
     #[test]
@@ -2463,7 +2461,14 @@ spec:
       requires: [oidc]
 "#;
         let environment = validate_source(source).unwrap();
-        let uplink = environment.spec.oidc.as_ref().unwrap().uplink.as_ref().unwrap();
+        let uplink = environment
+            .spec
+            .oidc
+            .as_ref()
+            .unwrap()
+            .uplink
+            .as_ref()
+            .unwrap();
         assert_eq!(uplink.client_id.as_deref(), Some("edge-dmz-dex"));
         assert_eq!(uplink.client_secret_file.as_deref(), Some("host"));
         assert!(uplink.issuer.is_none());
@@ -2508,9 +2513,9 @@ spec:
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.message.contains("oidc.uplink.issuer must be an https://")));
+        assert!(issues.iter().any(|issue| issue
+            .message
+            .contains("oidc.uplink.issuer must be an https://")));
     }
 
     #[test]

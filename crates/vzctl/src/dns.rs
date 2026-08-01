@@ -290,7 +290,10 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                     Failure::new(EXIT_INVALID, format!("invalid --allow-uid: {value}"))
                 })?;
                 if allow_uid.replace(parsed).is_some() {
-                    return Err(Failure::new(EXIT_USAGE, "--allow-uid may only be used once"));
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--allow-uid may only be used once",
+                    ));
                 }
             }
             "--type" => {
@@ -973,7 +976,8 @@ fn install_bind_helper(explicit_uid: Option<u32>) -> Result<(PathBuf, Change), F
     let libexec_dir = Path::new(BIND_HELPER_LIBEXEC)
         .parent()
         .ok_or_else(|| Failure::new(EXIT_RESOLVER, "invalid bind-helper libexec path"))?;
-    fs::create_dir_all(libexec_dir).map_err(|error| io_failure("create directory", libexec_dir, error))?;
+    fs::create_dir_all(libexec_dir)
+        .map_err(|error| io_failure("create directory", libexec_dir, error))?;
     fs::set_permissions(libexec_dir, fs::Permissions::from_mode(0o755))
         .map_err(|error| io_failure("set permissions on", libexec_dir, error))?;
 
@@ -1050,9 +1054,9 @@ fn uninstall_bind_helper() -> Result<(PathBuf, Change), Failure> {
 
 fn allow_uid() -> Result<u32, Failure> {
     if let Ok(value) = std::env::var("SUDO_UID") {
-        return value.parse::<u32>().map_err(|_| {
-            Failure::new(EXIT_INVALID, format!("invalid SUDO_UID: {value}"))
-        });
+        return value
+            .parse::<u32>()
+            .map_err(|_| Failure::new(EXIT_INVALID, format!("invalid SUDO_UID: {value}")));
     }
     if let Ok(value) = std::env::var("VZCTL_DNS_BIND_ALLOW_UID") {
         return value.parse::<u32>().map_err(|_| {
@@ -1122,7 +1126,9 @@ fn bind_helper_plist_content(allow_uid: u32) -> Result<String, Failure> {
 
 fn ensure_bind_helper_owned(path: &Path, content: &str) -> Result<(), Failure> {
     if content.lines().any(|line| line == MANAGED_MARKER)
-        && content.lines().any(|line| line.starts_with("# allow-uid: "))
+        && content
+            .lines()
+            .any(|line| line.starts_with("# allow-uid: "))
     {
         Ok(())
     } else {
@@ -1167,7 +1173,10 @@ fn launchctl_kickstart_bind_helper() -> Result<(), Failure> {
         .args(["kickstart", "-k", &format!("system/{BIND_HELPER_LABEL}")])
         .status()
         .map_err(|error| {
-            Failure::new(EXIT_RESOLVER, format!("launchctl kickstart failed: {error}"))
+            Failure::new(
+                EXIT_RESOLVER,
+                format!("launchctl kickstart failed: {error}"),
+            )
         })?;
     if status.success() {
         Ok(())
@@ -1567,7 +1576,9 @@ pub(crate) fn doctor_bind_helper_check() -> DoctorBindHelperCheck {
         && fs::read_to_string(marker)
             .map(|content| {
                 content.lines().any(|line| line == MANAGED_MARKER)
-                    && content.lines().any(|line| line.starts_with("# allow-uid: "))
+                    && content
+                        .lines()
+                        .any(|line| line.starts_with("# allow-uid: "))
             })
             .unwrap_or(false);
     let socket_present = Path::new(&socket_path).exists();
@@ -1607,9 +1618,7 @@ pub(crate) fn doctor_bind_helper_check() -> DoctorBindHelperCheck {
         return DoctorBindHelperCheck {
             id: "dns.bind_helper",
             ok: true,
-            message: format!(
-                "dns bind-helper ready ({socket_path}; guest :{guest_port})"
-            ),
+            message: format!("dns bind-helper ready ({socket_path}; guest :{guest_port})"),
             details,
         };
     }

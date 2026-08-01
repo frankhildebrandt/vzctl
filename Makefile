@@ -25,7 +25,7 @@ DEX_VENDOR := daemon/Vendor/dex/dex
 	fmt fmt-check doctor doctor-json sign-helper \
 	vendor vendor-caddy vendor-dex install-vendor \
 	validate validate-edge-dmz \
-	ui-install ui-dev ui-build \
+	ui-install ui-dev ui-build package \
 	install clean
 
 help: ## Verfügbare Targets anzeigen
@@ -144,7 +144,10 @@ ui-dev: ui-install ## Tauri-UI im Dev-Modus starten (braucht vzctl auf PATH)
 ui-build: ui-install ## Tauri-UI als Release-App bauen
 	cd apps/vzctl-ui && $(NPM) run tauri:build -- --bundles app
 
+package: release ui-build ## tar.gz + .pkg + .dmg unter dist/ erzeugen
+	RELEASE_TAG="$(RELEASE_TAG)" ./scripts/package-macos.sh
+
 clean: ## Rust- und Swift-Build-Artefakte entfernen
 	$(CARGO) clean
 	$(SWIFT) package --package-path daemon clean
-	rm -rf guest-agent/bin
+	rm -rf guest-agent/bin dist
