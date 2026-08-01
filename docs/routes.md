@@ -14,8 +14,13 @@ vzctl net attach router --network lan --ip 10.90.0.2
 `--role router` schreibt `roles: ["router"]` in das VM-Manifest und ergänzt
 das NoCloud-Template um den persistenten Sysctl
 `net.ipv4.ip_forward=1`. Eine Router-VM braucht mindestens zwei Attachments.
-Für jedes Netz ist ausschließlich die aus dem CIDR abgeleitete `.2` zulässig.
+Für jedes Netz ist ausschließlich die aus dem CIDR abgeleitete `.2` zulässig
+(Ausnahme: Docker+Router-VMs — Parent-vmnet behält die Guest-IP, nur das
+`backend: docker`-Netz braucht `.2` als `bip`).
 Host-Gateway und DNS bleiben `.0`; normale Gäste beginnen bei `.10`.
+
+Peer-Router bekommen für `backend: docker`-CIDRs automatisch Static Routes
+(`ip route replace <cidr> via <docker-parent-ip>`).
 
 ## Konfiguration anwenden
 

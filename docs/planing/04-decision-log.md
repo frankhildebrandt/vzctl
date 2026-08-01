@@ -33,6 +33,7 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 20 | Apply | **Journal + Resume/Abort** — [ADR 0003](../adr/0003-apply-state.md) |
 | 21 | Guest-Agent | **In sealed Base vorinstalliert** (nicht First-Boot-Install) |
 | 25 | Image Customize Backend | **Builder-VM** mit gepinnter Appliance auf macOS; lokales `virt-customize` wenn vorhanden (CI/Linux). Seal und Bake teilen das Backend, bleiben getrennte Contracts. |
+| 26 | Docker-Netz | **`backend: docker`** als first-class Hypernetwork (Bridge/bip = CIDR, Firewall via Router-Rolle) |
 | 22 | MVP Label | v0.1 = **Alpha**; virtiofs + Docker-Polish → **v0.1.x** |
 | 23 | Guest-DNS-IP | Host-Bridge **`.0`** (UDP gemessen); Host-Listener parallel `127.0.0.1` |
 | 24 | G0 Verdict | **Go**; ADR 0002+0003 accepted |
@@ -52,3 +53,6 @@ Protokoll: [g0-network.md](../spikes/g0-network.md)
 - Entscheidung 18: #33 rendert deklarative `policies:` als atomare nftables-
   Forward-Tabelle auf der Router-VM. Default bleibt `DROP`; Plan und JSON-Status
   laufen über den vorhandenen Helper→Guest-Agent-Pfad aus #32.
+- Entscheidung 26: `networks.*.backend: docker` exponiert die Docker-Bridge als
+  Hypernetwork-CIDR (kein vmnet; Owner `roles: [docker, router]`, bip `.2`;
+  Peer-Router bekommen Static Routes; nftables steuert Forward).
