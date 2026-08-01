@@ -83,6 +83,38 @@ export const DnsConfigSchema = z.object({
     .default({ enabled: true, upstream: "system" }),
 });
 
+export const OidcUplinkSchema = z
+  .object({
+    type: z.enum(["oidc", "github", "microsoft", "discord"]).optional(),
+    issuer: z.string().optional(),
+    tenant: z.string().optional(),
+    clientID: z.string().optional(),
+    clientSecretFile: z.string().optional(),
+    scopes: z.array(z.string()).optional(),
+    getUserInfo: z.boolean().optional(),
+  })
+  .strict();
+
+export const OidcSimpleUserSchema = z
+  .object({
+    username: z.string().min(1),
+    email: z.string().min(1),
+  })
+  .passthrough();
+
+export const OidcConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    mode: z.enum(["embedded", "oidc-simple"]).default("embedded"),
+    issuer: z.string().min(1),
+    listen: z.string().default("127.0.0.1:5556"),
+    clients: z.literal("auto").default("auto"),
+    passwordFile: z.string().optional(),
+    uplink: OidcUplinkSchema.optional(),
+    users: z.array(OidcSimpleUserSchema).optional(),
+  })
+  .passthrough();
+
 export const SpecSchema = z.object({
   project: nameId,
   domain: z.string().regex(/\.vz\.test$/, "domain muss auf .vz.test enden"),
@@ -96,7 +128,7 @@ export const SpecSchema = z.object({
   vms: z.record(z.string(), VmConfigSchema),
   certs: z.unknown().optional(),
   ingress: z.unknown().optional(),
-  oidc: z.unknown().optional(),
+  oidc: OidcConfigSchema.optional(),
 });
 
 export const EnvironmentSchema = z.object({
@@ -119,3 +151,6 @@ export type VmNetwork = z.infer<typeof VmNetworkSchema>;
 export type Protocol = z.infer<typeof ProtocolSchema>;
 export type NetworkMode = z.infer<typeof NetworkModeSchema>;
 export type NetworkBackend = z.infer<typeof NetworkBackendSchema>;
+export type OidcConfig = z.infer<typeof OidcConfigSchema>;
+export type OidcUplink = z.infer<typeof OidcUplinkSchema>;
+export type OidcSimpleUser = z.infer<typeof OidcSimpleUserSchema>;

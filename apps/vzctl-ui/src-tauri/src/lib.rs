@@ -1476,6 +1476,17 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn write_secret_file(path: String, contents: String) -> Result<(), String> {
+    write_text_file(path.clone(), contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn ensure_dir(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {path}: {e}"))
 }
@@ -1483,6 +1494,11 @@ fn ensure_dir(path: String) -> Result<(), String> {
 #[tauri::command]
 fn path_exists(path: String) -> Result<bool, String> {
     Ok(Path::new(&path).exists())
+}
+
+#[tauri::command]
+fn vzctl_state_dir() -> Result<String, String> {
+    Ok(terminal::vzctl_state_dir_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1501,8 +1517,10 @@ pub fn run() {
             open_url,
             read_text_file,
             write_text_file,
+            write_secret_file,
             ensure_dir,
             path_exists,
+            vzctl_state_dir,
             terminal::terminal_open_attach,
             terminal::terminal_open_exec,
             terminal::terminal_write,
