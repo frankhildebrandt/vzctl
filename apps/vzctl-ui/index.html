@@ -4,6 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>vzctl</title>
+    <script>
+      try {
+        var raw = localStorage.getItem("vzctl.ui.settings.v1");
+        var theme = "light";
+        var allowed = {
+          light: 1,
+          dark: 1,
+          crt: 1,
+          "hot-pink": 1,
+          "business-gray": 1,
+        };
+        if (raw) {
+          var parsed = JSON.parse(raw);
+          if (parsed && allowed[parsed.theme]) {
+            theme = parsed.theme;
+          }
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme =
+          theme === "light" || theme === "business-gray" ? "light" : "dark";
+      } catch (_) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
