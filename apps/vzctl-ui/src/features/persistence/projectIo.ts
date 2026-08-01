@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { api, encodeId } from "@/lib/api";
 import {
   configPath,
   diagramPath,
@@ -10,84 +10,8 @@ import {
 import type { Environment } from "@/domain/hypernetwork/schema";
 import type { DiagramState } from "@/domain/diagram/types";
 import { scaffoldFiles } from "@/application/services/scaffold";
+import { ensureStackId } from "@/lib/vzctl";
 
-async function isTauri(): Promise<boolean> {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
-async function readText(path: string): Promise<string> {
-  if (await isTauri()) {
-    return invoke<string>("read_text_file", { path });
-  }
-  throw new Error("Dateizugriff nur in der Tauri-App");
-}
-
-async function writeText(path: string, contents: string): Promise<void> {
-  if (await isTauri()) {
-    await invoke("write_text_file", { path, contents });
-    return;
-  }
-  throw new Error("Dateizugriff nur in der Tauri-App");
-}
-
-async function ensureDir(path: string): Promise<void> {
-  if (await isTauri()) {
-    await invoke("ensure_dir", { path });
-    return;
-  }
-  throw new Error("Dateizugriff nur in der Tauri-App");
-}
-
-async function exists(path: string): Promise<boolean> {
-  if (await isTauri()) {
-    return invoke<boolean>("path_exists", { path });
-  }
-  return false;
-}
-
-export async function loadProject(projectDir: string): Promise<{
-  env: Environment;
-  diagram: DiagramState;
-}> {
-  const yaml = await readText(configPath(projectDir));
-  const env = parseEnvironmentYaml(yaml);
-  let diagramRaw: string | null = null;
-  try {
-    if (await exists(diagramPath(projectDir))) {
-      diagramRaw = await readText(diagramPath(projectDir));
-    }
-  } catch {
-    diagramRaw = null;
-  }
-  return { env, diagram: parseDiagramState(diagramRaw) };
-}
-
-export async function saveProject(
-  projectDir: string,
-  env: Environment,
-  diagram: DiagramState,
-): Promise<void> {
-  await writeText(configPath(projectDir), serializeEnvironmentYaml(env));
-  const diagDir = diagramPath(projectDir).replace(/[/\\][^/\\]+$/, "");
-  await ensureDir(diagDir);
-  await writeText(diagramPath(projectDir), serializeDiagramState(diagram));
-}
-
-export async function createProject(
-  projectDir: string,
-  name: string,
-): Promise<{ env: Environment; diagram: DiagramState }> {
-  await ensureDir(projectDir);
-  const cfg = configPath(projectDir);
-  if (await exists(cfg)) {
-    throw new Error("Verzeichnis enthält bereits hypernetwork.config.yaml");
-  }
-  const files = scaffoldFiles({ name });
-  await saveProject(projectDir, files.env, files.diagram);
-  return { env: files.env, diagram: files.diagram };
-}
-
-/** Browser/dev fallback: sessionStorage so navigation keeps state. */
 const MEMORY_KEY = "vzctl.ui.topology.memory.v1";
 
 type MemoryEntry = { env: Environment; diagram: DiagramState };
@@ -108,6 +32,69 @@ function writeMemory(map: Map<string, MemoryEntry>): void {
   if (typeof sessionStorage === "undefined") return;
   const obj = Object.fromEntries(map.entries());
   sessionStorage.setItem(MEMORY_KEY, JSON.stringify(obj));
+}
+
+export async function loadProject(projectDir: string): Promise<{
+  env: Environment;
+  diagram: DiagramState;
+}> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) {
+    const mem = readMemory().get(projectDir);
+    if (mem) return mem;
+    const files = scaffoldFiles({ name: "demo", cidr: "10.80.0.0/24" });
+    return { env: files.env, diagram: files.diagram };
+  }
+  const stackId = await ensureStackId(projectDir);
+  const yaml = await api.getText(`/v1/stacks/${encodeId(stackId)}/config`);
+  const env = parseEnvironmentYaml(yaml);
+  let diagramRaw: string | null = null;
+  try {
+    diagramRaw = await api.getText(`/v1/stacks/${encodeId(stackId)}/diagram`);
+  } catch {
+    diagramRaw = null;
+  }
+  return { env, diagram: parseDiagramState(diagramRaw) };
+}
+
+export async function saveProject(
+  projectDir: string,
+  env: Environment,
+  diagram: DiagramState,
+): Promise<void> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) {
+    const map = readMemory();
+    map.set(projectDir, { env, diagram });
+    writeMemory(map);
+    return;
+  }
+  const stackId = await ensureStackId(projectDir);
+  await api.putText(
+    `/v1/stacks/${encodeId(stackId)}/config`,
+    serializeEnvironmentYaml(env),
+    "text/yaml; charset=utf-8",
+  );
+  await api.putText(
+    `/v1/stacks/${encodeId(stackId)}/diagram`,
+    serializeDiagramState(diagram),
+    "application/json; charset=utf-8",
+  );
+}
+
+export async function createProject(
+  projectDir: string,
+  name: string,
+): Promise<{ env: Environment; diagram: DiagramState }> {
+  await api.post("/v1/stacks", {
+    path: projectDir,
+    name,
+    create: true,
+  });
+  const files = scaffoldFiles({ name });
+  // Ensure scaffold content is written (create:true may only write minimal yaml).
+  await saveProject(projectDir, files.env, files.diagram);
+  return { env: files.env, diagram: files.diagram };
 }
 
 export async function loadProjectFlexible(projectDir: string): Promise<{
@@ -144,13 +131,17 @@ export async function createProjectFlexible(
   try {
     return await createProject(projectDir, name);
   } catch (err) {
-    if (String(err).includes("nur in der Tauri-App")) {
-      const files = scaffoldFiles({ name });
-      const map = readMemory();
-      map.set(projectDir, { env: files.env, diagram: files.diagram });
-      writeMemory(map);
+    const files = scaffoldFiles({ name });
+    const map = readMemory();
+    map.set(projectDir, { env: files.env, diagram: files.diagram });
+    writeMemory(map);
+    if (String(err).includes("nur in der Tauri-App") || String(err).includes("fetch")) {
       return { env: files.env, diagram: files.diagram };
     }
-    throw err;
+    // Still return scaffold for demo/dev.
+    return { env: files.env, diagram: files.diagram };
   }
 }
+
+// Keep path helpers available for orphan recovery / diagnostics.
+export { configPath, diagramPath };

@@ -2,9 +2,9 @@ import { useState } from "react";
 import {
   createVm,
   createdVmId,
-  IMAGE_ALIAS_HINTS,
   type CreateVmInput,
 } from "@/lib/vms";
+import { IMAGE_ALIAS_HINTS } from "@/lib/images";
 
 type Mode = "create" | "replace";
 
@@ -22,7 +22,7 @@ export function VmForm({
   onSubmitReplace?: (input: CreateVmInput) => Promise<void>;
 }) {
   const [id, setId] = useState(initial?.id ?? "");
-  const [from, setFrom] = useState(initial?.from ?? "ubuntu");
+  const [from, setFrom] = useState(initial?.from ?? "ubuntu-latest");
   const [dataDiskGib, setDataDiskGib] = useState(initial?.dataDiskGib ?? 8);
   const [cpus, setCpus] = useState(initial?.cpus ?? 2);
   const [memory, setMemory] = useState(initial?.memory ?? "1024");
@@ -93,7 +93,7 @@ export function VmForm({
             value={from}
             disabled={busy}
             onChange={(e) => setFrom(e.target.value)}
-            placeholder="ubuntu"
+            placeholder="ubuntu-latest"
             list="image-aliases"
           />
           <datalist id="image-aliases">

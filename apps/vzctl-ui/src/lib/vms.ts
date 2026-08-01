@@ -1,4 +1,9 @@
-import { assertEnvelopeOk, parseEnvelope, runVzctlArgv, type VzctlEnvelope } from "@/lib/vzctl";
+import { api, encodeId } from "@/lib/api";
+import {
+  assertEnvelopeOk,
+  parseEnvelope,
+  type VzctlEnvelope,
+} from "@/lib/vzctl";
 
 export type VmNetwork = {
   name?: string;
@@ -134,10 +139,16 @@ function asResources(value: unknown): VmResources | null {
 function parseListItem(value: unknown): VmListItem | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
-  if (typeof row.id !== "string") return null;
+  const id =
+    typeof row.id === "string"
+      ? row.id
+      : typeof row.vm_id === "string"
+        ? row.vm_id
+        : null;
+  if (!id) return null;
   const resources = asResources(row.resources);
   return {
-    id: row.id,
+    id,
     state: typeof row.state === "string" ? row.state : "unknown",
     pid: typeof row.pid === "number" ? row.pid : null,
     bundle: typeof row.bundle === "string" ? row.bundle : undefined,
@@ -153,17 +164,23 @@ function parseListItem(value: unknown): VmListItem | null {
 }
 
 export async function listVms(): Promise<VmListItem[]> {
-  const raw = await runVzctlArgv(["vm", "list"]);
-  const envelope = parseEnvelope(raw);
-  const vms = Array.isArray(envelope.vms) ? envelope.vms : [];
-  return vms
-    .map(parseListItem)
-    .filter((entry): entry is VmListItem => entry !== null);
+  const data = await api.get<unknown>("/v1/vms");
+  const envelope = parseEnvelope(data);
+  if (Array.isArray(envelope.vms)) {
+    return envelope.vms
+      .map(parseListItem)
+      .filter((entry): entry is VmListItem => entry !== null);
+  }
+  if (Array.isArray(data)) {
+    return data
+      .map(parseListItem)
+      .filter((entry): entry is VmListItem => entry !== null);
+  }
+  return [];
 }
 
 export async function inspectVm(id: string): Promise<VmInspect> {
-  const raw = await runVzctlArgv(["vm", "inspect", id]);
-  const envelope = parseEnvelope(raw);
+  const envelope = parseEnvelope(await api.get(`/v1/vms/${encodeId(id)}`));
   const vm =
     parseListItem(envelope.vm) ??
     ({
@@ -174,7 +191,6 @@ export async function inspectVm(id: string): Promise<VmInspect> {
       ips: [],
       networks: [],
     } satisfies VmListItem);
-  const resources = vm.resources ?? null;
 
   return {
     envelope,
@@ -197,78 +213,52 @@ export async function inspectVm(id: string): Promise<VmInspect> {
         ? (envelope.logs as { serial?: string })
         : null,
     warnings: asStringArray(envelope.warnings),
-    resources,
+    resources: vm.resources ?? null,
   };
 }
 
 export async function startVm(id: string): Promise<VzctlEnvelope> {
-  const envelope = parseEnvelope(await runVzctlArgv(["vm", "start", id]));
+  const envelope = parseEnvelope(await api.post(`/v1/vms/${encodeId(id)}/start`));
   assertEnvelopeOk(envelope, `vm start ${id} failed`);
   return envelope;
 }
 
 export async function stopVm(id: string): Promise<VzctlEnvelope> {
-  const envelope = parseEnvelope(await runVzctlArgv(["vm", "stop", id]));
+  const envelope = parseEnvelope(await api.post(`/v1/vms/${encodeId(id)}/stop`));
   assertEnvelopeOk(envelope, `vm stop ${id} failed`);
   return envelope;
 }
 
-export async function deleteVm(
-  id: string,
-  force = false,
-): Promise<VzctlEnvelope> {
-  const args = ["vm", "delete", id];
-  if (force) args.push("--force");
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+export async function deleteVm(id: string, force = false): Promise<VzctlEnvelope> {
+  const qs = force ? "?force=1" : "";
+  const envelope = parseEnvelope(await api.delete(`/v1/vms/${encodeId(id)}${qs}`));
   assertEnvelopeOk(envelope, `vm delete ${id} failed`);
   return envelope;
 }
 
 export async function createVm(input: CreateVmInput): Promise<VzctlEnvelope> {
-  const args = [
-    "vm",
-    "create",
-    input.id,
-    "--from",
-    input.from,
-    "--data-disk",
-    String(input.dataDiskGib),
-  ];
-  if (input.cpus != null) {
-    args.push("--cpus", String(input.cpus));
-  }
-  if (input.memory) {
-    args.push("--memory", input.memory);
-  }
-  if (input.network) {
-    args.push("--network", input.network);
-  }
-  if (input.project) {
-    args.push("--project", input.project);
-  }
-  if (input.rootPassword) {
-    args.push("--root-password", input.rootPassword);
-  }
-  for (const role of input.roles ?? []) {
-    args.push("--role", role);
-  }
-  for (const mount of input.mounts ?? []) {
-    let flag = `source=${mount.source},target=${mount.target}`;
-    if (mount.tag) flag = `tag=${mount.tag},${flag}`;
-    if (mount.readOnly) flag += ",ro";
-    args.push("--mount", flag);
-  }
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+  const envelope = parseEnvelope(
+    await api.post("/v1/vms", {
+      id: input.id,
+      from: input.from,
+      dataDiskGib: input.dataDiskGib,
+      cpus: input.cpus,
+      memory: input.memory,
+      network: input.network,
+      project: input.project,
+      rootPassword: input.rootPassword,
+      roles: input.roles,
+      mounts: input.mounts,
+    }),
+  );
   assertEnvelopeOk(envelope, `vm create ${input.id} failed`);
   return envelope;
 }
 
-/** Encode slash-namespaced VM IDs for `/vms/$vmId` route params. */
 export function encodeVmIdParam(id: string): string {
   return encodeURIComponent(id);
 }
 
-/** Decode route param back to runtime VM ID (`project/vm` or flat). */
 export function decodeVmIdParam(param: string): string {
   try {
     return decodeURIComponent(param);
@@ -277,7 +267,6 @@ export function decodeVmIdParam(param: string): string {
   }
 }
 
-/** Resolved runtime id after create (may be `{project}/{id}` when --project was set). */
 export function createdVmId(envelope: VzctlEnvelope, fallback: string): string {
   const summaryId = envelope.summary?.vm_id;
   if (typeof summaryId === "string" && summaryId) return summaryId;
@@ -290,27 +279,25 @@ export function createdVmId(envelope: VzctlEnvelope, fallback: string): string {
 }
 
 export async function modifyVm(input: ModifyVmInput): Promise<VzctlEnvelope> {
-  const args = ["vm", "modify", input.id];
-  if (input.cpus != null) args.push("--cpus", String(input.cpus));
-  if (input.memory) args.push("--memory", input.memory);
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+  const envelope = parseEnvelope(
+    await api.patch(`/v1/vms/${encodeId(input.id)}`, {
+      cpus: input.cpus,
+      memory: input.memory,
+    }),
+  );
   assertEnvelopeOk(envelope, `vm modify ${input.id} failed`);
   return envelope;
 }
 
 export async function mountVm(input: MountVmInput): Promise<VzctlEnvelope> {
-  const args = [
-    "vm",
-    "mount",
-    input.id,
-    "--source",
-    input.source,
-    "--target",
-    input.target,
-  ];
-  if (input.tag) args.push("--tag", input.tag);
-  if (input.readOnly) args.push("--ro");
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+  const envelope = parseEnvelope(
+    await api.post(`/v1/vms/${encodeId(input.id)}/mounts`, {
+      source: input.source,
+      target: input.target,
+      tag: input.tag,
+      readOnly: input.readOnly,
+    }),
+  );
   assertEnvelopeOk(envelope, `vm mount ${input.id} failed`);
   return envelope;
 }
@@ -319,32 +306,19 @@ export async function unmountVm(
   id: string,
   opts: { target?: string; tag?: string },
 ): Promise<VzctlEnvelope> {
-  const args = ["vm", "unmount", id];
-  if (opts.target) args.push("--target", opts.target);
-  if (opts.tag) args.push("--tag", opts.tag);
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+  if (!opts.tag) throw new Error("unmount requires tag");
+  const envelope = parseEnvelope(
+    await api.delete(`/v1/vms/${encodeId(id)}/mounts/${encodeId(opts.tag)}`),
+  );
   assertEnvelopeOk(envelope, `vm unmount ${id} failed`);
   return envelope;
 }
 
 export async function listMounts(id: string): Promise<VmMount[]> {
-  const envelope = parseEnvelope(await runVzctlArgv(["vm", "mounts", id]));
+  const envelope = parseEnvelope(await api.get(`/v1/vms/${encodeId(id)}/mounts`));
   return asMounts(envelope.mounts);
 }
 
 export function isRunning(state: string | undefined): boolean {
   return state === "running" || state === "starting";
 }
-
-export const IMAGE_ALIAS_HINTS = [
-  "ubuntu",
-  "debian",
-  "alpine",
-  "arch",
-  "fedora",
-  "rocky",
-  "alma",
-  "opensuse",
-  "coreos",
-  "flatcar",
-] as const;

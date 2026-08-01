@@ -422,6 +422,10 @@ pub(crate) fn vzctl_state_dir_string() -> String {
     state_dir().display().to_string()
 }
 
+pub(crate) fn vzctl_state_dir_path() -> PathBuf {
+    state_dir()
+}
+
 fn supervisor_socket_path() -> PathBuf {
     state_dir().join("vz.sock")
 }

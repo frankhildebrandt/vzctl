@@ -1,3 +1,5 @@
+import { api, encodeId } from "@/lib/api";
+
 export type VzctlCommand = "diff" | "up" | "apply" | "down" | "status" | "validate";
 
 export type VzctlEvent = {
@@ -42,40 +44,11 @@ export const DOWN_STEPS = [
 ] as const;
 
 export type RunVzctlOptions = {
-  /** Pass --force (needed for breaking recreate; UI has no TTY confirm). */
   force?: boolean;
-  /** Pass --purge with down (destroy managed VMs/nets/…; keep project files). */
   purge?: boolean;
+  resume?: boolean;
+  abort?: boolean;
 };
-
-export async function runVzctl(
-  path: string,
-  command: VzctlCommand,
-  options: RunVzctlOptions = {},
-): Promise<string> {
-  const { isDemoMode } = await import("@/lib/demo");
-  if (isDemoMode()) {
-    const { mockRunVzctl } = await import("@/lib/demoFixtures");
-    return mockRunVzctl(path, command, options);
-  }
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_vzctl", {
-    path,
-    command,
-    force: options.force ?? false,
-    purge: options.purge ?? false,
-  });
-}
-
-export async function runVzctlArgv(args: string[]): Promise<string> {
-  const { isDemoMode } = await import("@/lib/demo");
-  if (isDemoMode()) {
-    const { mockRunVzctlArgv } = await import("@/lib/demoFixtures");
-    return mockRunVzctlArgv(args);
-  }
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_vzctl_argv", { args });
-}
 
 export type VzctlEnvelope = {
   apiVersion?: string;
@@ -86,14 +59,18 @@ export type VzctlEnvelope = {
   [key: string]: unknown;
 };
 
-export function parseEnvelope(raw: string): VzctlEnvelope {
+export function parseEnvelope(raw: string | unknown): VzctlEnvelope {
+  if (typeof raw !== "string") {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("vzctl envelope is not an object");
+    }
+    return raw as VzctlEnvelope;
+  }
   const trimmed = raw.trim();
   let value: unknown;
   try {
     value = JSON.parse(trimmed) as unknown;
   } catch (first) {
-    // Some vzctl paths historically leaked diagnostics onto stdout before the
-    // envelope; recover the trailing JSON object when present.
     const start = trimmed.indexOf("{");
     const end = trimmed.lastIndexOf("}");
     if (start < 0 || end <= start) throw first;
@@ -118,6 +95,138 @@ export function assertEnvelopeOk(envelope: VzctlEnvelope, fallback = "vzctl fail
       fallback;
     throw new Error(message);
   }
+}
+
+type JobResponse = {
+  jobId: string;
+  kind?: string;
+  status: string;
+  result?: unknown;
+  error?: string;
+};
+
+export async function ensureStackId(path: string): Promise<string> {
+  const listed = await api.get<{ stacks: Array<{ id: string; path: string }> }>("/v1/stacks");
+  const found = (listed.stacks ?? []).find((s) => s.path === path);
+  if (found) return found.id;
+  const created = await api.post<{ id: string }>("/v1/stacks", { path });
+  return created.id;
+}
+
+export async function waitForJob(jobId: string): Promise<VzctlEnvelope> {
+  for (let i = 0; i < 3_600; i += 1) {
+    const job = await api.get<JobResponse>(`/v1/jobs/${encodeId(jobId)}`);
+    if (job.status === "succeeded") {
+      return parseEnvelope(job.result ?? { status: "ok", exit_code: 0 });
+    }
+    if (job.status === "failed") {
+      if (job.result) {
+        const envelope = parseEnvelope(job.result);
+        assertEnvelopeOk(envelope, job.error ?? "job failed");
+      }
+      throw new Error(job.error ?? "job failed");
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`job ${jobId} timed out`);
+}
+
+export async function runVzctl(
+  path: string,
+  command: VzctlCommand,
+  options: RunVzctlOptions = {},
+): Promise<string> {
+  try {
+    return await runVzctlOnce(path, command, options);
+  } catch (err) {
+    const message = String(err);
+    const canAutoAbort =
+      (command === "apply" || command === "up") &&
+      !options.resume &&
+      !options.abort &&
+      isIncompleteJournalError(message);
+    if (!canAutoAbort) throw err;
+
+    // Match pre-REST Tauri recovery: clear failed/incomplete journal, then retry.
+    await runVzctlOnce(path, "apply", { abort: true });
+    return await runVzctlOnce(path, command, options);
+  }
+}
+
+function isIncompleteJournalError(raw: string): boolean {
+  return (
+    raw.includes("incomplete journal") ||
+    (raw.includes("--resume") && raw.includes("--abort"))
+  );
+}
+
+async function runVzctlOnce(
+  path: string,
+  command: VzctlCommand,
+  options: RunVzctlOptions = {},
+): Promise<string> {
+  const stackId = await ensureStackId(path);
+  const encoded = encodeId(stackId);
+
+  if (command === "status") {
+    const status = await api.get(`/v1/stacks/${encoded}/status`);
+    return JSON.stringify(status, null, 2);
+  }
+  if (command === "diff") {
+    const diff = await api.get(`/v1/stacks/${encoded}/diff`);
+    return JSON.stringify(diff, null, 2);
+  }
+  if (command === "validate") {
+    const result = await api.post(`/v1/stacks/${encoded}/validate`);
+    return JSON.stringify(result, null, 2);
+  }
+
+  const body: Record<string, boolean> = {};
+  if (options.force) body.force = true;
+  if (options.purge) body.purge = true;
+  if (options.resume) body.resume = true;
+  if (options.abort) body.abort = true;
+  const accepted = await api.post<{ jobId: string }>(
+    `/v1/stacks/${encoded}/${command}`,
+    body,
+  );
+  const envelope = await waitForJob(accepted.jobId);
+  assertEnvelopeOk(envelope, `${command} failed`);
+  return JSON.stringify(envelope, null, 2);
+}
+
+/** @deprecated Prefer domain helpers; kept for gradual migration. */
+export async function runVzctlArgv(args: string[]): Promise<string> {
+  // Map common argv patterns to REST for leftover call sites.
+  const [cmd, sub, ...rest] = args;
+  if (cmd === "doctor") {
+    return JSON.stringify(await api.get("/v1/doctor"), null, 2);
+  }
+  if (cmd === "vm" && sub === "list") {
+    return JSON.stringify(await api.get("/v1/vms"), null, 2);
+  }
+  if (cmd === "vm" && sub === "inspect" && rest[0]) {
+    return JSON.stringify(await api.get(`/v1/vms/${encodeId(rest[0])}`), null, 2);
+  }
+  if (cmd === "image" && sub === "list") {
+    return JSON.stringify(await api.get("/v1/images"), null, 2);
+  }
+  if (cmd === "dns" && sub === "status") {
+    return JSON.stringify(await api.get("/v1/dns/status"), null, 2);
+  }
+  if (cmd === "dns" && sub === "install-bind-helper") {
+    return JSON.stringify(await api.post("/v1/dns/bind-helper"), null, 2);
+  }
+  if (cmd === "certs" && sub === "fingerprint") {
+    return JSON.stringify(await api.get("/v1/certs/fingerprint"), null, 2);
+  }
+  if (cmd === "certs" && sub === "ca" && rest[0] === "init") {
+    return JSON.stringify(await api.post("/v1/certs/ca/init"), null, 2);
+  }
+  if (cmd === "certs" && sub === "ca" && rest[0] === "install") {
+    return JSON.stringify(await api.post("/v1/certs/ca/install"), null, 2);
+  }
+  throw new Error(`runVzctlArgv unsupported after REST migration: ${args.join(" ")}`);
 }
 
 export async function subscribeEvents(): Promise<void> {

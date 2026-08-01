@@ -1,7 +1,7 @@
+import { api, encodeId } from "@/lib/api";
 import {
   assertEnvelopeOk,
   parseEnvelope,
-  runVzctlArgv,
   type VzctlEnvelope,
 } from "@/lib/vzctl";
 
@@ -32,7 +32,6 @@ export const dockerKeys = {
     [...dockerKeys.all, "inspect", project, id] as const,
 };
 
-/** Project from `{project}/{vm}` runtime id; null when flat (no docker context). */
 export function projectFromVmId(vmId: string): string | null {
   const slash = vmId.indexOf("/");
   if (slash <= 0) return null;
@@ -70,34 +69,24 @@ function asContainers(value: unknown): DockerContainer[] {
 }
 
 export async function listContainers(project: string): Promise<DockerContainer[]> {
-  const raw = await runVzctlArgv([
-    "docker",
-    "ps",
-    "--project",
-    project,
-    "--all",
-  ]);
-  const envelope = parseEnvelope(raw);
+  const envelope = parseEnvelope(
+    await api.get(`/v1/projects/${encodeId(project)}/containers`),
+  );
   assertEnvelopeOk(envelope, "docker ps failed");
   const summary = envelope.summary as Record<string, unknown> | undefined;
-  return asContainers(summary?.containers);
+  return asContainers(summary?.containers ?? envelope.containers);
 }
 
 export async function inspectContainer(
   project: string,
   id: string,
 ): Promise<Record<string, unknown>> {
-  const raw = await runVzctlArgv([
-    "docker",
-    "inspect",
-    "--project",
-    project,
-    id,
-  ]);
-  const envelope = parseEnvelope(raw);
+  const envelope = parseEnvelope(
+    await api.get(`/v1/projects/${encodeId(project)}/containers/${encodeId(id)}`),
+  );
   assertEnvelopeOk(envelope, `docker inspect ${id} failed`);
   const summary = envelope.summary as Record<string, unknown> | undefined;
-  const inspect = summary?.inspect;
+  const inspect = summary?.inspect ?? envelope.inspect;
   if (inspect && typeof inspect === "object" && !Array.isArray(inspect)) {
     return inspect as Record<string, unknown>;
   }
@@ -109,7 +98,9 @@ export async function startContainer(
   id: string,
 ): Promise<VzctlEnvelope> {
   const envelope = parseEnvelope(
-    await runVzctlArgv(["docker", "start", "--project", project, id]),
+    await api.post(
+      `/v1/projects/${encodeId(project)}/containers/${encodeId(id)}/start`,
+    ),
   );
   assertEnvelopeOk(envelope, `docker start ${id} failed`);
   return envelope;
@@ -120,7 +111,9 @@ export async function stopContainer(
   id: string,
 ): Promise<VzctlEnvelope> {
   const envelope = parseEnvelope(
-    await runVzctlArgv(["docker", "stop", "--project", project, id]),
+    await api.post(
+      `/v1/projects/${encodeId(project)}/containers/${encodeId(id)}/stop`,
+    ),
   );
   assertEnvelopeOk(envelope, `docker stop ${id} failed`);
   return envelope;
@@ -131,29 +124,24 @@ export async function restartContainer(
   id: string,
 ): Promise<VzctlEnvelope> {
   const envelope = parseEnvelope(
-    await runVzctlArgv(["docker", "restart", "--project", project, id]),
+    await api.post(
+      `/v1/projects/${encodeId(project)}/containers/${encodeId(id)}/restart`,
+    ),
   );
   assertEnvelopeOk(envelope, `docker restart ${id} failed`);
   return envelope;
 }
 
 export async function runContainer(input: RunContainerInput): Promise<string> {
-  const args = ["docker", "run", "--project", input.project, "--image", input.image];
-  if (input.name) {
-    args.push("--name", input.name);
-  }
-  for (const env of input.env ?? []) {
-    const trimmed = env.trim();
-    if (trimmed) args.push("-e", trimmed);
-  }
-  for (const port of input.ports ?? []) {
-    const trimmed = port.trim();
-    if (trimmed) args.push("-p", trimmed);
-  }
-  if (input.cmd && input.cmd.length > 0) {
-    args.push(...input.cmd);
-  }
-  const envelope = parseEnvelope(await runVzctlArgv(args));
+  const envelope = parseEnvelope(
+    await api.post(`/v1/projects/${encodeId(input.project)}/containers`, {
+      image: input.image,
+      name: input.name,
+      env: input.env,
+      ports: input.ports,
+      cmd: input.cmd,
+    }),
+  );
   assertEnvelopeOk(envelope, "docker run failed");
   const summary = envelope.summary as Record<string, unknown> | undefined;
   const id = summary?.container_id;

@@ -3,16 +3,21 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 
+mod api_proxy;
 mod terminal;
 
 struct EventBridge {
-    child: Mutex<Option<Child>>,
+    /// Reserved for future process-backed bridges.
+    _child: Mutex<Option<Child>>,
 }
+
+static EVENTS_SUBSCRIBED: AtomicBool = AtomicBool::new(false);
 
 /// PIDs of in-flight streamed vzctl children — never reap these for lease recovery.
 fn protected_pids() -> &'static Mutex<HashSet<u32>> {
@@ -21,48 +26,83 @@ fn protected_pids() -> &'static Mutex<HashSet<u32>> {
 }
 
 #[tauri::command]
-fn subscribe_events(app: AppHandle, bridge: State<'_, EventBridge>) -> Result<(), String> {
-    let mut slot = bridge
-        .child
-        .lock()
-        .map_err(|_| "event bridge lock poisoned".to_string())?;
-    if let Some(child) = slot.as_mut() {
-        match child.try_wait() {
-            Ok(None) => return Ok(()), // already subscribed
-            Ok(Some(_)) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+fn api_base_url() -> Result<String, String> {
+    // Kept for diagnostics; UI uses api_request invoke (WKWebView cannot fetch localhost).
+    Ok(match std::env::var("VZCTL_API_LISTEN") {
+        Ok(v) => v,
+        Err(_) => format!(
+            "unix:{}",
+            terminal::vzctl_state_dir_path().join("api.sock").display()
+        ),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiRequestArgs {
+    method: String,
+    path: String,
+    headers: Option<Vec<(String, String)>>,
+    body: Option<String>,
+}
+
+#[tauri::command]
+async fn api_request(args: ApiRequestArgs) -> Result<api_proxy::ApiResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        api_proxy::request(
+            &args.method,
+            &args.path,
+            args.headers.as_deref().unwrap_or(&[]),
+            args.body.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("api_request task failed: {e}"))?
+}
+
+#[tauri::command]
+fn subscribe_events(app: AppHandle, _bridge: State<'_, EventBridge>) -> Result<(), String> {
+    if EVENTS_SUBSCRIBED.swap(true, Ordering::SeqCst) {
+        return Ok(());
     }
-
-    let vzctl = which_vzctl()?;
-    let mut child = Command::new(&vzctl)
-        .args(["events", "subscribe", "--filter", "apply.*,vm.state"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn vzctl events subscribe: {e}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "events subscribe missing stdout".to_string())?;
-    *slot = Some(child);
-    drop(slot);
-
     thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
+        let result = (|| -> Result<(), String> {
+            let stream = api_proxy::open_sse("/v1/events?filter=apply.*,vm.state")?;
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let mut data = String::new();
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .map_err(|e| format!("sse read: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                if trimmed.is_empty() {
+                    if !data.is_empty() {
+                        if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                            let _ = app.emit("vzctl-event", value);
+                        }
+                        data.clear();
+                    }
+                    continue;
+                }
+                if let Some(payload) = trimmed.strip_prefix("data:") {
+                    let payload = payload.trim_start();
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(payload);
+                }
             }
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            let _ = app.emit("vzctl-event", value);
+            Ok(())
+        })();
+        if let Err(err) = result {
+            eprintln!("vzctl events sse: {err}");
         }
+        EVENTS_SUBSCRIBED.store(false, Ordering::SeqCst);
     });
     Ok(())
 }
@@ -278,7 +318,7 @@ fn validate_vzctl_argv(args: &[String]) -> Result<(), String> {
                 "list", "start", "stop", "delete", "create", "modify", "inspect", "mount",
                 "unmount", "mounts", "logs", "exec", "services", "ps", "transfer",
             ];
-            let allowed_image = ["pull", "bake", "seal"];
+            let allowed_image = ["list", "pull", "bake", "seal"];
             let allowed = if group == "vm" {
                 &allowed_vm[..]
             } else {
@@ -1506,10 +1546,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(EventBridge {
-            child: Mutex::new(None),
+            _child: Mutex::new(None),
         })
         .manage(terminal::TerminalState::new())
         .invoke_handler(tauri::generate_handler![
+            api_base_url,
+            api_request,
             run_vzctl,
             run_vzctl_argv,
             request_host_reboot,

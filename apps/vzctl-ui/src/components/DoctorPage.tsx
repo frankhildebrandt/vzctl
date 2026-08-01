@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { assertEnvelopeOk, parseEnvelope, runVzctlArgv } from "@/lib/vzctl";
+import { api } from "@/lib/api";
+import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
 type DoctorCheck = {
   id: string;
@@ -24,14 +25,7 @@ export function DoctorPage() {
 
   const installCa = useMutation({
     mutationFn: async () => {
-      const raw = await runVzctlArgv([
-        "certs",
-        "ca",
-        "install",
-        "--format",
-        "json",
-      ]);
-      const envelope = parseEnvelope(raw);
+      const envelope = parseEnvelope(await api.post("/v1/certs/ca/install"));
       assertEnvelopeOk(envelope, "CA-Installation fehlgeschlagen");
       return envelope;
     },
@@ -46,14 +40,7 @@ export function DoctorPage() {
 
   const initCa = useMutation({
     mutationFn: async () => {
-      const raw = await runVzctlArgv([
-        "certs",
-        "ca",
-        "init",
-        "--format",
-        "json",
-      ]);
-      const envelope = parseEnvelope(raw);
+      const envelope = parseEnvelope(await api.post("/v1/certs/ca/init"));
       assertEnvelopeOk(envelope, "CA-Init fehlgeschlagen");
       return envelope;
     },
@@ -68,13 +55,7 @@ export function DoctorPage() {
 
   const installBindHelper = useMutation({
     mutationFn: async () => {
-      const raw = await runVzctlArgv([
-        "dns",
-        "install-bind-helper",
-        "--format",
-        "json",
-      ]);
-      const envelope = parseEnvelope(raw);
+      const envelope = parseEnvelope(await api.post("/v1/dns/bind-helper"));
       assertEnvelopeOk(envelope, "DNS-Bind-Helper-Installation fehlgeschlagen");
       return envelope;
     },
@@ -346,9 +327,7 @@ async function loadDoctor(): Promise<{
   summary: Record<string, unknown>;
   checks: DoctorCheck[];
 }> {
-  const raw = await runVzctlArgv(["doctor", "--format", "json"]);
-  const envelope = parseEnvelope(raw);
-  // doctor may exit non-zero on FAIL; still return structured checks
+  const envelope = parseEnvelope(await api.get("/v1/doctor"));
   const checks = Array.isArray(envelope.checks)
     ? (envelope.checks as DoctorCheck[])
     : [];

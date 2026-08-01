@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { api } from "@/lib/api";
 import { loadProject, saveProject } from "@/features/persistence/projectIo";
 import { cidrsOverlap } from "@/application/validation/topology";
 import {
@@ -9,7 +9,7 @@ import {
 } from "@/lib/vmnetOrphan";
 
 export async function requestHostReboot(): Promise<void> {
-  await invoke("request_host_reboot");
+  await api.post("/v1/host/reboot");
 }
 
 export async function recoverOrphanByCidrChange(

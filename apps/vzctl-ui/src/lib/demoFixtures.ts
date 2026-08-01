@@ -96,6 +96,64 @@ const DEMO_CONTAINERS = [
   },
 ];
 
+const DEMO_IMAGES = [
+  {
+    alias: "ubuntu-latest",
+    canonical_alias: "ubuntu-latest",
+    aliases: ["ubuntu-latest"],
+    distribution: "Ubuntu",
+    release: "26.04 LTS",
+    architecture: "arm64",
+    path: "/Users/demo/Library/Application Support/vzctl/images/sealed/ubuntu-latest.raw",
+    format: "raw",
+    sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    baked: true,
+    sealed: true,
+    agent_version: "demo",
+  },
+  {
+    alias: "debian-latest",
+    canonical_alias: "debian-latest",
+    aliases: ["debian-latest"],
+    distribution: "Debian",
+    release: "13 (stable/Trixie)",
+    architecture: "arm64",
+    path: "/Users/demo/Library/Application Support/vzctl/images/baked/debian-latest.raw",
+    format: "raw",
+    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    baked: true,
+    sealed: false,
+    agent_version: "demo",
+  },
+];
+
+const DEMO_IMAGE_CATALOG = [
+  {
+    alias: "ubuntu-latest",
+    aliases: ["ubuntu-latest"],
+    distribution: "Ubuntu",
+    release: "26.04 LTS",
+  },
+  {
+    alias: "debian-latest",
+    aliases: ["debian-latest"],
+    distribution: "Debian",
+    release: "13 (stable/Trixie)",
+  },
+  {
+    alias: "alpine-latest",
+    aliases: ["alpine-latest"],
+    distribution: "Alpine Linux",
+    release: "3.24.1",
+  },
+  {
+    alias: "fedora-latest",
+    aliases: ["fedora-latest"],
+    distribution: "Fedora",
+    release: "44",
+  },
+];
+
 function statusBundle(): string {
   return JSON.stringify({
     apiVersion: "vzctl.dev/v1",
@@ -397,5 +455,180 @@ export async function mockRunVzctlArgv(args: string[]): Promise<string> {
     return ok("dns.install-bind-helper", {}, { message: "installed (demo)" });
   }
 
+  if (cmd === "image" && sub === "list") {
+    return ok(
+      "image.list",
+      {
+        images: DEMO_IMAGES,
+        catalog: DEMO_IMAGE_CATALOG,
+      },
+      {
+        message: "image cache listed",
+        count: DEMO_IMAGES.length,
+        images_dir: "/Users/demo/Library/Application Support/vzctl/images",
+      },
+    );
+  }
+
+  if (cmd === "image" && sub === "pull") {
+    const alias = rest.find((arg) => !arg.startsWith("-")) ?? "ubuntu-latest";
+    return ok(
+      "image.pull",
+      {
+        image: {
+          alias,
+          canonical_alias: alias,
+          sealed: false,
+          path: `/images/objects/demo-${alias}.raw`,
+        },
+      },
+      { message: "image pulled", change: "pulled" },
+    );
+  }
+
+  if (cmd === "image" && sub === "bake") {
+    const alias = rest.find((arg) => !arg.startsWith("-")) ?? "ubuntu-latest";
+    return ok(
+      "image.bake",
+      {
+        image: {
+          alias,
+          canonical_alias: alias,
+          baked: true,
+          agent_version: "demo",
+        },
+      },
+      { message: "image baked", change: "baked" },
+    );
+  }
+
+  if (cmd === "image" && sub === "seal") {
+    const target = rest.find((arg) => !arg.startsWith("-")) ?? "ubuntu-latest";
+    return ok(
+      "image.seal",
+      {
+        image: {
+          name: target,
+          path: `/images/sealed/${target}.raw`,
+          sealed: true,
+          read_only: true,
+        },
+      },
+      { message: "image sealed", sealed: true, already_sealed: false },
+    );
+  }
+
   return ok(args.join("."), {}, { message: "demo no-op", path: DEMO_PROJECT_PATH });
 }
+
+/** REST-shaped demo backend for `lib/api.ts`. */
+export async function mockApiRequest<T = unknown>(
+  path: string,
+  options: { method?: string; body?: unknown; rawBody?: string } = {},
+): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
+  const segments = path.split("/").filter(Boolean);
+
+  if (path === "/v1/stacks" && method === "GET") {
+    return {
+      stacks: [
+        {
+          id: DEMO_PROJECT_NAME,
+          path: DEMO_PROJECT_PATH,
+          name: DEMO_PROJECT_NAME,
+          openedAt: new Date().toISOString(),
+        },
+      ],
+    } as T;
+  }
+  if (path === "/v1/stacks" && method === "POST") {
+    return {
+      id: DEMO_PROJECT_NAME,
+      path: DEMO_PROJECT_PATH,
+      name: DEMO_PROJECT_NAME,
+      openedAt: new Date().toISOString(),
+    } as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "stacks" && segments[3] === "status") {
+    return JSON.parse(await mockRunVzctl(DEMO_PROJECT_PATH, "status")) as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "stacks" && segments[3] === "diff") {
+    return JSON.parse(await mockRunVzctl(DEMO_PROJECT_PATH, "diff")) as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "stacks" && segments[3] === "validate") {
+    return JSON.parse(await mockRunVzctl(DEMO_PROJECT_PATH, "validate")) as T;
+  }
+  if (
+    segments[0] === "v1" &&
+    segments[1] === "stacks" &&
+    ["up", "apply", "down"].includes(segments[3] ?? "") &&
+    method === "POST"
+  ) {
+    return { jobId: "demo-job" } as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "jobs") {
+    const cmd = "apply";
+    return {
+      jobId: segments[2],
+      status: "succeeded",
+      result: JSON.parse(await mockRunVzctl(DEMO_PROJECT_PATH, cmd as "apply")),
+    } as T;
+  }
+  if (path === "/v1/vms" && method === "GET") {
+    return JSON.parse(await mockRunVzctlArgv(["vm", "list"])) as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "vms" && segments.length === 3) {
+    return JSON.parse(await mockRunVzctlArgv(["vm", "inspect", decodeURIComponent(segments[2])])) as T;
+  }
+  if (path === "/v1/images" && method === "GET") {
+    return JSON.parse(await mockRunVzctlArgv(["image", "list"])) as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "images" && method === "POST") {
+    return { jobId: "demo-image-job" } as T;
+  }
+  if (path === "/v1/nets" && method === "GET") {
+    return {
+      networks: [
+        {
+          name: "dmz",
+          cidr: "10.80.0.0/24",
+          backend: "vmnet",
+          runtime_state: "active",
+        },
+        {
+          name: "lan",
+          cidr: "10.90.0.0/24",
+          backend: "vmnet",
+          runtime_state: "active",
+        },
+      ],
+      attachments: [],
+    } as T;
+  }
+  if (path === "/v1/nets/default") {
+    return { name: "dmz", cidr: "10.80.0.0/24" } as T;
+  }
+  if (path === "/v1/doctor") {
+    return JSON.parse(await mockRunVzctlArgv(["doctor"])) as T;
+  }
+  if (path === "/v1/dns/status") {
+    return { ok: true, listeners: ["127.0.0.1:15353"] } as T;
+  }
+  if (path === "/v1/oidc/uplink") {
+    return "" as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "projects" && segments[3] === "containers") {
+    if (segments.length === 4 && method === "GET") {
+      return JSON.parse(await mockRunVzctlArgv(["docker", "ps", "--project", segments[2], "--all"])) as T;
+    }
+  }
+  if (segments[0] === "v1" && segments[1] === "stacks" && segments[3] === "config") {
+    return "apiVersion: hypernetwork/v1\nkind: Environment\n" as T;
+  }
+  if (segments[0] === "v1" && segments[1] === "stacks" && segments[3] === "diagram") {
+    return "{}" as T;
+  }
+
+  return { ok: true, path, method } as T;
+}
+

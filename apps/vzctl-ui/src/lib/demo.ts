@@ -38,7 +38,7 @@ export function disableDemoMode(): void {
 }
 
 function seedDemoProject(): void {
-  rememberProject(DEMO_PROJECT_PATH);
+  void rememberProject(DEMO_PROJECT_PATH);
 
   const files = scaffoldFiles({ name: DEMO_PROJECT_NAME, cidr: "10.80.0.0/24" });
   // Enrich scaffold so Topology/Ops look closer to edge-dmz.

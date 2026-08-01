@@ -1,3 +1,4 @@
+import { api, encodeId } from "@/lib/api";
 import { basename } from "@/lib/vzctl";
 
 const STORAGE_KEY = "vzctl.ui.projects.v1";
@@ -6,48 +7,26 @@ export type Project = {
   path: string;
   name: string;
   openedAt: number;
+  id?: string;
 };
 
 export const projectKeys = {
   all: ["projects"] as const,
 };
 
-export function listProjects(): Project[] {
+function readLocal(): Project[] {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(isProject)
-      .sort((a, b) => b.openedAt - a.openedAt);
+    return parsed.filter(isProject).sort((a, b) => b.openedAt - a.openedAt);
   } catch {
     return [];
   }
 }
 
-export function rememberProject(path: string): Project[] {
-  const now = Date.now();
-  const existing = listProjects().filter((project) => project.path !== path);
-  const next: Project[] = [
-    { path, name: basename(path), openedAt: now },
-    ...existing,
-  ];
-  save(next);
-  return next;
-}
-
-export function forgetProject(path: string): Project[] {
-  const next = listProjects().filter((project) => project.path !== path);
-  save(next);
-  return next;
-}
-
-export function getProject(path: string): Project | undefined {
-  return listProjects().find((project) => project.path === path);
-}
-
-function save(projects: Project[]) {
+function writeLocal(projects: Project[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
 }
 
@@ -60,6 +39,75 @@ function isProject(value: unknown): value is Project {
     typeof record.name === "string" &&
     typeof record.openedAt === "number"
   );
+}
+
+function openedAtMs(value: string | number | undefined): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+export async function listProjects(): Promise<Project[]> {
+  try {
+    const data = await api.get<{
+      stacks: Array<{ id: string; path: string; name: string; openedAt: string }>;
+    }>("/v1/stacks");
+    const projects = (data.stacks ?? [])
+      .map((row) => ({
+        id: row.id,
+        path: row.path,
+        name: row.name || basename(row.path),
+        openedAt: openedAtMs(row.openedAt),
+      }))
+      .sort((a, b) => b.openedAt - a.openedAt);
+    writeLocal(projects);
+    return projects;
+  } catch {
+    return readLocal();
+  }
+}
+
+export async function rememberProject(path: string, name?: string): Promise<Project[]> {
+  const displayName = name ?? basename(path);
+  try {
+    await api.post("/v1/stacks", { path, name: displayName });
+  } catch {
+    // Keep local MRU even if supervisor is down.
+  }
+  const now = Date.now();
+  const existing = readLocal().filter((project) => project.path !== path);
+  writeLocal([{ path, name: displayName, openedAt: now }, ...existing]);
+  return listProjects();
+}
+
+export async function forgetProject(path: string): Promise<Project[]> {
+  const local = readLocal();
+  const match = local.find((p) => p.path === path);
+  if (match?.id) {
+    try {
+      await api.delete(`/v1/stacks/${encodeId(match.id)}`);
+    } catch {
+      // ignore
+    }
+  } else {
+    try {
+      const remote = await listProjects();
+      const found = remote.find((p) => p.path === path);
+      if (found?.id) await api.delete(`/v1/stacks/${encodeId(found.id)}`);
+    } catch {
+      // ignore
+    }
+  }
+  writeLocal(local.filter((project) => project.path !== path));
+  return listProjects();
+}
+
+/** Sync lookup from local MRU cache (for breadcrumbs / titles). */
+export function getProject(path: string): Project | undefined {
+  return readLocal().find((project) => project.path === path);
 }
 
 export function formatOpenedAt(openedAt: number): string {

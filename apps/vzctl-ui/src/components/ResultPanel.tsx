@@ -1,9 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
-import {
-  assertEnvelopeOk,
-  parseEnvelope,
-  runVzctlArgv,
-} from "@/lib/vzctl";
+import { api } from "@/lib/api";
+import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
 export type PanelKind = "diff" | "status" | "text" | "error" | "idle";
 
@@ -30,12 +27,19 @@ type StatusSection = {
 export function ResultPanel({
   result,
   busyLabel,
+  stackPath,
+  onJournalRecovered,
 }: {
   result: ResultModel;
   busyLabel?: string | null;
+  /** Stack path for incomplete-journal recovery actions. */
+  stackPath?: string | null;
+  onJournalRecovered?: () => void;
 }) {
   const [debug, setDebug] = useState(false);
   const parsed = useMemo(() => tryParse(result.raw), [result.raw]);
+  const incompleteJournal =
+    result.kind === "error" && isIncompleteJournalError(result.raw);
 
   if (result.kind === "idle" && !busyLabel) {
     return (
@@ -72,6 +76,12 @@ export function ResultPanel({
         <div className="card error-card">
           <h3>Fehler</h3>
           <p>{result.raw}</p>
+          {incompleteJournal && stackPath ? (
+            <IncompleteJournalActions
+              path={stackPath}
+              onDone={onJournalRecovered}
+            />
+          ) : null}
         </div>
       ) : result.kind === "diff" && parsed ? (
         <DiffView data={parsed} />
@@ -99,6 +109,85 @@ export function ResultPanel({
           <p className="muted">Keine grafische Darstellung — Debug öffnen.</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function isIncompleteJournalError(raw: string): boolean {
+  return (
+    raw.includes("incomplete journal") ||
+    raw.includes("--resume") ||
+    raw.includes("--abort")
+  );
+}
+
+function IncompleteJournalActions({
+  path,
+  onDone,
+}: {
+  path: string;
+  onDone?: () => void;
+}) {
+  const [busy, setBusy] = useState<"restart" | "resume" | "abort" | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function run(mode: "restart" | "resume" | "abort") {
+    setBusy(mode);
+    setMsg(null);
+    try {
+      const { runVzctl } = await import("@/lib/vzctl");
+      if (mode === "restart") {
+        await runVzctl(path, "apply", { abort: true });
+        await runVzctl(path, "apply", { force: true });
+        setMsg("Journal verworfen und Apply neu gestartet.");
+      } else if (mode === "resume") {
+        await runVzctl(path, "apply", { resume: true });
+        setMsg("Apply fortgesetzt.");
+      } else {
+        await runVzctl(path, "apply", { abort: true });
+        setMsg("Journal abgebrochen — Apply erneut starten.");
+      }
+      onDone?.();
+    } catch (err) {
+      setMsg(String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="doctor-actions" style={{ marginTop: "0.75rem" }}>
+      <p className="muted">
+        Unvollständiges Apply-Journal. Nach einem fehlgeschlagenen{" "}
+        <code>await_agents</code> hilft meist ein Neustart (abort + apply),
+        nicht nur Resume.
+      </p>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          disabled={busy != null}
+          onClick={() => void run("restart")}
+        >
+          {busy === "restart" ? "Startet neu…" : "Neu starten (abort + apply)"}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy != null}
+          onClick={() => void run("resume")}
+        >
+          {busy === "resume" ? "Setzt fort…" : "Fortsetzen (--resume)"}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy != null}
+          onClick={() => void run("abort")}
+        >
+          {busy === "abort" ? "Bricht ab…" : "Nur abbrechen"}
+        </button>
+      </div>
+      {msg ? <p className="muted">{msg}</p> : null}
     </div>
   );
 }
@@ -324,14 +413,7 @@ function CaInstallButton() {
           setMsg(null);
           void (async () => {
             try {
-              const raw = await runVzctlArgv([
-                "certs",
-                "ca",
-                "install",
-                "--format",
-                "json",
-              ]);
-              const envelope = parseEnvelope(raw);
+              const envelope = parseEnvelope(await api.post("/v1/certs/ca/install"));
               assertEnvelopeOk(envelope, "CA-Installation fehlgeschlagen");
               setMsg("Installiert — Status neu laden.");
             } catch (err) {
@@ -372,13 +454,7 @@ function DnsBindHelperButton() {
           setMsg(null);
           void (async () => {
             try {
-              const raw = await runVzctlArgv([
-                "dns",
-                "install-bind-helper",
-                "--format",
-                "json",
-              ]);
-              const envelope = parseEnvelope(raw);
+              const envelope = parseEnvelope(await api.post("/v1/dns/bind-helper"));
               assertEnvelopeOk(
                 envelope,
                 "DNS-Bind-Helper-Installation fehlgeschlagen",

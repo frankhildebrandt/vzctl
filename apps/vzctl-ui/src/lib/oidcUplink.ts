@@ -201,24 +201,31 @@ export function validateUplinkDraft(draft: {
 }
 
 export async function loadHostOidcUplink(): Promise<HostOidcUplinkState> {
+  const { isDemoMode } = await import("@/lib/demo");
+  if (isDemoMode()) {
+    return { uplink: null, secretPresent: false, stateDir: await getVzctlStateDir() };
+  }
   const stateDir = await getVzctlStateDir();
-  const path = hostUplinkPath(stateDir);
-  const secretPath = hostSecretPath(stateDir);
   let uplink: OidcUplinkConfig | null = null;
   let secretPresent = false;
-
-  if (await isTauri()) {
-    const exists = await invoke<boolean>("path_exists", { path });
-    if (exists) {
-      const raw = await invoke<string>("read_text_file", { path });
-      const parsed = parse(raw) as unknown;
+  try {
+    const { api } = await import("@/lib/api");
+    const yaml = await api.getText("/v1/oidc/uplink");
+    if (yaml.trim()) {
+      const parsed = parse(yaml) as unknown;
       if (parsed && typeof parsed === "object") {
         uplink = normalizeOidcUplink((parsed as HostOidcUplinkFile).uplink);
       }
     }
-    secretPresent = await invoke<boolean>("path_exists", { path: secretPath });
+    // Secret presence: probe via path when Tauri available.
+    if (await isTauri()) {
+      secretPresent = await invoke<boolean>("path_exists", {
+        path: hostSecretPath(stateDir),
+      });
+    }
+  } catch {
+    // fall through
   }
-
   return { uplink, secretPresent, stateDir };
 }
 
@@ -261,10 +268,8 @@ export async function saveHostOidcUplink(input: {
 
   const file: HostOidcUplinkFile = { uplink };
   const yaml = stringify(file, { lineWidth: 100 });
-  await invoke("write_secret_file", {
-    path: hostUplinkPath(stateDir),
-    contents: yaml,
-  });
+  const { api } = await import("@/lib/api");
+  await api.putText("/v1/oidc/uplink", yaml, "text/yaml; charset=utf-8");
   if (input.clientSecret.trim()) {
     await invoke("write_secret_file", {
       path: hostSecretPath(stateDir),
@@ -288,10 +293,11 @@ export async function saveProjectUplinkSecret(
     throw new Error("Secret speichern nur in der Tauri-App");
   }
   if (!secret.trim()) throw new Error("Project Secret darf nicht leer sein.");
-  const stateDir = await getVzctlStateDir();
-  await invoke("write_secret_file", {
-    path: projectUplinkSecretPath(stateDir, project),
-    contents: `${secret.trim()}\n`,
+  const { apiRequest, encodeId } = await import("@/lib/api");
+  await apiRequest(`/v1/projects/${encodeId(project)}/oidc/secret`, {
+    method: "PUT",
+    rawBody: `${secret.trim()}\n`,
+    contentType: "text/plain; charset=utf-8",
   });
 }
 
