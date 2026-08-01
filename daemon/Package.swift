@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "vz-supervisor", targets: ["VzSupervisor"]),
         .executable(name: "vz-helper", targets: ["VzHelper"]),
+        .executable(name: "vz-dns-bind", targets: ["VzDnsBind"]),
         .library(name: "VzDaemonKit", targets: ["VzDaemonKit"]),
     ],
     targets: [
@@ -27,6 +28,10 @@ let package = Package(
                 .linkedFramework("Virtualization"),
                 .linkedFramework("vmnet"),
             ]
+        ),
+        .executableTarget(
+            name: "VzDnsBind",
+            dependencies: ["VzDaemonKit"]
         ),
         .testTarget(
             name: "VzDaemonKitTests",

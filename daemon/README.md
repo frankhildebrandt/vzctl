@@ -8,7 +8,13 @@ user-only UDS. Er broadcastet den versionierten
 
 Der Supervisor betreibt außerdem den autoritativen
 [Dual-DNS](../docs/dns.md): Host `127.0.0.1:15353`, Guest-Bridge `.0:53`,
-Actual-State-A-Records und UDP-Forwarding. Für lokale unprivilegierte Läufe:
+Actual-State-A-Records und UDP-Forwarding. Guest-`:53` braucht den Root-Helper:
+
+```sh
+sudo vzctl dns install-bind-helper
+```
+
+Für lokale unprivilegierte Läufe ohne Helper:
 
 ```sh
 VZCTL_DNS_GUEST_PORT=15353 \
@@ -31,13 +37,16 @@ Für eine Release-Installation inklusive aktivem Supervisor:
 ```sh
 make install
 launchctl print "gui/$(id -u)/com.vzctl.supervisor"
+sudo vzctl dns install-bind-helper
 ```
 
-CLI, Supervisor und Helper landen standardmäßig in `~/.local/bin`. Das Ziel
-kann mit `PREFIX` oder `BINDIR` überschrieben werden. `ACTIVATE=0` installiert
-und validiert den LaunchAgent, ohne ihn zu laden. Wiederholtes `make install`
-ersetzt die Binaries atomar und startet `com.vzctl.supervisor` neu. Laufende
-VM-Helper bleiben unangetastet, damit keine VM für ein Tool-Update stoppt.
+CLI, Supervisor, Helper und `vz-dns-bind` landen standardmäßig in `~/.local/bin`.
+`install-bind-helper` kopiert den Bind-Helper nach `/usr/local/libexec/vzctl/`
+und aktiviert LaunchDaemon `com.vzctl.dns-bind`. Das Ziel kann mit `PREFIX` oder
+`BINDIR` überschrieben werden. `ACTIVATE=0` installiert und validiert den
+LaunchAgent, ohne ihn zu laden. Wiederholtes `make install` ersetzt die Binaries
+atomar und startet `com.vzctl.supervisor` neu. Laufende VM-Helper bleiben
+unangetastet, damit keine VM für ein Tool-Update stoppt.
 
 ## VM bundle and run
 

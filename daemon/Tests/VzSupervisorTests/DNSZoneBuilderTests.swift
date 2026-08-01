@@ -5,6 +5,35 @@ import VzDaemonKit
 
 @testable import VzSupervisor
 
+@Test func dnsServerBindsHighGuestPortWithoutHelper() throws {
+    let configuration = DNSConfiguration(
+        hostAddress: "127.0.0.1",
+        hostPort: 18_353,
+        guestPort: 18_354,
+        ttl: 15,
+        upstream: "system"
+    )
+    let server = DNSServer(configuration: configuration)
+    defer { server.shutdown() }
+
+    let health = server.reload(
+        snapshot: NetworkSnapshot(
+            networks: [
+                NetworkRecord(
+                    name: "dmz",
+                    cidr: "10.80.0.0/24",
+                    project: "edge-dmz",
+                    runtimeState: "active"
+                ),
+            ],
+            attachments: []
+        )
+    )
+    // Guest .0:18354 may fail with EADDRNOTAVAIL if bridge absent; host loopback must work.
+    #expect(health.listeners.contains("127.0.0.1:18353"))
+    #expect(health.upstream == "system")
+}
+
 @Test func hostServicesUseSplitHorizonAddresses() {
     let snapshot = NetworkSnapshot(
         networks: [

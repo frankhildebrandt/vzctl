@@ -317,6 +317,21 @@ final class DNSServer: @unchecked Sendable {
         guard let parsed = parseEndpoint(value) else {
             throw DNSError.invalidEndpoint(value)
         }
+        if DnsBind.needsPrivilege(port: parsed.port) {
+            let descriptor = try DnsBindClient.bindUDP(
+                address: parsed.address,
+                port: parsed.port
+            )
+            return try adoptListener(endpoint: value, descriptor: descriptor)
+        }
+        return try bindListenerLocally(endpoint: value, address: parsed.address, port: parsed.port)
+    }
+
+    private func bindListenerLocally(
+        endpoint value: String,
+        address: String,
+        port: UInt16
+    ) throws -> DNSListener {
         let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard descriptor >= 0 else { throw DNSError.system("socket", errno) }
         do {
@@ -328,33 +343,36 @@ final class DNSServer: @unchecked Sendable {
                 &reuse,
                 socklen_t(MemoryLayout<Int32>.size)
             )
-            var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            address.sin_family = sa_family_t(AF_INET)
-            address.sin_port = parsed.port.bigEndian
-            guard inet_pton(AF_INET, parsed.address, &address.sin_addr) == 1 else {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            guard inet_pton(AF_INET, address, &addr.sin_addr) == 1 else {
                 throw DNSError.invalidEndpoint(value)
             }
-            let result = withUnsafePointer(to: &address) {
+            let result = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
             guard result == 0 else { throw DNSError.system("bind \(value)", errno) }
-
-            let source = DispatchSource.makeReadSource(
-                fileDescriptor: descriptor,
-                queue: queue
-            )
-            source.setEventHandler { [weak self] in
-                self?.receive(on: descriptor, endpoint: value)
-            }
-            source.resume()
-            return DNSListener(descriptor: descriptor, source: source)
+            return try adoptListener(endpoint: value, descriptor: descriptor)
         } catch {
             Darwin.close(descriptor)
             throw error
         }
+    }
+
+    private func adoptListener(endpoint value: String, descriptor: Int32) throws -> DNSListener {
+        let source = DispatchSource.makeReadSource(
+            fileDescriptor: descriptor,
+            queue: queue
+        )
+        source.setEventHandler { [weak self] in
+            self?.receive(on: descriptor, endpoint: value)
+        }
+        source.resume()
+        return DNSListener(descriptor: descriptor, source: source)
     }
 
     private func removeListenerLocked(_ key: String) {

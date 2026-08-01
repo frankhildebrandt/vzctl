@@ -1,14 +1,15 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 3 ]; then
-  echo "usage: install.sh <vzctl> <vz-supervisor> <vz-helper>" >&2
+if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+  echo "usage: install.sh <vzctl> <vz-supervisor> <vz-helper> [vz-dns-bind]" >&2
   exit 2
 fi
 
 cli_source=$1
 supervisor_source=$2
 helper_source=$3
+dns_bind_source=${4:-}
 prefix=${PREFIX:-"$HOME/.local"}
 bindir=${BINDIR:-"$prefix/bin"}
 launch_agents_dir=${LAUNCH_AGENTS_DIR:-"$HOME/Library/LaunchAgents"}
@@ -33,11 +34,18 @@ for binary in "$cli_source" "$supervisor_source" "$helper_source"; do
     exit 3
   fi
 done
+if [ -n "$dns_bind_source" ] && [ ! -x "$dns_bind_source" ]; then
+  echo "missing executable: $dns_bind_source" >&2
+  exit 3
+fi
 
 mkdir -p "$bindir" "$launch_agents_dir" "$log_dir"
 chmod 700 "$log_dir"
 if [ -e "$bindir/vzctl" ] || [ -e "$bindir/vz-supervisor" ] \
-  || [ -e "$bindir/vz-helper" ] || [ -e "$plist_path" ]; then
+    || [ -e "$bindir/vz-helper" ] || [ -e "$plist_path" ]; then
+  action=updated
+fi
+if [ -n "$dns_bind_source" ] && [ -e "$bindir/vz-dns-bind" ]; then
   action=updated
 fi
 
@@ -52,11 +60,17 @@ trap cleanup EXIT INT TERM
 install -m 0755 "$cli_source" "$stage_dir/vzctl"
 install -m 0755 "$supervisor_source" "$stage_dir/vz-supervisor"
 install -m 0755 "$helper_source" "$stage_dir/vz-helper"
+if [ -n "$dns_bind_source" ]; then
+  install -m 0755 "$dns_bind_source" "$stage_dir/vz-dns-bind"
+fi
 codesign --verify --strict "$stage_dir/vz-supervisor"
 codesign --verify --strict "$stage_dir/vz-helper"
 "$stage_dir/vzctl" version >/dev/null
 "$stage_dir/vz-supervisor" version >/dev/null
 "$stage_dir/vz-helper" version >/dev/null
+if [ -n "$dns_bind_source" ]; then
+  "$stage_dir/vz-dns-bind" version >/dev/null
+fi
 
 plutil -create xml1 "$plist_tmp"
 plutil -insert Label -string "$label" "$plist_tmp"
@@ -74,6 +88,9 @@ chmod 0644 "$plist_tmp"
 mv -f "$stage_dir/vzctl" "$bindir/vzctl"
 mv -f "$stage_dir/vz-supervisor" "$bindir/vz-supervisor"
 mv -f "$stage_dir/vz-helper" "$bindir/vz-helper"
+if [ -n "$dns_bind_source" ]; then
+  mv -f "$stage_dir/vz-dns-bind" "$bindir/vz-dns-bind"
+fi
 mv -f "$plist_tmp" "$plist_path"
 
 if [ "$activate" = 1 ]; then
@@ -90,9 +107,13 @@ fi
 printf '%s: %s\n' "$action" "$bindir/vzctl"
 printf '%s: %s\n' "$action" "$bindir/vz-supervisor"
 printf '%s: %s\n' "$action" "$bindir/vz-helper"
+if [ -n "$dns_bind_source" ]; then
+  printf '%s: %s\n' "$action" "$bindir/vz-dns-bind"
+fi
 printf 'launch agent: %s\n' "$plist_path"
 if [ "$activate" = 1 ]; then
   printf 'restarted: %s/%s\n' "$domain" "$label"
 else
   printf 'activation skipped (ACTIVATE=0)\n'
 fi
+printf 'note: guest DNS :53 needs: sudo vzctl dns install-bind-helper\n'

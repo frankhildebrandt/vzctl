@@ -9,9 +9,23 @@ den Host-Listener sowie je aktivem vmnet einen Guest-Listener:
 | Host | `127.0.0.1:15353` | macOS `/etc/resolver` |
 | Guest | Bridge-`.0:53` | Standard-DNS der Guests |
 
-Für einen unprivilegierten Development-Run kann der Guest-Port mit
-`VZCTL_DNS_GUEST_PORT=15353` angehoben werden. Der produktive Guest-Pfad setzt
-Port 53 voraus.
+Port 53 ist privilegiert. Der unprivilegierte LaunchAgent-Supervisor holt
+gebundene UDP-FDs vom Root-LaunchDaemon `vz-dns-bind` (SCM_RIGHTS):
+
+```sh
+sudo vzctl dns install-bind-helper
+sudo vzctl dns uninstall-bind-helper
+```
+
+Ohne Helper schlägt `.0:53` mit `Permission denied` fehl (`dns_ok=false`).
+Für unprivilegierte Dev-Läufe ohne Helper:
+
+```sh
+VZCTL_DNS_GUEST_PORT=15353
+```
+
+Der produktive Guest-Pfad setzt Port 53 voraus (Guest-`nameserver` ist
+Bridge-`.0` ohne Port-Override).
 
 ## Autoritative Zone
 
@@ -221,7 +235,12 @@ Default-Netz ausgewählt wird.
 
 `daemon.health` enthält `dns_ok` und ein `dns`-Objekt mit Listenern,
 Record-/Zone-Zahl, TTL, Upstream und `last_error`. `ok=false` markiert einen
-degradierten Supervisor, etwa wenn `.0:53` nicht gebunden werden konnte.
+degradierten Supervisor, etwa wenn `.0:53` nicht gebunden werden konnte
+(fehlender `dns install-bind-helper` oder Bridge noch nicht up).
+
+`vzctl doctor` prüft denselben Pfad als Check `dns.bind_helper` (Warn + Hint
+`sudo vzctl dns install-bind-helper`). Die UI-Doctor-Seite und das DNS-Status-
+Tile bieten denselben Install-Button (Admin-Dialog).
 
 Jeder erfolgreiche Reload emittiert `dns.reloaded`; ein Snapshot- oder
 Bind-Fehler emittiert `dns.reload_failed`. Stirbt der Supervisor, verschwinden

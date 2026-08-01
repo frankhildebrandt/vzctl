@@ -17,10 +17,20 @@ const EXIT_INVALID: u8 = 3;
 const EXIT_SUPERVISOR: u8 = 10;
 pub(crate) const EXIT_RESOLVER: u8 = 19;
 pub(crate) const EXIT_DNS_QUERY: u8 = 20;
+pub(crate) const BIND_HELPER_LABEL: &str = "com.vzctl.dns-bind";
+pub(crate) const BIND_HELPER_LIBEXEC: &str = "/usr/local/libexec/vzctl/vz-dns-bind";
+pub(crate) const BIND_HELPER_MARKER: &str = "/usr/local/libexec/vzctl/dns-bind.managed";
+pub(crate) const BIND_HELPER_PLIST: &str = "/Library/LaunchDaemons/com.vzctl.dns-bind.plist";
+pub(crate) const BIND_HELPER_SOCKET_DEFAULT: &str = "/var/run/vzctl/dns-bind.sock";
+
 const MANAGED_MARKER: &str = "# managed-by: vzctl";
 const DEFAULT_DNS_SERVER: &str = "127.0.0.1:15353";
 const DNS_TIMEOUT: Duration = Duration::from_secs(2);
 const DNS_HEADER_LENGTH: usize = 12;
+const BIND_HELPER_SOCKET: &str = BIND_HELPER_SOCKET_DEFAULT;
+const BIND_HELPER_LOG_DIR: &str = "/Library/Logs/vzctl";
+const BIND_HELPER_PLIST_TEMPLATE: &str =
+    include_str!("../../../daemon/launchd/com.vzctl.dns-bind.plist.template");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Format {
@@ -32,6 +42,8 @@ enum Format {
 enum Action {
     Install,
     Uninstall,
+    InstallBindHelper,
+    UninstallBindHelper,
     Query,
     Status,
 }
@@ -41,9 +53,15 @@ impl Action {
         match self {
             Self::Install => "dns.install-resolver",
             Self::Uninstall => "dns.uninstall-resolver",
+            Self::InstallBindHelper => "dns.install-bind-helper",
+            Self::UninstallBindHelper => "dns.uninstall-bind-helper",
             Self::Query => "dns.query",
             Self::Status => "dns.status",
         }
+    }
+
+    fn is_bind_helper(self) -> bool {
+        matches!(self, Self::InstallBindHelper | Self::UninstallBindHelper)
     }
 }
 
@@ -79,6 +97,7 @@ struct Options {
     query_name: Option<String>,
     query_type: QueryType,
     server: String,
+    allow_uid: Option<u32>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -129,6 +148,8 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
     let command_hint = match args.first().map(String::as_str) {
         Some("query") => "dns.query",
         Some("status") => "dns.status",
+        Some("install-bind-helper") => "dns.install-bind-helper",
+        Some("uninstall-bind-helper") => "dns.uninstall-bind-helper",
         _ => "dns",
     };
     let options = match parse(args.into_iter()) {
@@ -143,6 +164,23 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
     }
     if options.action == Action::Status {
         return status_command(&options, socket_path);
+    }
+    if options.action.is_bind_helper() {
+        let result = match options.action {
+            Action::InstallBindHelper => install_bind_helper(options.allow_uid),
+            Action::UninstallBindHelper => uninstall_bind_helper(),
+            _ => unreachable!(),
+        };
+        return match result {
+            Ok((path, change)) => {
+                emit_bind_helper_success(options.format, options.action, &path, change);
+                ExitCode::SUCCESS
+            }
+            Err(failure) => {
+                emit_failure(options.format, options.action.command(), &failure);
+                ExitCode::from(failure.code)
+            }
+        };
     }
     let scope = match resolve_scope(&options) {
         Ok(scope) => scope,
@@ -164,7 +202,10 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
     let result = match options.action {
         Action::Install => install(&resolver_dir, &scope, port),
         Action::Uninstall => uninstall(&resolver_dir, &scope),
-        Action::Query | Action::Status => unreachable!("handled above"),
+        Action::InstallBindHelper
+        | Action::UninstallBindHelper
+        | Action::Query
+        | Action::Status => unreachable!("handled above"),
     };
     match result {
         Ok((path, change)) => {
@@ -182,6 +223,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     let action = match args.next().as_deref() {
         Some("install-resolver") => Action::Install,
         Some("uninstall-resolver") => Action::Uninstall,
+        Some("install-bind-helper") => Action::InstallBindHelper,
+        Some("uninstall-bind-helper") => Action::UninstallBindHelper,
         Some("query") => Action::Query,
         Some("status") => Action::Status,
         _ => return Err(Failure::new(EXIT_USAGE, usage())),
@@ -193,10 +236,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     let mut query_name = None;
     let mut query_type = QueryType::A;
     let mut server = DEFAULT_DNS_SERVER.to_string();
+    let mut allow_uid = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--project" => {
-                if matches!(action, Action::Query | Action::Status) {
+                if matches!(action, Action::Query | Action::Status) || action.is_bind_helper() {
                     return Err(Failure::new(
                         EXIT_USAGE,
                         "--project is not valid for this dns command",
@@ -208,7 +252,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                 }
             }
             "--config" => {
-                if matches!(action, Action::Query | Action::Status) {
+                if matches!(action, Action::Query | Action::Status) || action.is_bind_helper() {
                     return Err(Failure::new(
                         EXIT_USAGE,
                         "--config is not valid for this dns command",
@@ -233,6 +277,21 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                         ))
                     }
                 };
+            }
+            "--allow-uid" => {
+                if action != Action::InstallBindHelper {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--allow-uid is only valid for dns install-bind-helper",
+                    ));
+                }
+                let value = next_value(&mut args, "--allow-uid requires a numeric uid")?;
+                let parsed = value.parse::<u32>().map_err(|_| {
+                    Failure::new(EXIT_INVALID, format!("invalid --allow-uid: {value}"))
+                })?;
+                if allow_uid.replace(parsed).is_some() {
+                    return Err(Failure::new(EXIT_USAGE, "--allow-uid may only be used once"));
+                }
             }
             "--type" => {
                 if action != Action::Query {
@@ -291,6 +350,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
         query_name,
         query_type,
         server,
+        allow_uid,
     })
 }
 
@@ -898,6 +958,254 @@ fn protocol_failure(server: &str, message: &str) -> Failure {
     )
 }
 
+fn install_bind_helper(explicit_uid: Option<u32>) -> Result<(PathBuf, Change), Failure> {
+    let allow_uid = match explicit_uid {
+        Some(uid) => uid,
+        None => allow_uid()?,
+    };
+    if allow_uid == 0 {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "allow-uid must be a non-root user uid (pass --allow-uid or run via sudo from your account)",
+        ));
+    }
+    let source = bind_helper_source_binary()?;
+    let libexec_dir = Path::new(BIND_HELPER_LIBEXEC)
+        .parent()
+        .ok_or_else(|| Failure::new(EXIT_RESOLVER, "invalid bind-helper libexec path"))?;
+    fs::create_dir_all(libexec_dir).map_err(|error| io_failure("create directory", libexec_dir, error))?;
+    fs::set_permissions(libexec_dir, fs::Permissions::from_mode(0o755))
+        .map_err(|error| io_failure("set permissions on", libexec_dir, error))?;
+
+    let binary = PathBuf::from(BIND_HELPER_LIBEXEC);
+    let marker = PathBuf::from(BIND_HELPER_MARKER);
+    let plist = PathBuf::from(BIND_HELPER_PLIST);
+    let desired_marker = bind_helper_marker_content(allow_uid);
+    let desired_plist = bind_helper_plist_content(allow_uid)?;
+
+    let change = match read_existing(&marker)? {
+        None => Change::Installed,
+        Some(existing) => {
+            ensure_bind_helper_owned(&marker, &existing)?;
+            let binary_same = binary.is_file()
+                && fs::read(&binary).ok().as_deref() == fs::read(&source).ok().as_deref();
+            let plist_same = read_existing(&plist)?.as_deref() == Some(desired_plist.as_str());
+            if existing == desired_marker && binary_same && plist_same {
+                launchctl_kickstart_bind_helper()?;
+                return Ok((plist, Change::Unchanged));
+            }
+            Change::Updated
+        }
+    };
+
+    fs::copy(&source, &binary).map_err(|error| io_failure("install", &binary, error))?;
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+        .map_err(|error| io_failure("set permissions on", &binary, error))?;
+    atomic_write(&marker, desired_marker.as_bytes())
+        .map_err(|error| io_failure("write", &marker, error))?;
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o644))
+        .map_err(|error| io_failure("set permissions on", &marker, error))?;
+
+    let log_dir = Path::new(BIND_HELPER_LOG_DIR);
+    fs::create_dir_all(log_dir).map_err(|error| io_failure("create directory", log_dir, error))?;
+    atomic_write(&plist, desired_plist.as_bytes())
+        .map_err(|error| io_failure("write", &plist, error))?;
+    fs::set_permissions(&plist, fs::Permissions::from_mode(0o644))
+        .map_err(|error| io_failure("set permissions on", &plist, error))?;
+
+    launchctl_bootout_bind_helper();
+    launchctl_bootstrap_bind_helper(&plist)?;
+    launchctl_kickstart_bind_helper()?;
+    Ok((plist, change))
+}
+
+fn uninstall_bind_helper() -> Result<(PathBuf, Change), Failure> {
+    let plist = PathBuf::from(BIND_HELPER_PLIST);
+    let marker = PathBuf::from(BIND_HELPER_MARKER);
+    let binary = PathBuf::from(BIND_HELPER_LIBEXEC);
+    match read_existing(&marker)? {
+        None if !plist.exists() && !binary.exists() => Ok((plist, Change::Absent)),
+        None => Err(Failure::new(
+            EXIT_RESOLVER,
+            format!(
+                "bind-helper marker missing at {}; refusing to remove unmanaged files",
+                marker.display()
+            ),
+        )),
+        Some(existing) => {
+            ensure_bind_helper_owned(&marker, &existing)?;
+            launchctl_bootout_bind_helper();
+            if plist.exists() {
+                fs::remove_file(&plist).map_err(|error| io_failure("remove", &plist, error))?;
+            }
+            if binary.exists() {
+                fs::remove_file(&binary).map_err(|error| io_failure("remove", &binary, error))?;
+            }
+            fs::remove_file(&marker).map_err(|error| io_failure("remove", &marker, error))?;
+            let _ = fs::remove_file(BIND_HELPER_SOCKET);
+            Ok((plist, Change::Removed))
+        }
+    }
+}
+
+fn allow_uid() -> Result<u32, Failure> {
+    if let Ok(value) = std::env::var("SUDO_UID") {
+        return value.parse::<u32>().map_err(|_| {
+            Failure::new(EXIT_INVALID, format!("invalid SUDO_UID: {value}"))
+        });
+    }
+    if let Ok(value) = std::env::var("VZCTL_DNS_BIND_ALLOW_UID") {
+        return value.parse::<u32>().map_err(|_| {
+            Failure::new(
+                EXIT_INVALID,
+                format!("invalid VZCTL_DNS_BIND_ALLOW_UID: {value}"),
+            )
+        });
+    }
+    let uid = unsafe { libc::getuid() };
+    if uid == 0 {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "cannot infer allow-uid as root; pass --allow-uid <uid> or run via sudo from your user",
+        ));
+    }
+    Ok(uid)
+}
+
+fn bind_helper_source_binary() -> Result<PathBuf, Failure> {
+    if let Some(path) = std::env::var_os("VZCTL_DNS_BIND_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(Failure::new(
+            EXIT_INVALID,
+            format!("VZCTL_DNS_BIND_BIN is not a file: {}", path.display()),
+        ));
+    }
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("vz-dns-bind"));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/bin/vz-dns-bind"));
+    }
+    candidates.push(PathBuf::from("daemon/.build/release/vz-dns-bind"));
+    candidates.push(PathBuf::from("daemon/.build/debug/vz-dns-bind"));
+    for path in candidates {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(Failure::new(
+        EXIT_INVALID,
+        "vz-dns-bind binary not found; run make release or set VZCTL_DNS_BIND_BIN",
+    ))
+}
+
+fn bind_helper_marker_content(allow_uid: u32) -> String {
+    format!("{MANAGED_MARKER}\n# allow-uid: {allow_uid}\n")
+}
+
+fn bind_helper_plist_content(allow_uid: u32) -> Result<String, Failure> {
+    let log = format!("{BIND_HELPER_LOG_DIR}/dns-bind.log");
+    let err = format!("{BIND_HELPER_LOG_DIR}/dns-bind.error.log");
+    Ok(BIND_HELPER_PLIST_TEMPLATE
+        .replace("__BINARY_PATH__", BIND_HELPER_LIBEXEC)
+        .replace("__ALLOW_UID__", &allow_uid.to_string())
+        .replace("__SOCKET_PATH__", BIND_HELPER_SOCKET)
+        .replace("__LOG_PATH__", &log)
+        .replace("__ERROR_LOG_PATH__", &err))
+}
+
+fn ensure_bind_helper_owned(path: &Path, content: &str) -> Result<(), Failure> {
+    if content.lines().any(|line| line == MANAGED_MARKER)
+        && content.lines().any(|line| line.starts_with("# allow-uid: "))
+    {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            EXIT_RESOLVER,
+            format!(
+                "bind-helper collision at {}; file is not managed by vzctl",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn launchctl_bootout_bind_helper() {
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("system/{BIND_HELPER_LABEL}")])
+        .status();
+}
+
+fn launchctl_bootstrap_bind_helper(plist: &Path) -> Result<(), Failure> {
+    let status = std::process::Command::new("launchctl")
+        .args(["bootstrap", "system", &plist.display().to_string()])
+        .status()
+        .map_err(|error| {
+            Failure::new(
+                EXIT_RESOLVER,
+                format!("launchctl bootstrap failed: {error}; run this command with sudo"),
+            )
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            EXIT_RESOLVER,
+            "launchctl bootstrap failed; run this command with sudo",
+        ))
+    }
+}
+
+fn launchctl_kickstart_bind_helper() -> Result<(), Failure> {
+    let status = std::process::Command::new("launchctl")
+        .args(["kickstart", "-k", &format!("system/{BIND_HELPER_LABEL}")])
+        .status()
+        .map_err(|error| {
+            Failure::new(EXIT_RESOLVER, format!("launchctl kickstart failed: {error}"))
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            EXIT_RESOLVER,
+            "launchctl kickstart failed; run this command with sudo",
+        ))
+    }
+}
+
+fn emit_bind_helper_success(format: Format, action: Action, path: &Path, change: Change) {
+    let message = format!("bind-helper {}: {}", change.as_str(), path.display());
+    match format {
+        Format::Human => println!("{message}"),
+        Format::Json => println!(
+            "{}",
+            json!({
+                "apiVersion": API_VERSION,
+                "command": action.command(),
+                "status": "ok",
+                "exit_code": 0,
+                "summary": {
+                    "message": message,
+                    "change": change.as_str(),
+                },
+                "bind_helper": {
+                    "label": BIND_HELPER_LABEL,
+                    "plist": path,
+                    "binary": BIND_HELPER_LIBEXEC,
+                    "socket": BIND_HELPER_SOCKET,
+                    "managed": true,
+                }
+            })
+        ),
+    }
+}
+
 fn install(resolver_dir: &Path, scope: &Scope, port: u16) -> Result<(PathBuf, Change), Failure> {
     ensure_resolver_dir(resolver_dir)?;
     let path = resolver_path(resolver_dir, &scope.project);
@@ -1231,7 +1539,114 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]"
+    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
+}
+
+pub(crate) struct DoctorBindHelperCheck {
+    pub(crate) id: &'static str,
+    pub(crate) ok: bool,
+    pub(crate) message: String,
+    pub(crate) details: Value,
+}
+
+/// Doctor probe for privileged guest-DNS bind helper (LaunchDaemon + UDS).
+pub(crate) fn doctor_bind_helper_check() -> DoctorBindHelperCheck {
+    let guest_port = std::env::var("VZCTL_DNS_GUEST_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(53);
+    let socket_path = std::env::var("VZCTL_DNS_BIND_SOCK")
+        .unwrap_or_else(|_| BIND_HELPER_SOCKET_DEFAULT.to_string());
+    let binary = Path::new(BIND_HELPER_LIBEXEC);
+    let marker = Path::new(BIND_HELPER_MARKER);
+    let plist = Path::new(BIND_HELPER_PLIST);
+    let binary_present = binary.is_file();
+    let marker_present = marker.is_file();
+    let plist_present = plist.is_file();
+    let managed = marker_present
+        && fs::read_to_string(marker)
+            .map(|content| {
+                content.lines().any(|line| line == MANAGED_MARKER)
+                    && content.lines().any(|line| line.starts_with("# allow-uid: "))
+            })
+            .unwrap_or(false);
+    let socket_present = Path::new(&socket_path).exists();
+    let socket_connectable = UnixStream::connect(&socket_path).is_ok();
+    let launchd_loaded = launchctl_bind_helper_loaded();
+
+    let details = json!({
+        "guest_port": guest_port,
+        "requires_helper": guest_port > 0 && guest_port < 1024,
+        "socket": socket_path,
+        "socket_present": socket_present,
+        "socket_connectable": socket_connectable,
+        "binary": BIND_HELPER_LIBEXEC,
+        "binary_present": binary_present,
+        "plist": BIND_HELPER_PLIST,
+        "plist_present": plist_present,
+        "marker": BIND_HELPER_MARKER,
+        "marker_present": marker_present,
+        "managed": managed,
+        "launchd_loaded": launchd_loaded,
+        "label": BIND_HELPER_LABEL,
+        "action": "install-bind-helper",
+    });
+
+    if guest_port >= 1024 {
+        return DoctorBindHelperCheck {
+            id: "dns.bind_helper",
+            ok: true,
+            message: format!(
+                "guest DNS uses unprivileged port {guest_port}; bind-helper not required"
+            ),
+            details,
+        };
+    }
+
+    if socket_connectable && binary_present && managed {
+        return DoctorBindHelperCheck {
+            id: "dns.bind_helper",
+            ok: true,
+            message: format!(
+                "dns bind-helper ready ({socket_path}; guest :{guest_port})"
+            ),
+            details,
+        };
+    }
+
+    let mut missing = Vec::new();
+    if !binary_present {
+        missing.push("binary");
+    }
+    if !managed {
+        missing.push("managed marker");
+    }
+    if !plist_present {
+        missing.push("LaunchDaemon plist");
+    }
+    if !launchd_loaded {
+        missing.push("launchd job");
+    }
+    if !socket_connectable {
+        missing.push("socket");
+    }
+    DoctorBindHelperCheck {
+        id: "dns.bind_helper",
+        ok: false,
+        message: format!(
+            "dns bind-helper missing ({}); run: sudo vzctl dns install-bind-helper",
+            missing.join(", ")
+        ),
+        details,
+    }
+}
+
+fn launchctl_bind_helper_loaded() -> bool {
+    std::process::Command::new("launchctl")
+        .args(["print", &format!("system/{BIND_HELPER_LABEL}")])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1334,6 +1749,7 @@ mod tests {
             query_name: None,
             query_type: QueryType::A,
             server: DEFAULT_DNS_SERVER.to_string(),
+            allow_uid: None,
         };
         let resolved = resolve_scope(&options).unwrap();
         assert_eq!(resolved.project, "edge-dmz");
@@ -1359,6 +1775,7 @@ mod tests {
             query_name: None,
             query_type: QueryType::A,
             server: DEFAULT_DNS_SERVER.to_string(),
+            allow_uid: None,
         };
         let resolved = resolve_scope(&options).unwrap();
         assert_eq!(resolved.project, "edge-dmz");
@@ -1384,6 +1801,75 @@ mod tests {
         });
         assert_eq!(value["command"], "dns.install-resolver");
         assert_eq!(value["apiVersion"], API_VERSION);
+        assert_eq!(
+            Action::InstallBindHelper.command(),
+            "dns.install-bind-helper"
+        );
+        assert_eq!(
+            Action::UninstallBindHelper.command(),
+            "dns.uninstall-bind-helper"
+        );
+    }
+
+    #[test]
+    fn bind_helper_plist_substitutes_placeholders() {
+        let plist = bind_helper_plist_content(501).unwrap();
+        assert!(plist.contains(BIND_HELPER_LIBEXEC));
+        assert!(plist.contains("<string>501</string>"));
+        assert!(plist.contains(BIND_HELPER_SOCKET));
+        assert!(plist.contains(BIND_HELPER_LABEL));
+        assert!(!plist.contains("__BINARY_PATH__"));
+        assert!(!plist.contains("__ALLOW_UID__"));
+    }
+
+    #[test]
+    fn bind_helper_parse_rejects_project_flags() {
+        let err = parse(
+            ["install-bind-helper", "--project", "edge-dmz"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, EXIT_USAGE);
+        let ok = parse(
+            ["install-bind-helper", "--format", "json"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(ok.action, Action::InstallBindHelper);
+        assert_eq!(ok.format, Format::Json);
+    }
+
+    #[test]
+    fn doctor_bind_helper_check_reports_missing_without_socket() {
+        // Unprivileged guest-port override → ok without LaunchDaemon.
+        std::env::set_var("VZCTL_DNS_GUEST_PORT", "15353");
+        let check = doctor_bind_helper_check();
+        std::env::remove_var("VZCTL_DNS_GUEST_PORT");
+        assert!(check.ok, "{}", check.message);
+        assert_eq!(check.id, "dns.bind_helper");
+        assert_eq!(check.details["requires_helper"], false);
+
+        std::env::set_var("VZCTL_DNS_GUEST_PORT", "53");
+        std::env::set_var(
+            "VZCTL_DNS_BIND_SOCK",
+            format!(
+                "/tmp/vzctl-dns-bind-missing-{}-{}.sock",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ),
+        );
+        let check = doctor_bind_helper_check();
+        std::env::remove_var("VZCTL_DNS_GUEST_PORT");
+        std::env::remove_var("VZCTL_DNS_BIND_SOCK");
+        assert!(!check.ok, "{}", check.message);
+        assert!(check.message.contains("install-bind-helper"));
+        assert_eq!(check.details["action"], "install-bind-helper");
+        assert_eq!(check.details["requires_helper"], true);
     }
 
     #[test]

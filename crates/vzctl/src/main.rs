@@ -376,6 +376,7 @@ Commands:
   dns status [--format human|json]
   dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
   dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
+  dns install-bind-helper|uninstall-bind-helper [--format human|json]
   docker [--project P] [--] <docker-args...>
   port list [--project P] [--stack S] [--format human|json]
   certs ca init|install [--force] [--format human|json]
@@ -2448,6 +2449,7 @@ fn prepare_cloud_init_seed(
             map
         }));
     }
+
     let mut runcmd = Vec::new();
 
     if roles.iter().any(|role| role == "router") {
@@ -3356,6 +3358,17 @@ fn doctor(options: DoctorOptions) -> ExitCode {
     checks.push(check_vmnet_hint(macos_version));
     checks.push(check_image_backend(&images_dir));
     checks.push(check_supervisor());
+    let bind_helper = dns::doctor_bind_helper_check();
+    checks.push(Check::new(
+        bind_helper.id,
+        if bind_helper.ok {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        bind_helper.message,
+        bind_helper.details,
+    ));
     let docker_check = docker::doctor_check(&state_dir);
     checks.push(Check::new(
         docker_check.id,
@@ -3983,12 +3996,16 @@ fn check_supervisor() -> Check {
         return supervisor_failure(&path, format!("health is not ok: {value}"));
     }
     let network_orphans = result["network_orphans"].as_u64().unwrap_or(0);
+    let dns_ok = result["dns_ok"].as_bool().unwrap_or(true);
+    let dns = &result["dns"];
     let details = json!({
         "socket": path,
         "running": true,
         "version": result["version"],
         "pid": result["pid"],
         "db_ok": true,
+        "dns_ok": dns_ok,
+        "dns": dns,
         "networks": result["networks"],
         "network_orphans": network_orphans,
     });
@@ -4003,12 +4020,24 @@ fn check_supervisor() -> Check {
             details,
         );
     }
+    if !dns_ok {
+        let last_error = dns["last_error"].as_str().unwrap_or("dns degraded");
+        return Check::new(
+            "supervisor.health",
+            CheckStatus::Warn,
+            format!(
+                "supervisor is up, but DNS is degraded ({last_error}); \
+                 guest :53 needs: sudo vzctl dns install-bind-helper"
+            ),
+            details,
+        );
+    }
 
     Check::new(
         "supervisor.health",
         CheckStatus::Ok,
         format!(
-            "supervisor {} (pid {}, db ok)",
+            "supervisor {} (pid {}, db ok, dns ok)",
             result["version"].as_str().unwrap_or("unknown"),
             result["pid"]
         ),

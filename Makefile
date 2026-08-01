@@ -46,6 +46,7 @@ release: ## Release-Binaries bauen und ad-hoc signieren
 	$(SWIFT) build --package-path daemon --configuration release
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-helper
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-supervisor
+	codesign --force --sign - daemon/.build/release/vz-dns-bind
 
 vendor: vendor-caddy vendor-dex ## Caddy- und Dex-Binaries fetchen (v0.2)
 
@@ -78,12 +79,14 @@ install: release ## Installation erstellen/aktualisieren und Supervisor neu star
 		ACTIVATE="$(ACTIVATE)" daemon/scripts/install.sh \
 		target/release/vzctl \
 		daemon/.build/release/vz-supervisor \
-		daemon/.build/release/vz-helper
+		daemon/.build/release/vz-helper \
+		daemon/.build/release/vz-dns-bind
 	@if [ -x "$(CADDY_VENDOR)" ] && [ -x "$(DEX_VENDOR)" ]; then \
 		$(MAKE) install-vendor; \
 	else \
 		echo "note: skip install-vendor (run make vendor && make install-vendor for Ingress/OIDC)"; \
 	fi
+	@echo "note: guest DNS :53 → sudo $(BINDIR)/vzctl dns install-bind-helper"
 
 test: test-cli test-daemon test-agent ## Alle Tests ausführen
 
