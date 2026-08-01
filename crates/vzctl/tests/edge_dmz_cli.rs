@@ -97,7 +97,7 @@ fn reference_environment_validates_and_plan_diff_are_read_only() {
         let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(envelope["command"], command);
         assert_eq!(envelope["status"], "ok");
-        assert_eq!(envelope["summary"]["actions"], 9);
+        assert_eq!(envelope["summary"]["actions"], 15);
     }
 
     server.join().unwrap();

@@ -22,16 +22,28 @@ spec:
       mode: shared
       dhcp: false
       natEgress: true
+      backend: vmnet
     lan:
       cidr: 10.90.0.0/24
       mode: shared
       dhcp: false
       natEgress: false
+      backend: vmnet
+    containers:
+      cidr: 10.95.0.0/24
+      mode: shared
+      dhcp: false
+      natEgress: false
+      backend: docker
   routes:
     - name: dmz-to-lan
       from: dmz
       to: lan
       via: router
+    - name: lan-to-containers
+      from: lan
+      to: containers
+      via: docker
   policies:
     - name: dmz-default
       network: dmz
@@ -42,12 +54,37 @@ spec:
           ports:
             - 5432
         - to: dmz
-          proto: icmp
-          ports: []
-    - name: lan-default
+          proto: tcp
+          ports:
+            - 80
+    - name: lan-to-containers
       network: lan
       forward: deny-all
-      allow: []
+      allow:
+        - to: containers
+          proto: tcp
+          ports:
+            - 80
+            - 443
+        - to: containers
+          proto: icmp
+          ports: []
+    - name: lan-to-internet
+      network: lan
+      forward: deny-all
+      allow:
+        - to: internet
+          proto: tcp
+          ports:
+            - 443
+    - name: containers-default
+      network: containers
+      forward: deny-all
+      allow:
+        - to: lan
+          proto: tcp
+          ports:
+            - 5432
   ports:
     - 8080:web:80
   certs:
@@ -110,11 +147,14 @@ spec:
       networks:
         - name: lan
           ip: 10.90.0.10
+        - name: containers
+          ip: 10.95.0.2
       cloudInit: cloud-init/docker.yaml
       dependsOn:
         - router
       roles:
         - docker
+        - router
       requires: []
       ports: []
       mounts: []

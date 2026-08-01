@@ -1,10 +1,13 @@
 #cloud-config
 # Local Docker Engine for roles:[docker]. SSH access is injected by vzctl
 # (user vzctl + authorized_keys). Do not publish TCP 2375.
+# With backend: docker, vzctl writes /etc/docker/daemon.json (bip=.2, iptables:false).
 package_update: true
 packages:
   - docker.io
   - parted
+  - nftables
 runcmd:
   - [systemctl, enable, --now, docker]
   - [sh, -c, "if ! findmnt /var/lib/docker >/dev/null 2>&1; then DEV=$(lsblk -ndo NAME,TYPE | awk '$2==\"disk\"{print $1}' | tail -n1); if [ -n \"$DEV\" ] && [ ! -b /dev/${DEV}1 ]; then parted -s /dev/$DEV mklabel gpt mkpart primary ext4 1MiB 100% && mkfs.ext4 -F /dev/${DEV}1 && mkdir -p /var/lib/docker && echo \"/dev/${DEV}1 /var/lib/docker ext4 defaults,nofail 0 2\" >> /etc/fstab && mount /var/lib/docker; fi; fi"]
+  - [systemctl, restart, docker]
