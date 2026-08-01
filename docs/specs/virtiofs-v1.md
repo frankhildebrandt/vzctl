@@ -11,6 +11,9 @@ Host→Guest directory sharing for vzctl via Apple Virtualization
   `/mnt/vzctl/<name>` → `<target>`.
 - Live updates use `VZVirtioFileSystemDevice.share` swap (no Helper restart)
   plus Guest-Agent `fs.mount` / `fs.unmount`.
+- Docker-role VMs additionally get an automatic share `project` → absolute
+  hypernetwork config directory, bind-mounted at the **same absolute path** in
+  the guest (see [docker.md](../docker.md)).
 
 ## hypernetwork YAML
 

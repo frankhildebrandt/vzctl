@@ -31,6 +31,7 @@ const APPLY_STEPS: &[&str] = &[
     "ensure_vms",
     "start_helpers",
     "await_agents",
+    "ensure_docker_project_mount",
     "ensure_ca",
     "ensure_oidc",
     "ensure_ingress",
@@ -341,6 +342,9 @@ fn execute_step(
         }
         "start_helpers" => start_helpers(environment, socket_path),
         "await_agents" => await_helpers(environment, socket_path),
+        "ensure_docker_project_mount" => {
+            ensure_docker_project_mount(environment, &options.config, socket_path)
+        }
         "ensure_ca" => ensure_ca(environment),
         "ensure_oidc" => ensure_oidc(environment, &options.config, socket_path),
         "ensure_ingress" => ensure_ingress(environment, socket_path),
@@ -597,6 +601,20 @@ fn ensure_vms(
             }
             owned.extend(["--mount".to_string(), flag]);
         }
+        if vm.roles.iter().any(|role| role == "docker") {
+            let project_dir = crate::mounts::resolve_project_dir(config_path)
+                .map_err(|message| Failure::new(EXIT_INVALID, message))?;
+            let project_target = project_dir.to_string_lossy().into_owned();
+            let has_project = vm.mounts.iter().any(|mount| {
+                mount.source == crate::mounts::DOCKER_PROJECT_MOUNT_TAG
+                    || mount.target == project_target
+            });
+            if !has_project {
+                let flag = crate::mounts::docker_project_mount_flag(&project_dir)
+                    .map_err(|message| Failure::new(EXIT_INVALID, message))?;
+                owned.extend(["--mount".to_string(), flag]);
+            }
+        }
         owned.extend(["--format".to_string(), "json".to_string()]);
         let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
         run_self(&refs)?;
@@ -768,6 +786,67 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Share the hypernetwork project directory into docker-role VMs at the same
+/// absolute path so container `-v /Users/…/project:…` binds work.
+fn ensure_docker_project_mount(
+    environment: &Environment,
+    config_path: &Path,
+    _socket_path: &Path,
+) -> Result<(), Failure> {
+    let docker_vms = environment
+        .spec
+        .vms
+        .iter()
+        .filter(|(_, vm)| vm.roles.iter().any(|role| role == "docker"))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    if docker_vms.is_empty() {
+        return Ok(());
+    }
+    let project_dir = crate::mounts::resolve_project_dir(config_path)
+        .map_err(|message| Failure::new(EXIT_INVALID, message))?;
+    let target = project_dir.to_string_lossy().into_owned();
+    let source = project_dir.to_string_lossy().into_owned();
+    for name in docker_vms {
+        let runtime_id = vm_runtime_id(environment, &name);
+        let bundle = crate::state_dir().join("vms").join(&runtime_id);
+        if !bundle.join("vm.json").is_file() {
+            continue;
+        }
+        let mounts = crate::mounts::read_manifest_mounts(&bundle).unwrap_or_default();
+        if let Some(existing) = mounts.iter().find(|mount| mount.target == target) {
+            if existing.source == project_dir
+                && existing.name == crate::mounts::DOCKER_PROJECT_MOUNT_TAG
+            {
+                // Still call mount so a running VM that lost the bind remounts.
+            } else if existing.source != project_dir {
+                return Err(Failure::new(
+                    EXIT_INVALID,
+                    format!(
+                        "docker VM {runtime_id}: mount target {target} already uses source {} (expected project dir {})",
+                        existing.source.display(),
+                        project_dir.display()
+                    ),
+                ));
+            }
+        }
+        run_self(&[
+            "vm",
+            "mount",
+            &runtime_id,
+            "--source",
+            &source,
+            "--target",
+            &target,
+            "--tag",
+            crate::mounts::DOCKER_PROJECT_MOUNT_TAG,
+            "--format",
+            "json",
+        ])?;
+    }
+    Ok(())
 }
 
 fn stop_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
@@ -996,41 +1075,95 @@ fn ensure_oidc(
     crate::oidc::write_clients(&state_dir, &environment.spec.project, &clients)
         .map_err(|e| Failure::new(EXIT_STEP, format!("oidc clients: {e}")))?;
 
-    let password_file = oidc.password_file.as_ref().map(|rel| {
-        config::config_path(config_path)
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(rel)
-    });
     let storage = state_dir
         .join("runtime")
         .join("oidc")
         .join(&environment.spec.project);
     fs::create_dir_all(&storage).map_err(|e| Failure::new(EXIT_STEP, e.to_string()))?;
-    let config_yaml = crate::oidc::render_dex_config(
-        &oidc.issuer,
-        &oidc.listen,
-        &clients,
-        password_file.as_deref(),
-        &storage,
-    )
-    .map_err(|e| Failure::new(EXIT_STEP, format!("dex config: {e}")))?;
 
-    let binary = state_dir.join("bin").join("dex");
-    let binary = if binary.exists() {
-        binary
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../daemon/Vendor/dex/dex")
-    };
-    rpc(
-        socket_path,
-        "oidc.ensure",
-        json!({
-            "project": environment.spec.project,
-            "config": config_yaml,
-            "binary": binary.display().to_string(),
-        }),
-    )?;
+    match oidc.mode {
+        config::OidcMode::OidcSimple => {
+            let config_json = crate::oidc::render_simple_config(
+                &oidc.issuer,
+                &oidc.listen,
+                &clients,
+                &oidc.users,
+            )
+            .map_err(|e| Failure::new(EXIT_STEP, format!("oidc-simple config: {e}")))?;
+            let binary = state_dir.join("bin").join("vzctl-oidc-simple");
+            let binary = if binary.exists() {
+                binary
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/vzctl-oidc-simple")
+            };
+            let binary = if binary.exists() {
+                binary
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/release/vzctl-oidc-simple")
+            };
+            rpc(
+                socket_path,
+                "oidc.ensure",
+                json!({
+                    "project": environment.spec.project,
+                    "config": config_json,
+                    "configName": "config.json",
+                    "binary": binary.display().to_string(),
+                    "arguments": ["--config", "{config}"],
+                    "processName": format!("oidc-simple-{}", environment.spec.project),
+                    "pidFile": "oidc.pid",
+                }),
+            )?;
+        }
+        config::OidcMode::Embedded => {
+            let password_file = oidc.password_file.as_ref().map(|rel| {
+                config::config_path(config_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(rel)
+            });
+            let host_uplink = crate::oidc::load_host_uplink(&state_dir)
+                .map_err(|e| Failure::new(EXIT_STEP, format!("oidc host uplink: {e}")))?;
+            let resolved_uplink = crate::oidc::merge_uplink(
+                &state_dir,
+                &environment.spec.project,
+                host_uplink.as_ref(),
+                oidc.uplink.as_ref(),
+            )
+            .map_err(|e| Failure::new(EXIT_STEP, format!("oidc uplink: {e}")))?;
+            let config_yaml = crate::oidc::render_dex_config(
+                &oidc.issuer,
+                &oidc.listen,
+                &clients,
+                password_file.as_deref(),
+                &storage,
+                resolved_uplink.as_ref(),
+            )
+            .map_err(|e| Failure::new(EXIT_STEP, format!("dex config: {e}")))?;
+
+            let binary = state_dir.join("bin").join("dex");
+            let binary = if binary.exists() {
+                binary
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../daemon/Vendor/dex/dex")
+            };
+            rpc(
+                socket_path,
+                "oidc.ensure",
+                json!({
+                    "project": environment.spec.project,
+                    "config": config_yaml,
+                    "configName": "config.yaml",
+                    "binary": binary.display().to_string(),
+                    "arguments": ["serve", "{config}"],
+                    "processName": format!("dex-{}", environment.spec.project),
+                    "pidFile": "oidc.pid",
+                }),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1078,8 +1211,10 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
             "project": environment.spec.project,
             "caddyfile": rendered.caddyfile,
             "binary": binary.display().to_string(),
-            "http_port": ingress.http_port,
-            "https_port": ingress.https_port,
+            "http_port": rendered.http_port,
+            "https_port": rendered.https_port,
+            "backend_http_port": rendered.caddy_http_port,
+            "backend_https_port": rendered.caddy_https_port,
             "gateways": rendered.gateways,
         }),
     )?;
