@@ -361,21 +361,23 @@ final class NetworkRegistry: @unchecked Sendable {
             let automatic: Bool
             if let requestedNetwork {
                 try validateName(requestedNetwork, kind: "network")
-                if let existing = explicit.first {
-                    guard existing.networkName == requestedNetwork,
-                          let selected = try database.networks().first(where: {
-                              $0.name == existing.networkName
-                          })
-                    else {
-                        throw NetworkRegistryError.conflict(
-                            "VM \(vmID) already has explicit network attachments"
-                        )
-                    }
+                // Multi-homed VMs (attach_nets before create) already have several
+                // explicit attachments — match by name, not only the first row.
+                if let existing = explicit.first(where: { $0.networkName == requestedNetwork }),
+                   let selected = try database.networks().first(where: {
+                       $0.name == existing.networkName
+                   })
+                {
                     return VMNetworkSelection(
                         network: selected,
                         attachment: existing,
                         automatic: false,
                         created: false
+                    )
+                }
+                if !explicit.isEmpty {
+                    throw NetworkRegistryError.conflict(
+                        "VM \(vmID) already has explicit network attachments"
                     )
                 }
                 guard let selected = try database.networks().first(where: {

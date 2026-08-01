@@ -229,6 +229,66 @@ import Testing
     #expect(try fixture.registry.snapshot().attachments.filter { $0.vmID == "web" }.count == 1)
 }
 
+@Test func ensureVMNetworkMatchesAmongMultiHomedExplicitAttachments() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+    _ = try fixture.registry.create(
+        name: "lan",
+        cidr: "10.90.0.0/24",
+        mode: "shared",
+        natEgress: false,
+        labels: [:],
+        project: "edge-dmz",
+        stack: "edge-dmz:edge-dmz"
+    )
+    _ = try fixture.registry.create(
+        name: "containers",
+        cidr: "10.95.0.0/24",
+        mode: "shared",
+        natEgress: false,
+        backend: NetworkRecord.backendDocker,
+        labels: [:],
+        project: "edge-dmz",
+        stack: "edge-dmz:edge-dmz"
+    )
+    // Insert containers first so .first would previously pick the wrong NIC.
+    _ = try fixture.registry.attach(
+        vmID: "edge-dmz/docker",
+        networkName: "containers",
+        ip: "10.95.0.2",
+        labels: ["managed-by": "vzctl"],
+        project: "edge-dmz",
+        stack: "edge-dmz:edge-dmz",
+        vmIsStopped: true
+    )
+    let lan = try fixture.registry.attach(
+        vmID: "edge-dmz/docker",
+        networkName: "lan",
+        ip: "10.90.0.10",
+        labels: ["managed-by": "vzctl", "vzctl.dev/dns-services": "docker"],
+        project: "edge-dmz",
+        stack: "edge-dmz:edge-dmz",
+        vmIsStopped: true
+    )
+
+    let selected = try fixture.registry.ensureVMNetwork(
+        vmID: "edge-dmz/docker",
+        requestedNetwork: "lan",
+        vmIsStopped: true
+    )
+    #expect(selected.attachment == lan)
+    #expect(selected.network.name == "lan")
+    #expect(!selected.created)
+
+    #expect(throws: NetworkRegistryError.self) {
+        try fixture.registry.ensureVMNetwork(
+            vmID: "edge-dmz/docker",
+            requestedNetwork: "dmz",
+            vmIsStopped: true
+        )
+    }
+}
+
 private struct RegistryFixture {
     let directory: URL
     let backendState: BackendState
