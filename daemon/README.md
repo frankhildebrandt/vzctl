@@ -1,10 +1,16 @@
 # vzctl daemon/helper (P0)
 
-`vz-supervisor` owns durable state and accepts newline-framed JSON-RPC over its
+`vz-net` (HyperNetwork Supervisor) owns live `vmnet_network_ref` values and host
+bridges over `$VZCTL_STATE_DIR/net.sock`
+([vz-net-v1](../docs/specs/vz-net-v1.md), [ADR 0002](../docs/adr/0002-process-ownership.md)).
+
+`vz-supervisor` owns durable desired state and accepts newline-framed JSON-RPC over its
 user-only UDS. Er broadcastet den versionierten
 [Event Stream v1](../docs/specs/events-v1.md) an `events.subscribe`-Clients.
-`vz-helper` owns exactly one `VZVirtualMachine` per process, per
-[ADR 0002](../docs/adr/0002-process-ownership.md).
+Zusätzlich lauscht die [REST Control-Plane v1](../docs/specs/supervisor-rest-v1.md)
+(default `unix:$VZCTL_STATE_DIR/api.sock`, konfigurierbar via `VZCTL_API_LISTEN`
+oder `--api-listen`).
+`vz-helper` owns exactly one `VZVirtualMachine` per process.
 
 Der Supervisor betreibt außerdem den autoritativen
 [Dual-DNS](../docs/dns.md): Host `127.0.0.1:15353`, Guest-Bridge `.0:53`,
@@ -14,9 +20,11 @@ Actual-State-A-Records und UDP-Forwarding. Guest-`:53` braucht den Root-Helper:
 sudo vzctl dns install-bind-helper
 ```
 
-Für lokale unprivilegierte Läufe ohne Helper:
+Für lokale unprivilegierte Läufe ohne Helper (beide Daemons nötig):
 
 ```sh
+export VZCTL_STATE_DIR=/tmp/vzctl-dev
+daemon/.build/debug/vz-net serve &
 VZCTL_DNS_GUEST_PORT=15353 \
 VZCTL_DNS_UPSTREAM=system \
 daemon/.build/debug/vz-supervisor serve
@@ -27,12 +35,14 @@ daemon/.build/debug/vz-supervisor serve
 ```sh
 swift build --package-path daemon
 daemon/scripts/codesign-helper.sh daemon/.build/debug/vz-helper
+codesign --force --sign - --entitlements daemon/VzHelper.entitlements \
+  daemon/.build/debug/vz-net daemon/.build/debug/vz-supervisor
 ```
 
 The development signature contains `com.apple.security.virtualization` and
 intentionally does **not** contain `com.apple.vm.networking`.
 
-Für eine Release-Installation inklusive aktivem Supervisor:
+Für eine Release-Installation inklusive aktivem `vz-net` + Supervisor:
 
 ```sh
 make install

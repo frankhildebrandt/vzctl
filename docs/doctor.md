@@ -38,9 +38,12 @@ Wichtige Hinweise:
   Fehlender Cache ist WARN (First-Use-Download bzw.
   `scripts/build-builder-appliance.sh`), kein FAIL.
 - Ist der Supervisor erreichbar, meldet `doctor` WARN, sobald persistierte
-  vmnet-Netze nach einem Restart nicht rekonstruiert werden konnten. Nach einem
-  unclean Exit kann die CIDR bis zum Host-Reboot als `orphaned` blockiert sein;
-  Details stehen in [`network.md`](network.md).
+  vmnet-Netze nach einem Restart nicht rekonstruiert werden konnten. Orphaned
+  CIDRs entstehen nach unclean Exit von **`vz-net`** (nicht nach CP-Crash);
+  Details stehen in [`network.md`](network.md) und
+  [`specs/vz-net-v1.md`](specs/vz-net-v1.md).
+- Fehlt `net.sock` / ist `vz_net_ok=false`, warnt `doctor` zusätzlich
+  (`supervisor.health` Details enthalten `vz_net`).
 - Ein nicht gestarteter Supervisor ist eine Warnung. Ein erreichbarer, aber
   defekter Socket bzw. eine schlechte DB-Health ist ein Fehler.
 - `certs.host_trust`: WARN, wenn die Local CA existiert, aber noch nicht in der
