@@ -4286,8 +4286,10 @@ fn check_supervisor() -> Check {
     let network_orphans = result["network_orphans"].as_u64().unwrap_or(0);
     let dns_ok = result["dns_ok"].as_bool().unwrap_or(true);
     let vz_net_ok = result["vz_net_ok"].as_bool().unwrap_or(true);
+    let vz_edge_ok = result["vz_edge_ok"].as_bool().unwrap_or(true);
     let dns = &result["dns"];
     let vz_net = &result["vz_net"];
+    let vz_edge = &result["vz_edge"];
     let details = json!({
         "socket": path,
         "running": true,
@@ -4298,6 +4300,8 @@ fn check_supervisor() -> Check {
         "dns": dns,
         "vz_net_ok": vz_net_ok,
         "vz_net": vz_net,
+        "vz_edge_ok": vz_edge_ok,
+        "vz_edge": vz_edge,
         "networks": result["networks"],
         "network_orphans": network_orphans,
     });
@@ -4306,6 +4310,14 @@ fn check_supervisor() -> Check {
             "supervisor.health",
             CheckStatus::Warn,
             "supervisor is up, but vz-net is unavailable (net.sock); vmnet acquire will fail until com.vzctl.net is running",
+            details,
+        );
+    }
+    if !vz_edge_ok {
+        return Check::new(
+            "supervisor.health",
+            CheckStatus::Warn,
+            "supervisor is up, but vz-edge is unavailable or degraded (edge.sock); DNS, ports and ingress need com.vzctl.edge",
             details,
         );
     }

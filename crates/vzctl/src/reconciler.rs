@@ -1170,6 +1170,7 @@ fn ensure_oidc(
                     "arguments": ["--config", "{config}"],
                     "processName": format!("oidc-simple-{}", environment.spec.project),
                     "pidFile": "oidc.pid",
+                    "listen": oidc.listen,
                 }),
             )?;
         }
@@ -1216,6 +1217,7 @@ fn ensure_oidc(
                     "arguments": ["serve", "{config}"],
                     "processName": format!("dex-{}", environment.spec.project),
                     "pidFile": "oidc.pid",
+                    "listen": oidc.listen,
                 }),
             )?;
         }
@@ -1251,7 +1253,7 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
     rpc(
         socket_path,
         "dns.host_services.ensure",
-        json!({ "hosts": rendered.hosts }),
+        json!({ "project": environment.spec.project, "hosts": rendered.hosts }),
     )?;
 
     let binary = state_dir.join("bin").join("caddy");
