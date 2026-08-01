@@ -322,35 +322,9 @@ fn resolve_secret_path(
 
 fn status(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCode {
     let (format, project) = format_project;
-    let runtime = state_dir.join("runtime").join("oidc");
-    // Prefer mode-agnostic pid; fall back to legacy dex.pid.
-    let pid_path = {
-        let modern = runtime.join("oidc.pid");
-        if modern.exists() {
-            modern
-        } else {
-            runtime.join("dex.pid")
-        }
-    };
-    let running = pid_path
-        .exists()
-        .then(|| fs::read_to_string(&pid_path).ok())
-        .flatten()
-        .and_then(|raw| raw.trim().parse::<i32>().ok())
-        .map(|pid| {
-            path_exists(&format!("/proc/{pid}"))
-                .then_some(pid)
-                .or_else(|| {
-                    // macOS: check with kill -0
-                    std::process::Command::new("kill")
-                        .args(["-0", &pid.to_string()])
-                        .status()
-                        .ok()
-                        .filter(|s| s.success())
-                        .map(|_| pid)
-                })
-        })
-        .flatten();
+    // vz-edge owns IdP children under runtime/edge/oidc/{project}/.
+    let (runtime, resolved_project) = resolve_oidc_runtime(state_dir, project.as_deref());
+    let running = read_live_oidc_pid(&runtime);
 
     let host = match load_host_uplink(state_dir) {
         Ok(v) => v,
@@ -360,7 +334,8 @@ fn status(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCod
         }
     };
 
-    let uplink_summary = match &project {
+    let project_for_uplink = resolved_project.as_deref().or(project.as_deref());
+    let uplink_summary = match project_for_uplink {
         Some(project_name) => {
             // Project YAML is not loaded here; report host + whether project secret exists.
             match merge_uplink(state_dir, project_name, host.as_ref(), None) {
@@ -408,12 +383,85 @@ fn status(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCod
     let data = json!({
         "running": running.is_some(),
         "pid": running,
-        "project": project,
+        "project": resolved_project.or(project),
         "runtime": runtime,
         "uplink": uplink_summary,
     });
     emit(format, "oidc.status", data);
     ExitCode::SUCCESS
+}
+
+/// Resolve IdP runtime dir: edge-managed first, then legacy `runtime/oidc`.
+fn resolve_oidc_runtime(state_dir: &Path, project: Option<&str>) -> (PathBuf, Option<String>) {
+    let edge_root = state_dir.join("runtime").join("edge").join("oidc");
+    let legacy_root = state_dir.join("runtime").join("oidc");
+
+    if let Some(name) = project {
+        let edge = edge_root.join(name);
+        if edge.join("oidc.pid").exists() || edge.join("dex.pid").exists() || edge.is_dir() {
+            return (edge, Some(name.to_string()));
+        }
+        let legacy = legacy_root.join(name);
+        if legacy.is_dir() {
+            return (legacy, Some(name.to_string()));
+        }
+        return (edge, Some(name.to_string()));
+    }
+
+    // No project: prefer any edge project with a live pid, else first edge dir, else legacy.
+    if let Some(found) = find_oidc_project_dir(&edge_root, true) {
+        return found;
+    }
+    if let Some(found) = find_oidc_project_dir(&edge_root, false) {
+        return found;
+    }
+    if let Some(found) = find_oidc_project_dir(&legacy_root, true) {
+        return found;
+    }
+    (legacy_root, None)
+}
+
+fn find_oidc_project_dir(root: &Path, require_live: bool) -> Option<(PathBuf, Option<String>)> {
+    let mut entries = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if require_live && read_live_oidc_pid(&path).is_none() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        return Some((path, Some(name)));
+    }
+    None
+}
+
+fn read_live_oidc_pid(runtime: &Path) -> Option<i32> {
+    for name in ["oidc.pid", "dex.pid"] {
+        let pid_path = runtime.join(name);
+        let Some(pid) = fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if path_exists(&format!("/proc/{pid}")) {
+            return Some(pid);
+        }
+        // macOS: check with kill -0
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .ok()
+            .is_some_and(|s| s.success());
+        if alive {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn clients(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCode {

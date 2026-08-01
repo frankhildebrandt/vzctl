@@ -5,15 +5,19 @@ enum RestStatusBundle {
     static func build(path: String, jobs: RestJobRunner, rpcVMs: () throws -> JSONValue) throws -> JSONValue {
         var sections: [String: JSONValue] = [:]
 
-        sections["dns"] = section(try? jobs.runSync(arguments: ["dns", "status", "--format", "json"]))
-        sections["certs"] = section(try? jobs.runSync(arguments: ["certs", "fingerprint", "--format", "json"]))
-        sections["oidc"] = section(try? jobs.runSync(arguments: ["oidc", "status", "--format", "json"]))
-        sections["diff"] = section(try? jobs.runSync(arguments: ["diff", "-C", path, "--format", "json"]))
-
         let configURL = RestStackStore.configURL(for: path)
         let configText = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
         let desired = desiredVMIds(from: configText)
         let projectName = projectName(from: configText)
+
+        sections["dns"] = section(try? jobs.runSync(arguments: ["dns", "status", "--format", "json"]))
+        sections["certs"] = section(try? jobs.runSync(arguments: ["certs", "fingerprint", "--format", "json"]))
+        var oidcArgs = ["oidc", "status", "--format", "json"]
+        if let projectName {
+            oidcArgs += ["--project", projectName]
+        }
+        sections["oidc"] = section(try? jobs.runSync(arguments: oidcArgs))
+        sections["diff"] = section(try? jobs.runSync(arguments: ["diff", "-C", path, "--format", "json"]))
 
         let vmListResult = try? jobs.runSync(arguments: ["vm", "list", "--format", "json"])
         let allVMs: [JSONValue]
