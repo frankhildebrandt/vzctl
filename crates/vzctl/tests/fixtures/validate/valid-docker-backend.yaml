@@ -14,6 +14,7 @@ spec:
     ubuntu-base:
       from: ubuntu-latest
       role: base
+      tag: v1
   networks:
     lan:
       cidr: 10.90.0.0/24

@@ -308,6 +308,9 @@ pub(crate) struct DnsForward {
 pub(crate) struct ImageConfig {
     pub(crate) from: String,
     pub(crate) role: ImageRole,
+    /// Artifact pin for the sealed bake/seal product (`sealed/<alias>@<tag>.raw`).
+    #[schemars(length(min = 1, max = 64), regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$"))]
+    pub(crate) tag: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
@@ -608,6 +611,15 @@ fn validate_references(
     let mut networks = BTreeMap::new();
 
     validate_name_keys("$.spec.images", environment.spec.images.keys(), &mut issues);
+    for (name, image) in &environment.spec.images {
+        if !valid_image_tag(&image.tag) {
+            issues.push(ValidationIssue::new(
+                format!("{}.tag", json_path_key("$.spec.images", name)),
+                "image tag must be 1-64 ASCII characters: alphanumeric, dot, dash, or underscore",
+                "semantic",
+            ));
+        }
+    }
     validate_name_keys(
         "$.spec.networks",
         environment.spec.networks.keys(),
@@ -1638,6 +1650,13 @@ fn valid_name(name: &str) -> bool {
         })
 }
 
+pub(crate) fn valid_image_tag(tag: &str) -> bool {
+    (1..=64).contains(&tag.len())
+        && tag.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'-' | b'_'))
+        })
+}
+
 pub(crate) fn valid_volume_name(name: &str) -> bool {
     if name == VIRTIOFS_DEVICE_TAG {
         return false;
@@ -1976,6 +1995,7 @@ mod tests {
         let environment =
             validate_source(include_str!("../tests/fixtures/validate/valid-full.yaml")).unwrap();
         assert_eq!(environment.metadata.name, "edge-dmz");
+        assert_eq!(environment.spec.images["ubuntu-base"].tag, "v1");
         assert_eq!(environment.spec.vms["router"].networks.len(), 2);
         assert_eq!(environment.spec.vms["web"].cpus, Some(2));
         assert_eq!(environment.spec.vms["web"].memory.as_deref(), Some("2Gi"));
@@ -2016,7 +2036,7 @@ spec:
   project: bad
   domain: bad.vz.test
   dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
-  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
   networks:
     lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
     containers: { cidr: 10.95.0.0/24, mode: shared, natEgress: false, backend: docker }
@@ -2033,6 +2053,35 @@ spec:
 "#;
         let issues = validate_source(source).unwrap_err();
         assert!(issues.iter().any(|issue| issue.message.contains("docker, router")));
+    }
+
+    #[test]
+    fn rejects_invalid_image_tag() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: bad }
+spec:
+  project: bad
+  domain: bad.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: "-bad" } }
+  networks:
+    lan: { cidr: 10.90.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 8G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains(".tag")
+                && (issue.message.contains("image tag") || issue.message.contains("does not match"))
+        }));
     }
 
     #[test]
@@ -2070,7 +2119,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2108,7 +2157,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2146,7 +2195,7 @@ spec:
   project: edge-dmz
   domain: edge-dmz.vz.test
   dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
-  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared, natEgress: true }
     lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
@@ -2188,7 +2237,7 @@ spec:
   project: edge-dmz
   domain: edge-dmz.vz.test
   dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
-  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared, natEgress: true }
     lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
@@ -2231,7 +2280,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2287,7 +2336,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2336,7 +2385,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2383,7 +2432,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2435,7 +2484,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2479,7 +2528,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2522,7 +2571,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2581,7 +2630,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []
@@ -2633,7 +2682,7 @@ spec:
     hostListen: "127.0.0.1:15353"
     forward: { enabled: true, upstream: system }
   images:
-    ubuntu-base: { from: ubuntu-latest, role: base }
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
   networks:
     dmz: { cidr: 10.80.0.0/24, mode: shared }
   routes: []

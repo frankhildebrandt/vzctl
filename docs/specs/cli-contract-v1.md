@@ -167,7 +167,7 @@ Payloads: `images` (lokaler Cache) und `catalog` (alle Pull-Aliase);
 kanonischer Command ist `image.list`. `summary` enthält `count` und
 `images_dir`. Jede Cache-Zeile meldet Alias/Kanonik, Distribution/Release,
 aufgelösten Raw-Pfad, SHA256 sowie `baked`/`sealed` (und optional
-`agent_version`). Leerer Cache liefert Exit `0` mit `images=[]`. Usage `2`,
+`agent_version`) und `tags[]` (pro Artifact-Pin). Leerer Cache liefert Exit `0` mit `images=[]`. Usage `2`,
 Store-Fehler `15`. Details: [Image Pull Contract v1](../images/pull-contract-v1.md).
 
 ### `vzctl image pull <alias> --format json`
@@ -185,15 +185,15 @@ Konvertierungswerkzeuge `12`, Store-/Normalisierungsfehler `15`,
 Netzwerk-/Metadatenfehler `21`, Checksumfehler `22` und unsupported Arch `23`.
 Details: [Image Pull Contract v1](../images/pull-contract-v1.md).
 
-### `vzctl image bake <alias> --format json`
+### `vzctl image bake <alias> --tag <tag> --format json`
 
 Payload: `image`; kanonischer Command ist `image.bake`.
 `summary.change` ist `baked` oder `unchanged`. Bake schreibt
-`baked/<canonical>.raw` und setzt `baked_image` im Alias-Manifest; das
-Pull-Objekt bleibt unverändert. Details:
+`baked/<canonical>@<tag>.raw` und setzt `tags.<tag>.baked_image` im
+Alias-Manifest; das Pull-Objekt bleibt unverändert. Details:
 [Image Bake Contract v1](../images/bake-contract-v1.md).
 
-### `vzctl image seal <name|path> --format json`
+### `vzctl image seal <name|path> --tag <tag> --format json`
 
 Payload: `image`, `cleanup` und `preserved`; kanonischer Command ist
 `image.seal`. Erfolg und idempotentes „already sealed“ liefern Exit `0`.

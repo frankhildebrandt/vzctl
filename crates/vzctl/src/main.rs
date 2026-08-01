@@ -82,6 +82,7 @@ struct EventsOptions {
 #[derive(Debug, Eq, PartialEq)]
 struct ImageSealOptions {
     input: String,
+    tag: Option<String>,
     format: OutputFormat,
 }
 
@@ -389,8 +390,8 @@ Commands:
   oidc status|clients [--project P] [--format human|json]
   image list [--format human|json]
   image pull <alias> [--format human|json]
-  image bake <alias> [--format human|json]
-  image seal <name|path> [--format human|json]
+  image bake <alias> --tag <tag> [--format human|json]
+  image seal <name|path> --tag <tag> [--format human|json]
   vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]
   vm list [--format human|json]
   vm start <id> [--format human|json]
@@ -486,8 +487,8 @@ fn image_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             eprintln!(
                 "usage: vzctl image list [--format human|json] | \
                  image pull <alias> [--format human|json] | \
-                 image bake <alias> [--format human|json] | \
-                 image seal <name|path> [--format human|json]"
+                 image bake <alias> --tag <tag> [--format human|json] | \
+                 image seal <name|path> --tag <tag> [--format human|json]"
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -594,6 +595,15 @@ fn image_list_json(result: &image::ListResult) -> Value {
             "baked": image.baked,
             "sealed": image.sealed,
             "agent_version": image.agent_version,
+            "tags": image.tags.iter().map(|tag| json!({
+                "tag": tag.tag,
+                "path": tag.path,
+                "format": tag.format,
+                "sha256": tag.sha256,
+                "baked": tag.baked,
+                "sealed": tag.sealed,
+                "agent_version": tag.agent_version,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "catalog": result.catalog.iter().map(|entry| json!({
             "alias": entry.alias,
@@ -806,6 +816,7 @@ fn image_bake_command(args: Vec<String>) -> ExitCode {
 #[derive(Debug, Eq, PartialEq)]
 struct ImageBakeOptions {
     alias: String,
+    tag: String,
     format: OutputFormat,
 }
 
@@ -813,10 +824,26 @@ fn parse_image_bake_options(
     args: impl Iterator<Item = String>,
 ) -> Result<ImageBakeOptions, SealFailure> {
     let mut alias = None;
+    let mut tag = None;
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--tag" => {
+                let value = args.next().ok_or_else(|| SealFailure {
+                    code: EXIT_USAGE,
+                    message: "--tag requires a value".to_string(),
+                })?;
+                if !image::valid_image_tag(&value) {
+                    return Err(SealFailure {
+                        code: EXIT_USAGE,
+                        message: format!(
+                            "invalid image tag {value}; expected 1-64 [A-Za-z0-9][A-Za-z0-9._-]*"
+                        ),
+                    });
+                }
+                tag = Some(value);
+            }
             "--format" => {
                 let value = args.next().ok_or_else(|| SealFailure {
                     code: EXIT_USAGE,
@@ -836,7 +863,8 @@ fn parse_image_bake_options(
             "-h" | "--help" => {
                 return Err(SealFailure {
                     code: EXIT_USAGE,
-                    message: "usage: vzctl image bake <alias> [--format human|json]".to_string(),
+                    message: "usage: vzctl image bake <alias> --tag <tag> [--format human|json]"
+                        .to_string(),
                 })
             }
             _ if arg.starts_with('-') => {
@@ -856,29 +884,40 @@ fn parse_image_bake_options(
     }
     let alias = alias.ok_or_else(|| SealFailure {
         code: EXIT_USAGE,
-        message: "usage: vzctl image bake <alias> [--format human|json]".to_string(),
+        message: "usage: vzctl image bake <alias> --tag <tag> [--format human|json]".to_string(),
     })?;
-    Ok(ImageBakeOptions { alias, format })
+    let tag = tag.ok_or_else(|| SealFailure {
+        code: EXIT_USAGE,
+        message: "image bake requires --tag <tag>".to_string(),
+    })?;
+    Ok(ImageBakeOptions {
+        alias,
+        tag,
+        format,
+    })
 }
 
 fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailure> {
     let images = images_dir();
     let agent_version = agent_version_string()?;
-    if let Some(existing) = image::already_baked(&images, &options.alias, &agent_version)
-        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+    if let Some(existing) =
+        image::already_baked(&images, &options.alias, &options.tag, &agent_version)
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
     {
         return Ok(existing);
     }
 
-    let (target, manifest, _manifest_path) = image::prepare_alias_for_bake(&images, &options.alias)
-        .map_err(|error| SealFailure::new(EXIT_INVALID_INPUT, error))?;
+    let (target, manifest, _manifest_path) =
+        image::prepare_alias_for_bake(&images, &options.alias, &options.tag)
+            .map_err(|error| SealFailure::new(EXIT_INVALID_INPUT, error))?;
     let canonical = manifest["canonical_alias"]
         .as_str()
         .unwrap_or(&options.alias)
         .to_string();
 
     let staging = build_agent_staging(&agent_version)?;
-    let progress = io::stderr().is_terminal() && options.format == OutputFormat::Human;
+    let progress = (io::stderr().is_terminal() && options.format == OutputFormat::Human)
+        || image::progress_env_enabled();
     let backend_kind = builder::select_backend_kind()
         .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
 
@@ -906,11 +945,12 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
     }
 
     let _ = fs::remove_dir_all(&staging);
-    image::mark_aliases_baked(&images, &target, &agent_version)
+    image::mark_aliases_baked(&images, &target, &options.tag, &agent_version)
         .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
     Ok(image::BakeResult {
         requested_alias: options.alias.clone(),
         canonical_alias: canonical,
+        tag: options.tag.clone(),
         image_path: target,
         agent_version,
         unchanged: false,
@@ -1064,6 +1104,7 @@ fn image_bake_json(result: &image::BakeResult) -> Value {
         "image": {
             "alias": result.requested_alias,
             "canonical_alias": result.canonical_alias,
+            "tag": result.tag,
             "path": result.image_path,
             "format": "raw",
             "baked": true,
@@ -1099,7 +1140,8 @@ fn image_seal_command(args: Vec<String>) -> ExitCode {
     };
 
     let images = images_dir();
-    let progress = io::stderr().is_terminal() && options.format == OutputFormat::Human;
+    let progress = (io::stderr().is_terminal() && options.format == OutputFormat::Human)
+        || image::progress_env_enabled();
     let backend_kind = match builder::select_backend_kind() {
         Ok(kind) => kind,
         Err(failure) => {
@@ -1146,11 +1188,26 @@ fn parse_image_seal_options(
     args: impl Iterator<Item = String>,
 ) -> Result<ImageSealOptions, SealFailure> {
     let mut input = None;
+    let mut tag = None;
     let mut format = OutputFormat::Human;
     let mut args = args.peekable();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--tag" => {
+                let value = args.next().ok_or_else(|| {
+                    SealFailure::new(EXIT_USAGE, "--tag requires a value")
+                })?;
+                if !image::valid_image_tag(&value) {
+                    return Err(SealFailure::new(
+                        EXIT_USAGE,
+                        format!(
+                            "invalid image tag {value}; expected 1-64 [A-Za-z0-9][A-Za-z0-9._-]*"
+                        ),
+                    ));
+                }
+                tag = Some(value);
+            }
             "--format" => {
                 let value = args.next().ok_or_else(|| {
                     SealFailure::new(EXIT_USAGE, "--format requires human or json")
@@ -1169,7 +1226,7 @@ fn parse_image_seal_options(
             "-h" | "--help" => {
                 return Err(SealFailure::new(
                     EXIT_USAGE,
-                    "usage: vzctl image seal <name|path> [--format human|json]",
+                    "usage: vzctl image seal <name|path> --tag <tag> [--format human|json]",
                 ))
             }
             _ if arg.starts_with('-') => {
@@ -1191,10 +1248,17 @@ fn parse_image_seal_options(
     let input = input.ok_or_else(|| {
         SealFailure::new(
             EXIT_USAGE,
-            "usage: vzctl image seal <name|path> [--format human|json]",
+            "usage: vzctl image seal <name|path> --tag <tag> [--format human|json]",
         )
     })?;
-    Ok(ImageSealOptions { input, format })
+    let tag = tag.ok_or_else(|| {
+        SealFailure::new(EXIT_USAGE, "image seal requires --tag <tag>")
+    })?;
+    Ok(ImageSealOptions {
+        input,
+        tag: Some(tag),
+        format,
+    })
 }
 
 fn seal_image(
@@ -1210,11 +1274,19 @@ fn seal_image_in_dir(
     backend: &dyn ImageSealBackend,
     images_dir: &Path,
 ) -> Result<ImageSealResult, SealFailure> {
-    let source_path = match image::prepare_alias_for_seal(images_dir, &options.input)
+    let tag = options.tag.clone().ok_or_else(|| {
+        SealFailure::new(EXIT_USAGE, "image seal requires --tag <tag> for alias inputs")
+    })?;
+
+    let source_path = match image::prepare_alias_for_seal(images_dir, &options.input, &tag)
         .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
     {
         Some(path) => path,
-        None => resolve_image_input(&options.input, images_dir)?,
+        None => {
+            // Direct path input: tag still required for marker/manifest bookkeeping
+            // when the path is under the images store; otherwise treat as raw path seal.
+            resolve_image_input(&options.input, images_dir)?
+        }
     };
     let source_path = fs::canonicalize(&source_path).map_err(|error| {
         SealFailure::new(
@@ -1236,9 +1308,39 @@ fn seal_image_in_dir(
         .to_string();
     let marker_path = seal_marker_path(images_dir, &source_path);
     if marker_path.exists() {
-        let result = read_existing_seal(&marker_path, &source_path, name)?;
-        image::mark_aliases_sealed(images_dir, &result.source_path, &result.marker_path)
+        let mut result = read_existing_seal(&marker_path, &source_path, name)?;
+        result.already_sealed = true;
+        if image::tagged_seal_ready(images_dir, &options.input, &tag)
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+        {
+            return Ok(result);
+        }
+        // Repair incomplete tag metadata. Prefer the recorded digest; only hash
+        // when this is a known alias that still lacks a tag entry.
+        let recorded = image::existing_tag_sealed_digest(images_dir, &options.input, &tag)
             .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+        if let Some(digest) = recorded {
+            image::mark_aliases_sealed(
+                images_dir,
+                &result.source_path,
+                &result.marker_path,
+                &tag,
+                Some(&digest),
+            )
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+        } else if image::resolve_alias_pulled(images_dir, &options.input)
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+            .is_some()
+        {
+            image::mark_aliases_sealed(
+                images_dir,
+                &result.source_path,
+                &result.marker_path,
+                &tag,
+                None,
+            )
+            .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+        }
         return Ok(result);
     }
 
@@ -1260,8 +1362,14 @@ fn seal_image_in_dir(
         already_sealed: false,
     };
     write_seal_marker_and_lock(&result)?;
-    image::mark_aliases_sealed(images_dir, &result.source_path, &result.marker_path)
-        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
+    image::mark_aliases_sealed(
+        images_dir,
+        &result.source_path,
+        &result.marker_path,
+        &tag,
+        None,
+    )
+    .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?;
     Ok(result)
 }
 
@@ -4523,13 +4631,14 @@ mod tests {
 
     #[test]
     fn image_seal_options_accept_path_and_json_in_any_order() {
-        let args = ["--format", "json", "base.raw"]
+        let args = ["--format", "json", "--tag", "v1", "base.raw"]
             .into_iter()
             .map(str::to_string);
         assert_eq!(
             parse_image_seal_options(args).unwrap(),
             ImageSealOptions {
                 input: "base.raw".to_string(),
+                tag: Some("v1".to_string()),
                 format: OutputFormat::Json,
             }
         );
@@ -4587,6 +4696,7 @@ mod tests {
         fs::write(&image, b"fake image").unwrap();
         let options = ImageSealOptions {
             input: image.to_string_lossy().to_string(),
+            tag: Some("v1".to_string()),
             format: OutputFormat::Json,
         };
         let backend = RecordingSealBackend::new("raw");
@@ -5383,6 +5493,7 @@ mod tests {
         seal_image_in_dir(
             &ImageSealOptions {
                 input: image.to_string_lossy().to_string(),
+                tag: Some("v1".to_string()),
                 format: OutputFormat::Json,
             },
             &RecordingSealBackend::new("raw"),
@@ -5575,6 +5686,7 @@ mod tests {
         seal_image_in_dir(
             &ImageSealOptions {
                 input: image.to_string_lossy().to_string(),
+                tag: Some("v1".to_string()),
                 format: OutputFormat::Json,
             },
             &RecordingSealBackend::new("raw"),

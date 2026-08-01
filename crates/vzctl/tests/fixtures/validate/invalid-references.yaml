@@ -14,6 +14,7 @@ spec:
     ubuntu-base:
       from: ubuntu:24.04
       role: base
+      tag: v1
   networks:
     dmz:
       cidr: 10.80.0.0/24

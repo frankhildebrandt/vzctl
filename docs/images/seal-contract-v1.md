@@ -1,25 +1,26 @@
 # Image Seal Contract v1
 
-`vzctl image seal <name|path>` macht ein bereits gebautes Linux-Base-Image
-clone-safe. Der Command installiert keine Pakete und verändert den
-vorinstallierten Guest-Agent nicht.
+`vzctl image seal <name|path> --tag <tag>` macht ein bereits gebautes
+Linux-Base-Image clone-safe. Der Command installiert keine Pakete und verändert
+den vorinstallierten Guest-Agent nicht. `--tag` ist Pflicht und pinnt das
+sealed Artefakt.
 
 ## Eingabe und Auflösung
 
 Unterstützt werden lokale `raw`-, `qcow`- und `qcow2`-Images:
 
 ```bash
-vzctl image seal artifacts/ubuntu-24.04-vzctl-base.raw
-vzctl image seal ubuntu-base
-vzctl image seal ubuntu-base --format json
+vzctl image seal artifacts/ubuntu-24.04-vzctl-base.raw --tag v1
+vzctl image seal ubuntu-latest --tag v1
+vzctl image seal ubuntu-latest --tag v1 --format json
 ```
 
-Ein Pfad wird direkt verwendet. Ein Name wird lokal unter
+Ein Pfad wird direkt verwendet. Ein Alias wird lokal unter
 `VZCTL_IMAGES_DIR` oder standardmäßig unter
-`~/Library/Application Support/vzctl/images/` gesucht. Dabei werden der
-exakte Name sowie `.raw`, `.qcow`, `.qcow2` und `.img` geprüft. Zusätzlich
-werden durch [`image pull`](pull-contract-v1.md) registrierte
-`aliases/<name>.json` auf content-addressed Raw-Objekte aufgelöst.
+`~/Library/Application Support/vzctl/images/` über
+`aliases/<name>.json` aufgelöst: zuerst `tags.<tag>.baked_image` (falls
+vorhanden), sonst das Pull-Objekt. Seal schreibt
+`sealed/<canonical>@<tag>.raw`.
 
 Die Offline-Anpassung benötigt auf einem Linux-Host `qemu-img` und
 `virt-customize` aus `libguestfs-tools`. Auf macOS startet `vzctl` stattdessen
@@ -57,9 +58,9 @@ Erst nach erfolgreichen Prüfungen wird das Image read-only gesetzt. Ein
 versionierter Marker
 `<name>-<path-hash>.sealed.json` wird atomar im Images-Verzeichnis
 geschrieben. Er enthält Quellpfad, Image-Format, `sealed=true`, Cleanup- und
-Preservation-Felder. Existieren ein passender Marker und ein nicht
-beschreibbares Image, ist ein erneuter Aufruf idempotent und führt keine
-weitere Guest-Anpassung aus.
+Preservation-Felder. Existieren ein passender Marker und
+`tags.<tag>.sealed=true` inkl. Datei, ist ein erneuter Aufruf idempotent:
+keine Guest-Anpassung und **kein erneutes SHA256** über die Raw-Datei.
 
 ## CLI- und JSON-Vertrag
 

@@ -482,14 +482,35 @@ fn ensure_dns(environment: &Environment, config_path: &Path) -> Result<(), Failu
 
 fn ensure_images(environment: &Environment) -> Result<(), Failure> {
     for image in environment.spec.images.values() {
-        let existing = crate::image::resolve_alias(&crate::images_dir(), &image.from)
+        if crate::image::tagged_seal_ready(&crate::images_dir(), &image.from, &image.tag)
+            .map_err(|error| Failure::new(EXIT_STEP, error))?
+        {
+            continue;
+        }
+        let existing = crate::image::resolve_alias_pulled(&crate::images_dir(), &image.from)
             .map_err(|error| Failure::new(EXIT_STEP, error))?
             .is_some();
         if !existing {
             run_self(&["image", "pull", &image.from, "--format", "json"])?;
         }
-        run_self(&["image", "bake", &image.from, "--format", "json"])?;
-        run_self(&["image", "seal", &image.from, "--format", "json"])?;
+        run_self(&[
+            "image",
+            "bake",
+            &image.from,
+            "--tag",
+            &image.tag,
+            "--format",
+            "json",
+        ])?;
+        run_self(&[
+            "image",
+            "seal",
+            &image.from,
+            "--tag",
+            &image.tag,
+            "--format",
+            "json",
+        ])?;
     }
     Ok(())
 }
@@ -542,14 +563,29 @@ fn ensure_vms(
         if bundle.join("vm.json").is_file() {
             continue;
         }
-        let image_name = &environment.spec.images[&vm.from].from;
+        let image_cfg = &environment.spec.images[&vm.from];
+        let sealed_path = crate::image::resolve_alias_tag(
+            &crate::images_dir(),
+            &image_cfg.from,
+            &image_cfg.tag,
+        )
+        .map_err(|error| Failure::new(EXIT_STEP, error))?
+        .ok_or_else(|| {
+            Failure::new(
+                EXIT_STEP,
+                format!(
+                    "sealed image {}:{} missing after ensure_images",
+                    image_cfg.from, image_cfg.tag
+                ),
+            )
+        })?;
         let size = data_disk_gib(&vm.data_disk)?;
         let mut owned = vec![
             "vm".to_string(),
             "create".to_string(),
             runtime_id.clone(),
             "--from".to_string(),
-            image_name.clone(),
+            sealed_path.to_string_lossy().into_owned(),
             "--data-disk".to_string(),
             size.to_string(),
             "--project".to_string(),

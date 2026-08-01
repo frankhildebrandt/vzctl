@@ -16,9 +16,10 @@ spec:
     ubuntu-base:
       from: ubuntu-latest
       role: base
+      tag: v1
   networks:
     dmz:
-      cidr: 10.80.0.0/24
+      cidr: 10.80.1.0/24
       mode: shared
       dhcp: false
       natEgress: true
@@ -130,7 +131,7 @@ spec:
       dataDisk: 4G
       networks:
         - name: dmz
-          ip: 10.80.0.2
+          ip: 10.80.1.2
         - name: lan
           ip: 10.90.0.2
       cloudInit: cloud-init/router.yaml
@@ -146,7 +147,7 @@ spec:
       dataDisk: 40G
       networks:
         - name: dmz
-          ip: 10.80.0.10
+          ip: 10.80.1.10
       cloudInit: cloud-init/web.yaml
       dependsOn:
         - router

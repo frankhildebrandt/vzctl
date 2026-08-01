@@ -32,6 +32,8 @@ Fehler enthalten einen JSON-Pfad und eine Art:
 - `metadata.name`
 - `spec.project`, `spec.domain` mit Suffix `.vz.test`
 - `spec.dns`, `images`, `networks`, `routes`, `policies`, `vms`
+- Image: `from` (pull alias), `role: base`, `tag` (Artifact-Pin für sealed Bake/Seal,
+  1–64 `[A-Za-z0-9][A-Za-z0-9._-]*`)
 - VM: `from`, `dataDisk`, mindestens ein `networks[]` mit `name` und `ip`
 
 `clone` is optional und standardmäßig `linked`. `cpus` (positive Ganzzahl) und

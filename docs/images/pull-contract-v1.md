@@ -55,13 +55,15 @@ Der lokale Store ist:
 ~/Library/Application Support/vzctl/images/
   objects/<normalized-sha256>.raw
   aliases/<alias>.json
-  sealed/<canonical-alias>.raw
+  baked/<canonical-alias>@<tag>.raw
+  sealed/<canonical-alias>@<tag>.raw
   .tmp/
 ```
 
 `VZCTL_IMAGES_DIR` überschreibt den Pfad. Alias-Manifeste verwenden
 `vzctl.dev/image-alias/v1` und enthalten Release, Architektur, Quell-URL,
-Upstream-Digest, Raw-SHA256 und relativen Objektpfad. Temporäre Downloads und
+Upstream-Digest, Raw-SHA256, relativen Objektpfad sowie `tags.<tag>` für
+Bake-/Seal-Artefakte. Temporäre Downloads und
 Konvertierungen werden erst nach erfolgreicher Prüfung atomar veröffentlicht.
 
 Ein erneuter Pull fragt das aktuelle Release-/Checksum-Metadatum ab. Verweist
@@ -80,12 +82,12 @@ geladen.
 - `image seal` bleibt der separate Agent-/Clone-safe-Schritt. Container-OS
   benötigen später eigene Ignition-/Machine-Config- beziehungsweise
   `talosctl`-Flows.
-- `image seal <alias>` materialisiert zuerst
-  `sealed/<canonical-alias>.raw`, verändert nur diese Arbeitskopie und schaltet
-  danach alle äquivalenten Aliase atomar auf die read-only Seal-Kopie um.
-  Das Pull-Objekt und sein SHA256 bleiben erhalten.
-- `vm create --from <alias>` löst nach dem Seal automatisch die Seal-Kopie
-  auf. `vm create` verlangt weiterhin ein erfolgreich versiegeltes Raw.
+- `image seal <alias> --tag <tag>` materialisiert zuerst
+  `sealed/<canonical-alias>@<tag>.raw`, verändert nur diese Arbeitskopie und
+  schreibt `tags.<tag>` im Alias-Manifest. Das Pull-Objekt und sein SHA256
+  bleiben erhalten.
+- Apply/`ensure_images` skippt Bake+Seal, wenn `tags.<tag>` bereits sealed
+  inkl. Marker ist. `vm create --from` erhält den aufgelösten sealed Pfad.
 
 ## List
 
@@ -103,8 +105,9 @@ Der kanonische JSON-Command ist `image.pull`. Erfolg enthält
 Pfad und Seal-State sowie `source` mit URL, Format und Upstream-Digest. Ein
 frischer Pull liefert `sealed=false`; ein unveränderter Re-Pull eines danach
 versiegelten Alias darf `sealed=true` melden. Fortschritt (Phasenmeldungen,
-Download-Bar, `qemu-img`-Convert) geht nur auf stderr und nur wenn stderr ein
-TTY ist; stdout bleibt das Ergebnisdokument.
+Download-Bar, `qemu-img`-Convert) geht nur auf stderr — default wenn stderr ein
+TTY ist, oder wenn `VZCTL_PROGRESS` truthy gesetzt ist (Supervisor-Jobs);
+stdout bleibt das Ergebnisdokument.
 
 | Exit | Bedeutung |
 |---|---|
