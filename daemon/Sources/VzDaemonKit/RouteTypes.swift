@@ -82,21 +82,43 @@ public struct ForwardPolicy: Equatable, Sendable {
     public let network: String
     public let forward: String
     public let allow: [PolicyAllow]
+    /// Optional router VM id or config basename that must apply this policy.
+    public let via: String?
 
-    public init(name: String, network: String, forward: String, allow: [PolicyAllow]) {
+    public init(
+        name: String,
+        network: String,
+        forward: String,
+        allow: [PolicyAllow],
+        via: String? = nil
+    ) {
         self.name = name
         self.network = network
         self.forward = forward
         self.allow = allow
+        self.via = via
     }
 
     public var json: JSONValue {
-        .object([
+        var object: [String: JSONValue] = [
             "name": .string(name),
             "network": .string(network),
             "forward": .string(forward),
             "allow": .array(allow.map(\.json)),
-        ])
+        ]
+        if let via {
+            object["via"] = .string(via)
+        }
+        return .object(object)
+    }
+
+    /// Match `policies.*.via` (config key or full runtime id) to a running router.
+    public static func matchesVia(vmID: String, via: String) -> Bool {
+        if vmID == via { return true }
+        if let slash = vmID.lastIndex(of: "/") {
+            return String(vmID[vmID.index(after: slash)...]) == via
+        }
+        return false
     }
 }
 

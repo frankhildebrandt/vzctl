@@ -56,12 +56,15 @@ spec:
 
 `network` ist das Quellnetz. `to` ist ein weiteres Attachment desselben
 Routers **oder** `internet` (Egress über ein `natEgress: true`-Attachment des
-Routers; nftables + MASQUERADE). v1 unterstützt `tcp` und `udp` mit mindestens
+Routers; nftables + MASQUERADE). Optional pinnt `via` die Policy auf eine
+Router-VM (Config-Key), analog zu `routes.*.via` — nötig, wenn mehrere Router
+am Quellnetz hängen. v1 unterstützt `tcp` und `udp` mit mindestens
 einem Port sowie `icmp` ohne Ports. Nur `forward: deny-all` ist zulässig.
 Namen, Netze, Protokolle und Ports werden vor dem Guest-Apply validiert.
 Policy-Namen sind auf Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich
-begrenzt. Bei mehreren laufenden Routern wird eine Policy über ihr Quellnetz
-genau einem Router zugeordnet; keine oder mehrdeutige Zuordnungen sind ungültig.
+begrenzt. Bei mehreren laufenden Routern wird eine Policy über `via` oder
+(eindeutig) über ihr Quellnetz genau einem Router zugeordnet; keine oder
+mehrdeutige Zuordnungen sind ungültig (`set policies.*.via`).
 
 Der Apply schreibt atomar:
 

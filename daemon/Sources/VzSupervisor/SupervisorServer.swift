@@ -873,6 +873,11 @@ final class SupervisorServer: @unchecked Sendable {
                     let attached = Set(topology.networks.map(\.name))
                     let hasNatEgress = topology.networks.contains(where: \.natEgress)
                     let selectedPolicies = policies.filter { policy in
+                        if let via = policy.via,
+                           !ForwardPolicy.matchesVia(vmID: router.vmID, via: via)
+                        {
+                            return false
+                        }
                         guard attached.contains(policy.network) else { return false }
                         var hasInternet = false
                         var hasNonInternet = false
@@ -908,10 +913,17 @@ final class SupervisorServer: @unchecked Sendable {
                 for policy in policies {
                     let matches = policyMatches[policy.name, default: 0]
                     guard matches == 1 else {
+                        if let via = policy.via {
+                            throw RouteApplyError.invalid(
+                                matches == 0
+                                    ? "policy \(policy.name) via \(via) does not match a running router"
+                                    : "policy \(policy.name) via \(via) matches more than one running router"
+                            )
+                        }
                         throw RouteApplyError.invalid(
                             matches == 0
-                                ? "policy \(policy.name) does not match a running router"
-                                : "policy \(policy.name) matches more than one running router"
+                                ? "policy \(policy.name) does not match a running router; set policies.*.via to pin a router"
+                                : "policy \(policy.name) matches more than one running router; set policies.*.via to pin a router"
                         )
                     }
                 }
@@ -1471,7 +1483,11 @@ final class SupervisorServer: @unchecked Sendable {
                 name: name,
                 network: network,
                 forward: forward,
-                allow: allows
+                allow: allows,
+                via: {
+                    if case let .string(via)? = policy["via"] { return via }
+                    return nil
+                }()
             )
         }
     }

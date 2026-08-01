@@ -313,6 +313,10 @@ pub(crate) struct PolicyConfig {
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"))]
     pub(crate) name: String,
     pub(crate) network: String,
+    /// Optional router VM (config key) that must apply this policy when multiple
+    /// routers attach to `network`. Same semantics as `routes.*.via`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) via: Option<String>,
     pub(crate) forward: ForwardPolicy,
     #[serde(default)]
     pub(crate) allow: Vec<AllowRule>,
@@ -664,6 +668,58 @@ fn validate_references(
             &networks,
             &mut issues,
         );
+        if let Some(via) = policy.via.as_ref() {
+            match environment.spec.vms.get(via) {
+                None => issues.push(ValidationIssue::new(
+                    format!("{base}.via"),
+                    format!("policy via references unknown VM {via:?}"),
+                    "semantic",
+                )),
+                Some(vm) => {
+                    if !vm.roles.iter().any(|role| role == "router") {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.via"),
+                            format!("policy via VM {via:?} does not have role router"),
+                            "semantic",
+                        ));
+                    }
+                    let attached = vm
+                        .networks
+                        .iter()
+                        .map(|network| network.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if networks.contains_key(policy.network.as_str())
+                        && !attached.contains(policy.network.as_str())
+                    {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.via"),
+                            format!(
+                                "policy via VM {via:?} is not attached to network {:?}",
+                                policy.network
+                            ),
+                            "semantic",
+                        ));
+                    }
+                    for allow in &policy.allow {
+                        if allow.to == "internet" {
+                            continue;
+                        }
+                        if networks.contains_key(allow.to.as_str())
+                            && !attached.contains(allow.to.as_str())
+                        {
+                            issues.push(ValidationIssue::new(
+                                format!("{base}.via"),
+                                format!(
+                                    "policy via VM {via:?} is not attached to network {:?}",
+                                    allow.to
+                                ),
+                                "semantic",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         for (allow_index, allow) in policy.allow.iter().enumerate() {
             let allow_base = format!("{base}.allow[{allow_index}]");
             if allow.to == "internet" {
@@ -1915,6 +1971,86 @@ spec:
         assert!(issues
             .iter()
             .any(|issue| issue.message.contains("duplicate mount target")));
+    }
+
+    #[test]
+    fn policy_via_requires_router_attached_to_networks() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared, natEgress: true }
+    lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
+  routes: []
+  policies:
+    - name: lan-to-internet
+      network: lan
+      via: web
+      forward: deny-all
+      allow:
+        - { to: internet, proto: tcp, ports: [443] }
+  vms:
+    router:
+      from: ubuntu-base
+      dataDisk: 4G
+      roles: [router]
+      networks:
+        - { name: dmz, ip: 10.80.0.2 }
+        - { name: lan, ip: 10.90.0.2 }
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains("policies[0].via")
+                && issue.message.contains("does not have role router")
+        }));
+    }
+
+    #[test]
+    fn policy_via_pins_valid_router() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base } }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared, natEgress: true }
+    lan: { cidr: 10.90.0.0/24, mode: shared, natEgress: false }
+  routes: []
+  policies:
+    - name: lan-to-internet
+      network: lan
+      via: router
+      forward: deny-all
+      allow:
+        - { to: internet, proto: tcp, ports: [443] }
+  vms:
+    router:
+      from: ubuntu-base
+      dataDisk: 4G
+      roles: [router]
+      networks:
+        - { name: dmz, ip: 10.80.0.2 }
+        - { name: lan, ip: 10.90.0.2 }
+"#;
+        let environment = validate_source(source).unwrap();
+        assert_eq!(
+            environment.spec.policies[0].via.as_deref(),
+            Some("router")
+        );
     }
 
     #[test]

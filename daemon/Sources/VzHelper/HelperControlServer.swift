@@ -273,7 +273,11 @@ final class HelperControlServer: @unchecked Sendable {
                 name: name,
                 network: network,
                 forward: forward,
-                allow: allows
+                allow: allows,
+                via: {
+                    if case let .string(via)? = values["via"] { return via }
+                    return nil
+                }()
             )
         }
         return try RouterPlan(vmID: vmID, networks: networks, policies: policies)

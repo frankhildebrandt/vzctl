@@ -168,3 +168,24 @@ import Testing
         )
     }
 }
+
+@Test func forwardPolicyViaMatchesConfigKeyAndRuntimeID() {
+    #expect(ForwardPolicy.matchesVia(vmID: "router", via: "router"))
+    #expect(ForwardPolicy.matchesVia(vmID: "edge-dmz/router", via: "router"))
+    #expect(ForwardPolicy.matchesVia(vmID: "edge-dmz/router", via: "edge-dmz/router"))
+    #expect(!ForwardPolicy.matchesVia(vmID: "edge-dmz/router", via: "docker"))
+    #expect(!ForwardPolicy.matchesVia(vmID: "edge-dmz/docker", via: "router"))
+
+    let policy = ForwardPolicy(
+        name: "lan-to-internet",
+        network: "lan",
+        forward: "deny-all",
+        allow: [PolicyAllow(to: "internet", proto: "tcp", ports: [443])],
+        via: "router"
+    )
+    if case let .object(json) = policy.json, case let .string(via) = json["via"] {
+        #expect(via == "router")
+    } else {
+        #expect(Bool(false), "expected via in policy json")
+    }
+}
