@@ -4285,7 +4285,9 @@ fn check_supervisor() -> Check {
     }
     let network_orphans = result["network_orphans"].as_u64().unwrap_or(0);
     let dns_ok = result["dns_ok"].as_bool().unwrap_or(true);
+    let vz_net_ok = result["vz_net_ok"].as_bool().unwrap_or(true);
     let dns = &result["dns"];
+    let vz_net = &result["vz_net"];
     let details = json!({
         "socket": path,
         "running": true,
@@ -4294,16 +4296,26 @@ fn check_supervisor() -> Check {
         "db_ok": true,
         "dns_ok": dns_ok,
         "dns": dns,
+        "vz_net_ok": vz_net_ok,
+        "vz_net": vz_net,
         "networks": result["networks"],
         "network_orphans": network_orphans,
     });
+    if !vz_net_ok {
+        return Check::new(
+            "supervisor.health",
+            CheckStatus::Warn,
+            "supervisor is up, but vz-net is unavailable (net.sock); vmnet acquire will fail until com.vzctl.net is running",
+            details,
+        );
+    }
     if network_orphans > 0 {
         return Check::new(
             "supervisor.health",
             CheckStatus::Warn,
             format!(
                 "supervisor is healthy, but {network_orphans} vmnet CIDR(s) could not be rebuilt; \
-                 an unclean exit may have orphaned reservations until reboot"
+                 an unclean vz-net exit may have orphaned reservations until reboot"
             ),
             details,
         );
