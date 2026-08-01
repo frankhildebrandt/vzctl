@@ -123,8 +123,9 @@ Actual-State aus Supervisor-SQLite. `up` erzeugt fehlende Ressourcen und
 startet gestoppte VMs, löscht aber nichts. `apply` korrigiert Drift; VM- und
 Netz-Recreates sowie Deletes sind `breaking` und benötigen interaktive
 Bestätigung oder `--force`. `down` stoppt in umgekehrter `dependsOn`-Reihenfolge.
-`down --purge` löscht ausschließlich Ressourcen mit `managed-by=vzctl` und
-passender Project-/Stack-Zuordnung. `adopt` ist report-only (kein Lease, kein
+`down --purge` hart-killt Helper (`SIGKILL`), löscht ausschließlich Ressourcen mit
+`managed-by=vzctl` und passender Project-/Stack-Zuordnung (kein graceful Shutdown).
+`adopt` ist report-only (kein Lease, kein
 Journal, kein Mutate): sichere stale Helper-Locks unter
 `$VZCTL_STATE_DIR/helpers/<id>.lock` werden als `actions[]` mit
 `action=report`, `kind=helper-lock` gemeldet. Safe bedeutet: Lock-Datei

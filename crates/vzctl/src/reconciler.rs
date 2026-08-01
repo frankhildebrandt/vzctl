@@ -341,7 +341,14 @@ fn execute_step(
             prune_networks(environment, options.mode, plan, socket_path)
         }
         "start_helpers" => start_helpers(environment, socket_path),
-        "await_agents" => await_helpers(environment, socket_path),
+        "await_agents" => {
+            // Resume often lands here after a failed await while helpers already
+            // exited — re-run start_helpers before waiting again.
+            if options.resume {
+                start_helpers(environment, socket_path)?;
+            }
+            await_helpers(environment, socket_path)
+        }
         "ensure_docker_project_mount" => {
             ensure_docker_project_mount(environment, &options.config, socket_path)
         }
@@ -355,7 +362,7 @@ fn execute_step(
         "apply_routes_policies" => apply_routes(environment, socket_path),
         "purge_ingress" => purge_ingress(environment, socket_path),
         "purge_oidc" => purge_oidc(environment, socket_path),
-        "stop_helpers" => stop_helpers(environment, socket_path),
+        "stop_helpers" => stop_helpers(environment, socket_path, options.purge),
         "detach_nets" if options.purge => detach_networks(environment, socket_path),
         "destroy_managed" if options.purge => purge_managed(environment, socket_path),
         "purge_docker_context" if options.purge => purge_docker_context(environment),
@@ -771,8 +778,16 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|record| record["state"] == "running")
-            .filter_map(|record| record["vm_id"].as_str().map(str::to_string))
+            .filter(|record| {
+                let state = record["state"].as_str().unwrap_or("");
+                state == "running" || state == "starting"
+            })
+            .filter_map(|record| {
+                record["vm_id"]
+                    .as_str()
+                    .or_else(|| record["id"].as_str())
+                    .map(str::to_string)
+            })
             .collect::<BTreeSet<_>>();
         if wanted.is_subset(&running) {
             return Ok(());
@@ -849,13 +864,28 @@ fn ensure_docker_project_mount(
     Ok(())
 }
 
-fn stop_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+fn stop_helpers(
+    environment: &Environment,
+    socket_path: &Path,
+    force: bool,
+) -> Result<(), Failure> {
     let mut order = dependency_order(&environment.spec.vms)?;
     order.reverse();
     for name in order {
         let runtime_id = vm_runtime_id(environment, &name);
-        stop_one(&runtime_id, socket_path)?;
-        wait_stopped(&runtime_id, socket_path)?;
+        if force {
+            // Stack remove / purge: hard-kill, no data-loss courtesy.
+            // Bookkeeping is cleared immediately; brief settle so disk handles drop.
+            let _ = rpc(
+                socket_path,
+                "vm.stop",
+                json!({"vm_id": runtime_id, "force": true}),
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        } else {
+            stop_one(&runtime_id, socket_path)?;
+            wait_stopped(&runtime_id, socket_path)?;
+        }
     }
     Ok(())
 }
@@ -865,7 +895,15 @@ fn stop_one(vm_id: &str, socket_path: &Path) -> Result<(), Failure> {
 }
 
 fn wait_stopped(vm_id: &str, socket_path: &Path) -> Result<(), Failure> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    wait_stopped_until(vm_id, socket_path, Duration::from_secs(30))
+}
+
+fn wait_stopped_until(
+    vm_id: &str,
+    socket_path: &Path,
+    timeout: Duration,
+) -> Result<(), Failure> {
+    let deadline = Instant::now() + timeout;
     loop {
         let records = rpc(socket_path, "vm.list", json!({}))?;
         let active = records.as_array().into_iter().flatten().any(|record| {
@@ -912,7 +950,25 @@ fn detach_networks(environment: &Environment, socket_path: &Path) -> Result<(), 
 
 fn purge_managed(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
     for name in environment.spec.vms.keys() {
-        remove_managed_vm(&vm_runtime_id(environment, name))?;
+        let runtime_id = vm_runtime_id(environment, name);
+        // Hard delete: SIGKILL via vm.purge + wipe managed bundle (no graceful stop).
+        match run_self(&[
+            "vm",
+            "delete",
+            &runtime_id,
+            "--force",
+            "--format",
+            "json",
+        ]) {
+            Ok(_) => {}
+            Err(failure) => {
+                // Already gone after a partial purge is fine.
+                let bundle = crate::state_dir().join("vms").join(&runtime_id);
+                if bundle.join("vm.json").is_file() {
+                    return Err(failure);
+                }
+            }
+        }
     }
     let snapshot = rpc(socket_path, "net.list", json!({}))?;
     for network in snapshot["networks"].as_array().into_iter().flatten() {

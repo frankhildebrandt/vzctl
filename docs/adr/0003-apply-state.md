@@ -80,7 +80,8 @@ await_agents → apply_routes_policies → release_lease → done
 
 ### Purge-Regeln (`down --purge`)
 
-Löscht **nur** Ressourcen mit Label/Attribut `managed-by=vzctl` **und** `project=<id>`:
+Löscht **nur** Ressourcen mit Label/Attribut `managed-by=vzctl` **und** `project=<id>`.
+Helper werden hart gestoppt (`SIGKILL` / `vm delete --force`); kein graceful Shutdown.
 
 | Ressource | Purge |
 |---|---|
@@ -91,7 +92,7 @@ Löscht **nur** Ressourcen mit Label/Attribut `managed-by=vzctl` **und** `projec
 | Docker context `vzctl-*` | ja |
 | Fremde VMs / Bridges / Resolver | **nein** |
 
-Ohne `--purge`: stoppen + Actual „stopped“, Disks behalten.
+Ohne `--purge`: graceful stoppen + Actual „stopped“, Disks behalten.
 
 ### State machine
 
