@@ -186,6 +186,7 @@ pub async fn run(config: ProviderConfig, work_dir: Option<PathBuf>) -> Result<()
     };
 
     let app = Router::new()
+        .route("/", get(root))
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/jwks", get(jwks_handler))
         .route("/authorize", get(authorize))
@@ -309,6 +310,59 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+async fn root(State(state): State<AppState>) -> Html<String> {
+    Html(root_html(&state.config))
+}
+
+fn root_html(config: &ProviderConfig) -> String {
+    let issuer = html_escape(config.issuer.trim_end_matches('/'));
+    let mut users = String::new();
+    for user in &config.users {
+        let username = html_escape(&user.username);
+        let email = html_escape(&user.email);
+        users.push_str(&format!(
+            r#"<li><strong>{username}</strong> <span>{email}</span></li>"#
+        ));
+    }
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>vzctl oidc-simple</title>
+  <style>
+    :root {{ color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: radial-gradient(circle at top, #1e293b, #0f172a); color: #e2e8f0; }}
+    main {{ width: min(28rem, 92vw); background: #111827; border: 1px solid #334155;
+      border-radius: 12px; padding: 1.5rem; box-shadow: 0 20px 50px rgba(0,0,0,.35); }}
+    h1 {{ margin: 0 0 .25rem; font-size: 1.25rem; }}
+    p {{ margin: 0 0 1rem; color: #94a3b8; font-size: .9rem; }}
+    a {{ color: #38bdf8; }}
+    ul {{ margin: 0 0 1rem; padding-left: 1.1rem; color: #cbd5e1; }}
+    li {{ margin: .35rem 0; }}
+    li span {{ color: #94a3b8; font-size: .85rem; }}
+    code {{ font-size: .8rem; color: #93c5fd; word-break: break-all; }}
+    .badge {{ display: inline-block; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase;
+      color: #fbbf24; border: 1px solid #92400e; border-radius: 999px; padding: .1rem .5rem; margin-bottom: .75rem; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="badge">dev only</div>
+    <h1>oidc-simple</h1>
+    <p>Dev IdP is up. Login starts from your app via <code>/authorize</code> (Auth Code + PKCE).</p>
+    <p>Issuer: <code>{issuer}</code></p>
+    <p><a href="/.well-known/openid-configuration">OpenID discovery</a></p>
+    <p>Configured users:</p>
+    <ul>{users}</ul>
+  </main>
+</body>
+</html>"#
+    )
 }
 
 fn picker_html(config: &ProviderConfig, q: &AuthorizeQuery) -> String {
@@ -889,6 +943,7 @@ mod tests {
             kid,
         };
         let app = Router::new()
+            .route("/", get(root))
             .route("/.well-known/openid-configuration", get(discovery))
             .route("/jwks", get(jwks_handler))
             .route("/authorize", get(authorize))
