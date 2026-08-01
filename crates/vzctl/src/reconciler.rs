@@ -382,7 +382,11 @@ fn ensure_networks(
                 .as_str()
                 .unwrap_or("shared")
                 .to_string();
-            if existing["cidr"] != network.cidr || existing["mode"] != mode {
+            let existing_nat = existing["nat_egress"].as_bool().unwrap_or(true);
+            if existing["cidr"] != network.cidr
+                || existing["mode"] != mode
+                || existing_nat != network.nat_egress
+            {
                 if !force {
                     return Err(Failure::new(
                         EXIT_INVALID,
@@ -416,6 +420,7 @@ fn ensure_networks(
                 "name": name,
                 "cidr": network.cidr,
                 "mode": "shared",
+                "nat_egress": network.nat_egress,
                 "labels": {"managed-by": "vzctl"},
                 "project": environment.spec.project,
                 "stack": stack_id(environment),

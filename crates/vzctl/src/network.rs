@@ -25,6 +25,7 @@ enum Operation {
         name: String,
         cidr: String,
         mode: String,
+        nat_egress: bool,
         metadata: Metadata,
     },
     Attach {
@@ -127,10 +128,16 @@ impl Options {
                 name,
                 cidr,
                 mode,
+                nat_egress,
                 metadata,
             } => (
                 "net.create",
-                metadata.params(json!({ "name": name, "cidr": cidr, "mode": mode })),
+                metadata.params(json!({
+                    "name": name,
+                    "cidr": cidr,
+                    "mode": mode,
+                    "nat_egress": nat_egress,
+                })),
             ),
             Operation::Attach {
                 vm_id,
@@ -223,7 +230,8 @@ fn parse_default(args: Vec<String>) -> Result<Options, Failure> {
 
 fn parse_create(args: Vec<String>) -> Result<Options, Failure> {
     let name = positional(&args, "net create requires a network name")?;
-    let (format, values, metadata) = parse_flags(args[1..].to_vec(), &["--cidr", "--mode"])?;
+    let (format, values, metadata) =
+        parse_flags(args[1..].to_vec(), &["--cidr", "--mode", "--nat-egress"])?;
     let cidr = required(&values, "--cidr")?;
     validate_cidr(&cidr)?;
     let mode = values
@@ -235,11 +243,21 @@ fn parse_create(args: Vec<String>) -> Result<Options, Failure> {
             "bridged mode is unsupported in v0.1; use --mode shared",
         ));
     }
+    let nat_egress = match values.get("--nat-egress").map(String::as_str) {
+        None | Some("true") | Some("1") | Some("yes") => true,
+        Some("false") | Some("0") | Some("no") => false,
+        Some(other) => {
+            return Err(invalid(format!(
+                "invalid --nat-egress {other:?}; use true|false"
+            )));
+        }
+    };
     Ok(Options {
         operation: Operation::Create {
             name,
             cidr,
             mode,
+            nat_egress,
             metadata,
         },
         format,
@@ -721,6 +739,7 @@ mod tests {
                     name: "dmz".to_string(),
                     cidr: "10.80.0.0/24".to_string(),
                     mode: "shared".to_string(),
+                    nat_egress: true,
                     metadata: Metadata {
                         labels: BTreeMap::from([("tier".to_string(), "edge".to_string())]),
                         project: Some("demo".to_string()),

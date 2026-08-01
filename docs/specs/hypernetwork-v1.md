@@ -95,12 +95,17 @@ oidc:
 - Image-, Network-, Route-, Policy- und VM-Referenzen müssen existieren.
 - `route.via` muss eine Router-VM sein, die an Quell- und Zielnetz hängt.
 - Netz-CIDRs müssen gültige kanonische IPv4-Netze sein.
+- `networks.*.natEgress` (Default `true`): Host-NAT/Internet. Bei `false`
+  ist das Netz host-only; Internet nur über Router + Policy `to: internet`.
 - Statische IPs müssen im CIDR liegen, dürfen weder Netzwerk/Broadcast noch
   die reservierten Offsets `.0`/`.1` verwenden und dürfen nicht doppelt sein.
 - DHCP und statische VM-IP auf demselben Netz sind unzulässig. DHCP bleibt
   gemäß G0/Decision Log standardmäßig aus.
 - `dependsOn` darf nur bekannte VMs referenzieren und muss ein DAG bilden.
-- Policies referenzieren bekannte Netze; TCP/UDP brauchen Ports, ICMP nicht.
+- Policies referenzieren bekannte Netze; `allow[].to` darf ein Netzname oder
+  `internet` sein. `to: internet` erfordert eine Router-VM am Quellnetz, die
+  auch an mindestens ein `natEgress: true`-Netz hängt. TCP/UDP brauchen Ports,
+  ICMP nicht.
 
 Die Validierung verändert weder Runtime-State noch Journal/Lease. Reconcile
 und Apply folgen separat in [#37](https://github.com/frankhildebrandt/vzctl/issues/37).

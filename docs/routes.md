@@ -50,12 +50,13 @@ spec:
 ```
 
 `network` ist das Quellnetz. `to` ist ein weiteres Attachment desselben
-Routers. v1 unterstützt `tcp` und `udp` mit mindestens einem Port sowie `icmp`
-ohne Ports. Nur `forward: deny-all` ist zulässig. Namen, Netze, Protokolle und
-Ports werden vor dem Guest-Apply validiert. Policy-Namen sind auf Buchstaben,
-Ziffern, Punkt, Bindestrich und Unterstrich begrenzt.
-Bei mehreren laufenden Routern wird eine Policy über ihr Quellnetz genau einem
-Router zugeordnet; keine oder mehrdeutige Zuordnungen sind ungültig.
+Routers **oder** `internet` (Egress über ein `natEgress: true`-Attachment des
+Routers; nftables + MASQUERADE). v1 unterstützt `tcp` und `udp` mit mindestens
+einem Port sowie `icmp` ohne Ports. Nur `forward: deny-all` ist zulässig.
+Namen, Netze, Protokolle und Ports werden vor dem Guest-Apply validiert.
+Policy-Namen sind auf Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich
+begrenzt. Bei mehreren laufenden Routern wird eine Policy über ihr Quellnetz
+genau einem Router zugeordnet; keine oder mehrdeutige Zuordnungen sind ungültig.
 
 Der Apply schreibt atomar:
 

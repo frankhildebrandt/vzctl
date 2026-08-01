@@ -101,6 +101,8 @@ public struct NetworkRecord: Equatable, Sendable {
     public var name: String
     public var cidr: String
     public var mode: String
+    /// Host NAT / Internet egress. When false, vmnet uses host-only mode.
+    public var natEgress: Bool
     public var labels: [String: String]
     public var project: String?
     public var stack: String?
@@ -112,6 +114,7 @@ public struct NetworkRecord: Equatable, Sendable {
         name: String,
         cidr: String,
         mode: String = "shared",
+        natEgress: Bool = true,
         labels: [String: String] = [:],
         project: String? = nil,
         stack: String? = nil,
@@ -122,6 +125,7 @@ public struct NetworkRecord: Equatable, Sendable {
         self.name = name
         self.cidr = cidr
         self.mode = mode
+        self.natEgress = natEgress
         self.labels = labels
         self.project = project
         self.stack = stack
@@ -130,13 +134,20 @@ public struct NetworkRecord: Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    /// Guest default gateway: host `.0` with NAT, router `.2` without NAT.
+    public var guestGateway: String {
+        natEgress ? IPv4CIDR.gateway(for: cidr) : IPv4CIDR.router(for: cidr)
+    }
+
     public var json: JSONValue {
         .object([
             "name": .string(name),
             "cidr": .string(cidr),
             "mode": .string(mode),
-            "gateway": .string(IPv4CIDR.gateway(for: cidr)),
+            "nat_egress": .bool(natEgress),
+            "gateway": .string(guestGateway),
             "dns": .string(IPv4CIDR.gateway(for: cidr)),
+            "host_gateway": .string(IPv4CIDR.gateway(for: cidr)),
             "router": .string(IPv4CIDR.router(for: cidr)),
             "guest_range": .string(".10+"),
             "labels": .object(labels.mapValues(JSONValue.string)),

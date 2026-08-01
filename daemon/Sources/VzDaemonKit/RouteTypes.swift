@@ -26,15 +26,23 @@ public enum RouterOperation: String, Sendable {
     case apply, plan, status
 }
 
+public let internetPolicyTarget = "internet"
+
+/// Non-RFC1918 / non-link-local destinations for `to: internet` nft rules.
+private let internetDestinationExpr =
+    "!= { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 }"
+
 public struct RouterNetwork: Equatable, Sendable {
     public let name: String
     public let cidr: String
     public let address: String
+    public let natEgress: Bool
 
-    public init(name: String, cidr: String, address: String) {
+    public init(name: String, cidr: String, address: String, natEgress: Bool = true) {
         self.name = name
         self.cidr = cidr
         self.address = address
+        self.natEgress = natEgress
     }
 
     public var json: JSONValue {
@@ -42,6 +50,7 @@ public struct RouterNetwork: Equatable, Sendable {
             "name": .string(name),
             "cidr": .string(cidr),
             "address": .string(address),
+            "nat_egress": .bool(natEgress),
             "host_gateway_dns": .string(IPv4CIDR.gateway(for: cidr)),
             "router_gateway": .string(IPv4CIDR.router(for: cidr)),
         ])
@@ -100,6 +109,8 @@ public struct ActiveForwardRule: Equatable, Sendable {
     public let sourceCIDR: String
     public let destinationCIDR: String
 
+    public var isInternet: Bool { to == internetPolicyTarget }
+
     public var json: JSONValue {
         .object([
             "policy": .string(policy),
@@ -157,7 +168,12 @@ public struct RouterPlan: Equatable, Sendable {
                     "router VM \(vmID) must use \(expected) on \(network.name), got \(attachment.ip)"
                 )
             }
-            return RouterNetwork(name: network.name, cidr: network.cidr, address: attachment.ip)
+            return RouterNetwork(
+                name: network.name,
+                cidr: network.cidr,
+                address: attachment.ip,
+                natEgress: network.natEgress
+            )
         }
         self.vmID = vmID
         self.policies = policies.sorted { $0.name < $1.name }
@@ -168,14 +184,20 @@ public struct RouterPlan: Equatable, Sendable {
         let cidrs = Dictionary(uniqueKeysWithValues: networks.map { ($0.name, $0.cidr) })
         return policies.flatMap { policy in
             policy.allow.map { allow in
-                ActiveForwardRule(
+                let destination: String
+                if allow.to == internetPolicyTarget {
+                    destination = internetPolicyTarget
+                } else {
+                    destination = cidrs[allow.to]!
+                }
+                return ActiveForwardRule(
                     policy: policy.name,
                     from: policy.network,
                     to: allow.to,
                     proto: allow.proto,
                     ports: allow.ports,
                     sourceCIDR: cidrs[policy.network]!,
-                    destinationCIDR: cidrs[allow.to]!
+                    destinationCIDR: destination
                 )
             }
         }
@@ -200,8 +222,12 @@ public struct RouterPlan: Equatable, Sendable {
             "    ct state established,related accept comment \"vzctl:return\"",
         ]
         for rule in rules {
-            var expression =
-                "    ip saddr \(rule.sourceCIDR) ip daddr \(rule.destinationCIDR)"
+            var expression = "    ip saddr \(rule.sourceCIDR) "
+            if rule.isInternet {
+                expression += "ip daddr \(internetDestinationExpr)"
+            } else {
+                expression += "ip daddr \(rule.destinationCIDR)"
+            }
             if rule.proto == "icmp" {
                 expression += " ip protocol icmp"
             } else {
@@ -215,7 +241,23 @@ public struct RouterPlan: Equatable, Sendable {
             expression += " accept comment \"vzctl:\(rule.policy)\""
             lines.append(expression)
         }
-        lines.append(contentsOf: ["  }", "}", ""])
+        lines.append("  }")
+
+        let internetSources = Array(
+            Set(rules.filter(\.isInternet).map(\.sourceCIDR))
+        ).sorted()
+        if !internetSources.isEmpty {
+            lines.append("  chain postrouting {")
+            lines.append("    type nat hook postrouting priority srcnat; policy accept;")
+            for cidr in internetSources {
+                lines.append(
+                    "    ip saddr \(cidr) masquerade comment \"vzctl:internet\""
+                )
+            }
+            lines.append("  }")
+        }
+
+        lines.append(contentsOf: ["}", ""])
         return lines.joined(separator: "\n")
     }
 
@@ -238,6 +280,7 @@ public struct RouterPlan: Equatable, Sendable {
             throw RouteApplyError.invalid("policy names must be unique")
         }
         let networkNames = Set(networks.map(\.name))
+        let hasNatEgress = networks.contains(where: \.natEgress)
         for policy in policies {
             guard !policy.name.isEmpty,
                   policy.name.utf8.allSatisfy({
@@ -262,31 +305,38 @@ public struct RouterPlan: Equatable, Sendable {
                 )
             }
             for allow in policy.allow {
-                guard networkNames.contains(allow.to) else {
-                    throw RouteApplyError.invalid(
-                        "policy \(policy.name) references unattached destination network \(allow.to)"
-                    )
+                if allow.to == internetPolicyTarget {
+                    guard hasNatEgress else {
+                        throw RouteApplyError.invalid(
+                            "policy \(policy.name) to internet requires a natEgress network on the router"
+                        )
+                    }
+                } else {
+                    guard networkNames.contains(allow.to) else {
+                        throw RouteApplyError.invalid(
+                            "policy \(policy.name) references unattached destination network \(allow.to)"
+                        )
+                    }
                 }
-                guard ["tcp", "udp", "icmp"].contains(allow.proto) else {
-                    throw RouteApplyError.invalid(
-                        "policy \(policy.name) proto must be tcp, udp, or icmp"
-                    )
-                }
-                if allow.proto == "icmp" {
+                switch allow.proto {
+                case "icmp":
                     guard allow.ports.isEmpty else {
                         throw RouteApplyError.invalid(
                             "policy \(policy.name) ICMP allow must not declare ports"
                         )
                     }
-                } else {
+                case "tcp", "udp":
                     guard !allow.ports.isEmpty,
-                          allow.ports.allSatisfy({ (1 ... 65_535).contains($0) }),
-                          Set(allow.ports).count == allow.ports.count
+                          allow.ports.allSatisfy({ (1 ... 65535).contains($0) })
                     else {
                         throw RouteApplyError.invalid(
-                            "policy \(policy.name) TCP/UDP ports must be unique values 1...65535"
+                            "policy \(policy.name) TCP/UDP allow requires ports 1...65535"
                         )
                     }
+                default:
+                    throw RouteApplyError.invalid(
+                        "policy \(policy.name) proto must be tcp, udp, or icmp"
+                    )
                 }
             }
         }

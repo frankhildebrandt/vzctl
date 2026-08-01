@@ -362,10 +362,12 @@ final class SupervisorServer: @unchecked Sendable {
         case "net.create":
             do {
                 let params = try networkParams(request.params)
+                let natEgress = optionalBool("nat_egress", from: params) ?? true
                 let record = try networkRegistry.create(
                     name: try requiredString("name", from: params),
                     cidr: try requiredString("cidr", from: params),
                     mode: try optionalString("mode", from: params) ?? "shared",
+                    natEgress: natEgress,
                     labels: try labels(from: params),
                     project: try optionalString("project", from: params),
                     stack: try optionalString("stack", from: params)

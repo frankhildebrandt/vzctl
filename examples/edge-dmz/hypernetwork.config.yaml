@@ -8,8 +8,10 @@ spec:
   dns:
     enabled: true
     hostResolver: true
-    hostListen: "127.0.0.1:15353"
-    forward: { enabled: true, upstream: system }
+    hostListen: 127.0.0.1:15353
+    forward:
+      enabled: true
+      upstream: system
   images:
     ubuntu-base:
       from: ubuntu-latest
@@ -18,9 +20,13 @@ spec:
     dmz:
       cidr: 10.80.0.0/24
       mode: shared
+      dhcp: false
+      natEgress: true
     lan:
       cidr: 10.90.0.0/24
       mode: shared
+      dhcp: false
+      natEgress: false
   routes:
     - name: dmz-to-lan
       from: dmz
@@ -31,57 +37,98 @@ spec:
       network: dmz
       forward: deny-all
       allow:
-        - { to: lan, proto: tcp, ports: [5432] }
-        - { to: dmz, proto: icmp }
+        - to: lan
+          proto: tcp
+          ports:
+            - 5432
+        - to: dmz
+          proto: icmp
+          ports: []
+    - name: lan-default
+      network: lan
+      forward: deny-all
+      allow: []
   ports:
-    - "8080:web:80"
+    - 8080:web:80
   certs:
     enabled: true
     onRotate: reinject
   ingress:
     enabled: true
-    bind: "127.0.0.1"
+    bind: 127.0.0.1
     hostAliases: true
     redirectHttp: true
     routes:
       - host: web.svc.edge-dmz.vz.test
-        to: "web:80"
-        requires: [oidc]
+        to: web:80
+        requires:
+          - oidc
       - host: auth.svc.edge-dmz.vz.test
-        to: "oidc:5556"
+        to: oidc:5556
   oidc:
     enabled: true
     mode: embedded
     issuer: https://auth.svc.edge-dmz.vz.test
-    listen: "127.0.0.1:5556"
+    listen: 127.0.0.1:5556
     clients: auto
   vms:
     router:
       from: ubuntu-base
       clone: linked
       dataDisk: 4G
-      roles: [router]
       networks:
-        - { name: dmz, ip: 10.80.0.2 }
-        - { name: lan, ip: 10.90.0.2 }
+        - name: dmz
+          ip: 10.80.0.2
+        - name: lan
+          ip: 10.90.0.2
       cloudInit: cloud-init/router.yaml
       dependsOn: []
+      roles:
+        - router
+      requires: []
+      ports: []
+      mounts: []
     web:
       from: ubuntu-base
       clone: linked
       dataDisk: 40G
       networks:
-        - { name: dmz, ip: 10.80.0.10 }
+        - name: dmz
+          ip: 10.80.0.10
       cloudInit: cloud-init/web.yaml
-      dependsOn: [router]
+      dependsOn:
+        - router
       roles: []
-      requires: [oidc]
+      requires:
+        - oidc
+      ports: []
+      mounts: []
     docker:
       from: ubuntu-base
       clone: linked
       dataDisk: 100G
       networks:
-        - { name: dmz, ip: 10.80.0.50 }
+        - name: lan
+          ip: 10.90.0.10
       cloudInit: cloud-init/docker.yaml
-      dependsOn: [router]
-      roles: [docker]
+      dependsOn:
+        - router
+      roles:
+        - docker
+      requires: []
+      ports: []
+      mounts: []
+    host:
+      from: ubuntu-base
+      clone: linked
+      dataDisk: 20G
+      cpus: 2
+      memory: 2048MiB
+      networks:
+        - name: lan
+          ip: 10.90.0.11
+      dependsOn: []
+      roles: []
+      requires: []
+      ports: []
+      mounts: []

@@ -1,8 +1,16 @@
+import Foundation
 import Testing
 @testable import VzHelper
 
-@Test func routerApplyUsesAtomicNftablesAndPersistentStatus() {
-    let script = RouterGuestConfigurator.routerApplyScript
+@Test func routerApplyUsesAtomicNftablesAndPersistentStatus() throws {
+    // #filePath: <repo>/daemon/Tests/VzHelperTests/…swift → four parents = <repo>
+    let scriptURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("guest-agent/scripts/router-apply")
+    let script = try String(contentsOf: scriptURL, encoding: .utf8)
 
     #expect(script.contains("/etc/sysctl.d/90-vzctl-router.conf"))
     #expect(script.contains("sysctl -q -w net.ipv4.ip_forward=1"))

@@ -271,6 +271,11 @@ pub(crate) struct NetworkConfig {
     pub(crate) mode: NetworkMode,
     #[serde(default)]
     pub(crate) dhcp: bool,
+    /// Host NAT / Internet egress via vmnet shared mode. When false, the
+    /// network is host-only (`VMNET_HOST_MODE`); guests reach the Internet
+    /// only via a router + `policies.allow` with `to: internet`.
+    #[serde(default = "default_true", rename = "natEgress")]
+    pub(crate) nat_egress: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
@@ -632,12 +637,37 @@ fn validate_references(
         );
         for (allow_index, allow) in policy.allow.iter().enumerate() {
             let allow_base = format!("{base}.allow[{allow_index}]");
-            require_network(
-                &allow.to,
-                &format!("{allow_base}.to"),
-                &networks,
-                &mut issues,
-            );
+            if allow.to == "internet" {
+                let source = &policy.network;
+                let has_router = environment.spec.vms.values().any(|vm| {
+                    vm.roles.iter().any(|r| r == "router")
+                        && vm.networks.iter().any(|n| n.name == *source)
+                        && vm.networks.iter().any(|n| {
+                            environment
+                                .spec
+                                .networks
+                                .get(&n.name)
+                                .is_some_and(|net| net.nat_egress)
+                        })
+                });
+                if !has_router {
+                    issues.push(ValidationIssue::new(
+                        format!("{allow_base}.to"),
+                        format!(
+                            "policy {:?} allow to internet requires a router on {:?} that also attaches a natEgress network",
+                            policy.name, source
+                        ),
+                        "semantic",
+                    ));
+                }
+            } else {
+                require_network(
+                    &allow.to,
+                    &format!("{allow_base}.to"),
+                    &networks,
+                    &mut issues,
+                );
+            }
             match allow.proto {
                 Protocol::Icmp if !allow.ports.is_empty() => {
                     issues.push(ValidationIssue::new(

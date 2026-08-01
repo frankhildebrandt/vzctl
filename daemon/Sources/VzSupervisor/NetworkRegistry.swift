@@ -78,8 +78,12 @@ struct NativeVmnetBackend: NetworkRuntimeBackend {
             throw NetworkRegistryError.invalid(String(describing: error))
         }
 
+        // natEgress:false → host-only (no Internet NAT); true → shared NAT44.
+        let operationMode: operating_modes_t =
+            record.natEgress ? .VMNET_SHARED_MODE : .VMNET_HOST_MODE
+
         var status: vmnet_return_t = .VMNET_SUCCESS
-        guard let configuration = vmnet_network_configuration_create(.VMNET_SHARED_MODE, &status)
+        guard let configuration = vmnet_network_configuration_create(operationMode, &status)
         else {
             throw NetworkRegistryError.runtime(
                 "vmnet configuration for \(record.name) failed (\(status.rawValue))"
@@ -201,6 +205,7 @@ final class NetworkRegistry: @unchecked Sendable {
         name: String,
         cidr rawCIDR: String,
         mode: String,
+        natEgress: Bool = true,
         labels: [String: String],
         project: String?,
         stack: String?
@@ -211,6 +216,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 name: name,
                 cidr: rawCIDR,
                 mode: mode,
+                natEgress: natEgress,
                 labels: labels,
                 project: project,
                 stack: stack
@@ -583,6 +589,7 @@ final class NetworkRegistry: @unchecked Sendable {
         name: String,
         cidr rawCIDR: String,
         mode: String,
+        natEgress: Bool = true,
         labels: [String: String],
         project: String?,
         stack: String?
@@ -611,6 +618,7 @@ final class NetworkRegistry: @unchecked Sendable {
             name: name,
             cidr: cidr.canonical,
             mode: mode,
+            natEgress: natEgress,
             labels: labels,
             project: project,
             stack: stack
