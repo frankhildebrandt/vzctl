@@ -736,29 +736,49 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
                 let config = try requiredString("config", from: params)
+                let configName = try optionalString("configName", from: params) ?? "config.yaml"
                 let binary = try optionalString("binary", from: params)
                     ?? stateDirectory.appendingPathComponent("bin/dex").path
+                let processName = try optionalString("processName", from: params)
+                    ?? "dex-\(project)"
+                let pidFileName = try optionalString("pidFile", from: params) ?? "oidc.pid"
+                let argumentTemplates = try optionalStringArray("arguments", from: params)
+                    ?? ["serve", "{config}"]
+
                 let workDir = stateDirectory
                     .appendingPathComponent("runtime/oidc/\(project)", isDirectory: true)
                 try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-                let configPath = workDir.appendingPathComponent("config.yaml").path
+                let configPath = workDir.appendingPathComponent(configName).path
                 try config.write(toFile: configPath, atomically: true, encoding: .utf8)
+                let arguments = argumentTemplates.map { arg in
+                    arg.replacingOccurrences(of: "{config}", with: configPath)
+                }
                 // Keep a stable pid path for CLI status
                 let runtimeRoot = stateDirectory.appendingPathComponent("runtime/oidc", isDirectory: true)
                 try FileManager.default.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+                // Stop the alternate process name so mode switches don't leave orphans.
+                embeddedProcesses.stop(name: "dex-\(project)")
+                embeddedProcesses.stop(name: "oidc-simple-\(project)")
                 let status = try embeddedProcesses.ensure(
                     EmbeddedProcessManager.Spec(
-                        name: "dex-\(project)",
+                        name: processName,
                         binary: binary,
-                        arguments: ["serve", configPath],
+                        arguments: arguments,
                         workDir: workDir.path,
-                        pidFile: runtimeRoot.appendingPathComponent("dex.pid").path,
+                        pidFile: runtimeRoot.appendingPathComponent(pidFileName).path,
                         env: [:]
                     )
                 )
-                emit(type: "oidc.ensured", data: ["project": .string(project)])
+                emit(type: "oidc.ensured", data: [
+                    "project": .string(project),
+                    "process": .string(processName),
+                ])
                 return JSONRPCResponse(
-                    result: .object(["project": .string(project), "dex": .object(status)]),
+                    result: .object([
+                        "project": .string(project),
+                        "process": .string(processName),
+                        "status": .object(status),
+                    ]),
                     id: request.id ?? .null
                 )
             } catch {
@@ -769,6 +789,7 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
                 embeddedProcesses.stop(name: "dex-\(project)")
+                embeddedProcesses.stop(name: "oidc-simple-\(project)")
                 return JSONRPCResponse(
                     result: .object(["project": .string(project), "purged": .bool(true)]),
                     id: request.id ?? .null
@@ -1299,6 +1320,22 @@ final class SupervisorServer: @unchecked Sendable {
             throw NetworkRegistryError.invalid("invalid \(key)")
         }
         return value
+    }
+
+    private func optionalStringArray(
+        _ key: String,
+        from params: [String: JSONValue]
+    ) throws -> [String]? {
+        guard let raw = params[key], raw != .null else { return nil }
+        guard case let .array(items) = raw else {
+            throw NetworkRegistryError.invalid("invalid \(key)")
+        }
+        return try items.map { item in
+            guard case let .string(value) = item else {
+                throw NetworkRegistryError.invalid("invalid \(key) entry")
+            }
+            return value
+        }
     }
 
     private func requiredPort(

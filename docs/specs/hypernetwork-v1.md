@@ -77,11 +77,27 @@ ingress:
     - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
 oidc:
   enabled: true
-  mode: embedded
+  mode: oidc-simple
   issuer: https://auth.svc.edge-dmz.vz.test   # nie *.localhost
   listen: "127.0.0.1:5556"
   clients: auto
-  passwordFile: .vzctl/oidc/passwords.bcrypt
+  users:
+    - { username: alice, email: alice@dev.local, role: admin }
+    - { username: bob, email: bob@dev.local }
+# Dex-Alternative:
+# oidc:
+#   mode: embedded
+#   issuer: https://auth.svc.edge-dmz.vz.test
+#   listen: "127.0.0.1:5556"
+#   clients: auto
+#   passwordFile: .vzctl/oidc/passwords.bcrypt
+#   uplink:                                      # optional; Host-Defaults + Override
+#     type: oidc
+#     issuer: https://login.corp.example
+#     clientID: edge-dmz-dex
+#     clientSecretFile: host                     # host | relativ zu projects/{p}/oidc/
+#     scopes: [openid, profile, email]
+#     getUserInfo: true
 ```
 
 - `ingress.routes[].to`: `vm:port` oder `oidc:<port>`
@@ -89,6 +105,13 @@ oidc:
   zu einer Route mit `to: oidc:…` passen
 - `requires: [oidc]` (VM oder Route) braucht `oidc.enabled`
 - `*.localhost` ist kein kanonischer Route-Host; nur Host-Alias über `hostAliases`
+- `oidc.mode`: `embedded` (Dex) oder `oidc-simple` (Dev-Picker-IdP; Referenzbeispiel)
+- `oidc-simple`: `users` Pflicht; `passwordFile`/`uplink` verboten (siehe
+  [oidc-v1.md](oidc-v1.md))
+- `oidc.uplink` ist optional (Dex OIDC-Federator, nur `mode: embedded`). Host-Defaults unter
+  `Application Support/vzctl/config/oidc-uplink.yaml`; Project-Felder
+  überschreiben. Secrets nur als File-Ref, nie inline `clientSecret`
+  (siehe [oidc-v1.md](oidc-v1.md))
 
 ## Semantische Regeln
 
@@ -112,6 +135,10 @@ oidc:
   auch an mindestens ein `natEgress: true`-Netz hängt — Ausnahme: Quellnetz
   mit `backend: docker` (Forward ohne lokale MASQUERADE). TCP/UDP brauchen Ports,
   ICMP nicht.
+- `policies.*.via` (optional) pinnt die Policy auf eine Router-VM (Config-Key),
+  analog zu `routes.*.via`. Die VM muss `roles: [router]` haben und am
+  Quellnetz hängen (sowie an jedem `allow.to`-Netz außer `internet`). Bei
+  mehreren Routern am Quellnetz ohne `via` schlägt Apply mit Ambiguity fehl.
 
 Die Validierung verändert weder Runtime-State noch Journal/Lease. Reconcile
 und Apply folgen separat in [#37](https://github.com/frankhildebrandt/vzctl/issues/37).

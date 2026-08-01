@@ -111,10 +111,18 @@ spec:
         to: oidc:5556
   oidc:
     enabled: true
-    mode: embedded
+    mode: oidc-simple
     issuer: https://auth.svc.edge-dmz.vz.test
     listen: 127.0.0.1:5556
     clients: auto
+    users:
+      - username: alice
+        email: alice@dev.local
+        role: admin
+      - username: bob
+        email: bob@dev.local
+      - username: charlie
+        email: charlie@dev.local
   vms:
     router:
       from: ubuntu-base

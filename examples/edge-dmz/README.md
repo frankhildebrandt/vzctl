@@ -50,18 +50,19 @@ Siehe auch [docs/docker.md](../../docs/docker.md), [docs/ports.md](../../docs/po
 
 ## v0.2 Ingress / OIDC
 
-Das Beispiel aktiviert Local CA, Caddy Ingress und Dex:
+Das Beispiel aktiviert Local CA, Caddy Ingress und `oidc-simple` (Dev-Picker):
 
 - `https://web.svc.edge-dmz.vz.test` → VM `web:80`
-- `https://auth.svc.edge-dmz.vz.test` → Dex auf `127.0.0.1:5556`
+- `https://auth.svc.edge-dmz.vz.test` → `vzctl-oidc-simple` auf `127.0.0.1:5556`
+- Login: Username aus der Liste wählen (keine Passwörter)
 - Host-Alias `web.localhost` wenn `hostAliases: true`
 - `web.requires: [oidc]` → Client-Autoconfig unter Application Support
 
-Vor `up` Binaries holen:
+Vor `up` Binaries holen / bauen:
 
 ```bash
 ./scripts/fetch-caddy.sh
-./scripts/fetch-dex.sh
+cargo build -p vzctl-oidc-simple --release   # oder: make install
 vzctl certs ca init
 ```
 

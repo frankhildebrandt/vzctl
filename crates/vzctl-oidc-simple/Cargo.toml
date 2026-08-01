@@ -1,0 +1,30 @@
+[package]
+name = "vzctl-oidc-simple"
+version = "0.0.1"
+edition = "2021"
+description = "Dev-only OIDC IdP with click-to-login user picker"
+license-file = "../../LICENSE"
+publish = false
+
+[[bin]]
+name = "vzctl-oidc-simple"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["form"] }
+base64 = "0.22"
+jsonwebtoken = "9"
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "signal"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "json"] }
+tempfile = "3"

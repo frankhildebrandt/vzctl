@@ -163,6 +163,56 @@ pub(crate) struct OidcConfig {
     /// Relative to config dir; bcrypt htpasswd-style file for Dex static passwords.
     #[serde(default, rename = "passwordFile")]
     pub(crate) password_file: Option<String>,
+    /// Optional Dex OIDC connector (federator uplink). Partial fields override host defaults.
+    #[serde(default)]
+    pub(crate) uplink: Option<OidcUplink>,
+    /// Dev users for `mode: oidc-simple` (username + email + optional custom claims).
+    #[serde(default)]
+    pub(crate) users: Vec<OidcSimpleUser>,
+}
+
+/// Picker user for `oidc-simple`. Extra YAML keys become OIDC claims.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct OidcSimpleUser {
+    pub(crate) username: String,
+    pub(crate) email: String,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub(crate) claims: std::collections::BTreeMap<String, Value>,
+}
+
+/// Dex upstream IdP connector. Secrets live in files, never inline.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OidcUplink {
+    /// Connector kind. Omit in project overrides to inherit the host type.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(crate) uplink_type: Option<OidcUplinkType>,
+    /// Required for `type: oidc` (generic OIDC issuer URL).
+    #[serde(default)]
+    pub(crate) issuer: Option<String>,
+    /// Microsoft Entra tenant id, or `common` / `organizations` / `consumers`.
+    #[serde(default)]
+    pub(crate) tenant: Option<String>,
+    #[serde(default, rename = "clientID")]
+    pub(crate) client_id: Option<String>,
+    /// Path to secret file, or `"host"` to use the host-default secret.
+    #[serde(default, rename = "clientSecretFile")]
+    pub(crate) client_secret_file: Option<String>,
+    #[serde(default)]
+    pub(crate) scopes: Option<Vec<String>>,
+    #[serde(default, rename = "getUserInfo")]
+    pub(crate) get_user_info: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OidcUplinkType {
+    #[default]
+    Oidc,
+    Github,
+    Microsoft,
+    Discord,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -170,6 +220,8 @@ pub(crate) struct OidcConfig {
 pub(crate) enum OidcMode {
     #[default]
     Embedded,
+    /// Dev-only IdP: pick a user from a list, no passwords (see `users`).
+    OidcSimple,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1195,6 +1247,71 @@ fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<Valid
                     "semantic",
                 ));
             }
+            match oidc.mode {
+                OidcMode::OidcSimple => {
+                    if oidc.password_file.is_some() {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.passwordFile"),
+                            "oidc.passwordFile is not allowed with mode: oidc-simple",
+                            "semantic",
+                        ));
+                    }
+                    if oidc.uplink.is_some() {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.uplink"),
+                            "oidc.uplink is not allowed with mode: oidc-simple",
+                            "semantic",
+                        ));
+                    }
+                    if oidc.users.is_empty() {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.users"),
+                            "oidc.users must list at least one user when mode: oidc-simple",
+                            "semantic",
+                        ));
+                    } else {
+                        let mut seen = BTreeSet::new();
+                        for (index, user) in oidc.users.iter().enumerate() {
+                            let ubase = format!("{base}.users[{index}]");
+                            if user.username.trim().is_empty() {
+                                issues.push(ValidationIssue::new(
+                                    format!("{ubase}.username"),
+                                    "oidc user username must not be empty",
+                                    "semantic",
+                                ));
+                            } else if !seen.insert(user.username.clone()) {
+                                issues.push(ValidationIssue::new(
+                                    format!("{ubase}.username"),
+                                    format!(
+                                        "duplicate oidc user username {:?}",
+                                        user.username
+                                    ),
+                                    "semantic",
+                                ));
+                            }
+                            if user.email.trim().is_empty() {
+                                issues.push(ValidationIssue::new(
+                                    format!("{ubase}.email"),
+                                    "oidc user email must not be empty",
+                                    "semantic",
+                                ));
+                            }
+                        }
+                    }
+                }
+                OidcMode::Embedded => {
+                    if !oidc.users.is_empty() {
+                        issues.push(ValidationIssue::new(
+                            format!("{base}.users"),
+                            "oidc.users is only valid with mode: oidc-simple",
+                            "semantic",
+                        ));
+                    }
+                    if let Some(uplink) = &oidc.uplink {
+                        validate_oidc_uplink(uplink, &format!("{base}.uplink"), issues);
+                    }
+                }
+            }
         }
     }
 
@@ -1226,6 +1343,52 @@ fn oidc_issuer_host(issuer: &str) -> Option<&str> {
         None
     } else {
         Some(host)
+    }
+}
+
+fn validate_oidc_uplink(uplink: &OidcUplink, base: &str, issues: &mut Vec<ValidationIssue>) {
+    // deny_unknown_fields rejects inline clientSecret.
+    if let Some(issuer) = &uplink.issuer {
+        if issuer.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{base}.issuer"),
+                "oidc.uplink.issuer must not be empty when set",
+                "semantic",
+            ));
+        } else if !issuer.starts_with("https://") {
+            issues.push(ValidationIssue::new(
+                format!("{base}.issuer"),
+                "oidc.uplink.issuer must be an https:// URL",
+                "semantic",
+            ));
+        }
+    }
+    if let Some(tenant) = &uplink.tenant {
+        if tenant.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{base}.tenant"),
+                "oidc.uplink.tenant must not be empty when set",
+                "semantic",
+            ));
+        }
+    }
+    if let Some(client_id) = &uplink.client_id {
+        if client_id.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{base}.clientID"),
+                "oidc.uplink.clientID must not be empty when set",
+                "semantic",
+            ));
+        }
+    }
+    if let Some(secret_file) = &uplink.client_secret_file {
+        if secret_file.is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{base}.clientSecretFile"),
+                "oidc.uplink.clientSecretFile must not be empty when set",
+                "semantic",
+            ));
+        }
     }
 }
 
@@ -2203,6 +2366,303 @@ spec:
         assert!(issues
             .iter()
             .any(|issue| issue.message.contains("never use *.localhost")));
+    }
+
+    #[test]
+    fn accepts_partial_oidc_uplink_override() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  certs: { enabled: true, onRotate: reinject }
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    hostAliases: true
+    routes:
+      - { host: web.svc.edge-dmz.vz.test, to: "web:80", requires: [oidc] }
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    mode: embedded
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
+    uplink:
+      type: oidc
+      clientID: edge-dmz-dex
+      clientSecretFile: host
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      requires: [oidc]
+"#;
+        let environment = validate_source(source).unwrap();
+        let uplink = environment.spec.oidc.as_ref().unwrap().uplink.as_ref().unwrap();
+        assert_eq!(uplink.client_id.as_deref(), Some("edge-dmz-dex"));
+        assert_eq!(uplink.client_secret_file.as_deref(), Some("host"));
+        assert!(uplink.issuer.is_none());
+    }
+
+    #[test]
+    fn rejects_oidc_uplink_http_issuer() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  ingress:
+    enabled: true
+    routes:
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    uplink:
+      type: oidc
+      issuer: http://login.example.com
+      clientID: vzctl-dex
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("oidc.uplink.issuer must be an https://")));
+    }
+
+    #[test]
+    fn rejects_inline_oidc_client_secret() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  oidc:
+    enabled: true
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    uplink:
+      type: oidc
+      issuer: https://login.example.com
+      clientID: vzctl-dex
+      clientSecret: inline-not-allowed
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.message.contains("clientSecret")
+                || issue.message.contains("unknown field")
+                || issue.kind == "schema"
+        }));
+    }
+
+    #[test]
+    fn accepts_oidc_simple_with_users_and_custom_claims() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  certs: { enabled: true, onRotate: reinject }
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    hostAliases: true
+    routes:
+      - { host: web.svc.edge-dmz.vz.test, to: "web:80", requires: [oidc] }
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    mode: oidc-simple
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
+    users:
+      - username: alice
+        email: alice@dev.local
+        role: admin
+        teams: [platform]
+      - username: bob
+        email: bob@dev.local
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+      requires: [oidc]
+"#;
+        let environment = validate_source(source).unwrap();
+        let oidc = environment.spec.oidc.as_ref().unwrap();
+        assert_eq!(oidc.mode, OidcMode::OidcSimple);
+        assert_eq!(oidc.users.len(), 2);
+        assert_eq!(oidc.users[0].username, "alice");
+        assert_eq!(
+            oidc.users[0].claims.get("role").and_then(|v| v.as_str()),
+            Some("admin")
+        );
+    }
+
+    #[test]
+    fn rejects_oidc_simple_without_users_or_with_uplink() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  certs: { enabled: true, onRotate: reinject }
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    routes:
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    mode: oidc-simple
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
+    uplink:
+      type: oidc
+      issuer: https://login.example
+      clientID: x
+      clientSecretFile: host
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("users must list")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("uplink is not allowed")));
+    }
+
+    #[test]
+    fn rejects_users_on_embedded_oidc() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: edge-dmz }
+spec:
+  project: edge-dmz
+  domain: edge-dmz.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  certs: { enabled: true, onRotate: reinject }
+  ingress:
+    enabled: true
+    bind: "127.0.0.1"
+    routes:
+      - { host: auth.svc.edge-dmz.vz.test, to: "oidc:5556" }
+  oidc:
+    enabled: true
+    mode: embedded
+    issuer: https://auth.svc.edge-dmz.vz.test
+    listen: "127.0.0.1:5556"
+    clients: auto
+    users:
+      - username: alice
+        email: alice@dev.local
+  vms:
+    web:
+      from: ubuntu-base
+      dataDisk: 4G
+      networks: [{ name: dmz, ip: 10.80.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("only valid with mode: oidc-simple")));
     }
 
     #[test]

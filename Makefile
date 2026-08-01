@@ -81,6 +81,11 @@ install: release ## Installation erstellen/aktualisieren und Supervisor neu star
 		daemon/.build/release/vz-supervisor \
 		daemon/.build/release/vz-helper \
 		daemon/.build/release/vz-dns-bind
+	@mkdir -p "$(RUNTIME_BIN)"
+	@if [ -x target/release/vzctl-oidc-simple ]; then \
+		install -m 755 target/release/vzctl-oidc-simple "$(RUNTIME_BIN)/vzctl-oidc-simple"; \
+		echo "installed: $(RUNTIME_BIN)/vzctl-oidc-simple"; \
+	fi
 	@if [ -x "$(CADDY_VENDOR)" ] && [ -x "$(DEX_VENDOR)" ]; then \
 		$(MAKE) install-vendor; \
 	else \
