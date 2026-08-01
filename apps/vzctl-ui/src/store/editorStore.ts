@@ -110,6 +110,7 @@ type EditorStore = {
       mode: NetworkMode;
       dhcp: boolean;
       natEgress: boolean;
+      backend: "vmnet" | "docker";
     }>,
   ) => void;
   renameNetwork: (oldName: string, newName: string) => void;

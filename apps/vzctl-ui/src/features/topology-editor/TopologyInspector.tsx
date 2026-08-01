@@ -190,10 +190,33 @@ export function TopologyInspector() {
             <option value="host">host</option>
           </select>
         </label>
+        <label className="topology-field">
+          <span>Backend</span>
+          <select
+            value={net.backend ?? "vmnet"}
+            onChange={(e) =>
+              updateNetwork(name, {
+                backend: e.target.value as "vmnet" | "docker",
+              })
+            }
+          >
+            <option value="vmnet">vmnet</option>
+            <option value="docker">docker (Bridge/bip)</option>
+          </select>
+        </label>
+        {net.backend === "docker" ? (
+          <p className="muted">
+            Logisches Docker-Netz: Owner-VM braucht{" "}
+            <code>roles: [docker, router]</code>, Attachment-IP{" "}
+            <code>.2</code>, plus ein vmnet-Parent. NAT-Egress und DHCP sind
+            aus.
+          </p>
+        ) : null}
         <label className="topology-check">
           <input
             type="checkbox"
             checked={net.dhcp}
+            disabled={net.backend === "docker"}
             onChange={(e) => updateNetwork(name, { dhcp: e.target.checked })}
           />
           DHCP
@@ -202,6 +225,7 @@ export function TopologyInspector() {
           <input
             type="checkbox"
             checked={net.natEgress !== false}
+            disabled={net.backend === "docker"}
             onChange={(e) =>
               updateNetwork(name, { natEgress: e.target.checked })
             }

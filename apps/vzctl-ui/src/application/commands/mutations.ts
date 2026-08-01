@@ -1,4 +1,10 @@
-import type { Environment, AllowRule, NetworkMode, Protocol } from "@/domain/hypernetwork/schema";
+import type {
+  Environment,
+  AllowRule,
+  NetworkBackend,
+  NetworkMode,
+  Protocol,
+} from "@/domain/hypernetwork/schema";
 import type { DiagramState } from "@/domain/diagram/types";
 import { networkCellId, vmCellId, attachmentEdgeId } from "@/domain/hypernetwork/ids";
 import { validateEnvironment, type ValidationIssue } from "@/application/validation/topology";
@@ -30,6 +36,22 @@ function cloneDiagram(diagram: DiagramState): DiagramState {
   return structuredClone(diagram);
 }
 
+function hostOffsetIp(
+  cidr: string,
+  host: number,
+): string | null {
+  const parsed = parseCidr(cidr);
+  if (!parsed) return null;
+  const ipNum = (parsed.network + host) >>> 0;
+  return [
+    (ipNum >>> 24) & 255,
+    (ipNum >>> 16) & 255,
+    (ipNum >>> 8) & 255,
+    ipNum & 255,
+  ].join(".");
+}
+
+/** Next free guest IP (.10+), or .2 for docker-backend networks. */
 function nextIp(env: Environment, networkName: string): string {
   const net = env.spec.networks[networkName];
   if (!net) throw new Error(`Netz ${networkName} fehlt`);
@@ -41,17 +63,19 @@ function nextIp(env: Environment, networkName: string): string {
       if (nic.name === networkName) used.add(nic.ip);
     }
   }
-  // Start at .10
+  if (net.backend === "docker") {
+    const bip = hostOffsetIp(net.cidr, 2);
+    if (!bip || !ipInCidr(bip, net.cidr)) {
+      throw new Error(`Kein Router-.2 in ${networkName}`);
+    }
+    if (used.has(bip)) {
+      throw new Error(`Docker-Netz ${networkName} hat bereits einen Owner (.2)`);
+    }
+    return bip;
+  }
   for (let host = 10; host < 254; host++) {
-    const base = parsed.network;
-    const ipNum = (base + host) >>> 0;
-    const ip = [
-      (ipNum >>> 24) & 255,
-      (ipNum >>> 16) & 255,
-      (ipNum >>> 8) & 255,
-      ipNum & 255,
-    ].join(".");
-    if (!used.has(ip) && ipInCidr(ip, net.cidr)) return ip;
+    const ip = hostOffsetIp(net.cidr, host);
+    if (ip && !used.has(ip) && ipInCidr(ip, net.cidr)) return ip;
   }
   throw new Error(`Kein freier IP-Slot in ${networkName}`);
 }
@@ -62,20 +86,31 @@ export function applyCreateNetwork(
   cidr: string,
   mode: NetworkMode,
   position: { x: number; y: number },
-  opts?: { natEgress?: boolean; withPolicy?: boolean },
+  opts?: {
+    natEgress?: boolean;
+    withPolicy?: boolean;
+    backend?: NetworkBackend;
+  },
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
   const diagram = cloneDiagram(snap.diagram);
   if (env.spec.networks[name]) throw new Error(`Netz ${name} existiert`);
-  const natEgress = opts?.natEgress ?? true;
-  env.spec.networks[name] = { cidr, mode, dhcp: false, natEgress };
+  const backend = opts?.backend ?? "vmnet";
+  const natEgress = backend === "docker" ? false : (opts?.natEgress ?? true);
+  env.spec.networks[name] = {
+    cidr,
+    mode,
+    dhcp: false,
+    natEgress,
+    backend,
+  };
   diagram.nodes[networkCellId(name)] = {
     x: position.x,
     y: position.y,
     width: 320,
     height: 200,
   };
-  if (opts?.withPolicy || !natEgress) {
+  if (opts?.withPolicy || !natEgress || backend === "docker") {
     const policyName = `${name}-default`;
     if (!env.spec.policies.some((p) => p.name === policyName || p.network === name)) {
       env.spec.policies.push({
@@ -529,6 +564,7 @@ export function applyUpdateNetwork(
     mode: NetworkMode;
     dhcp: boolean;
     natEgress: boolean;
+    backend: NetworkBackend;
   }>,
 ): EditorSnapshot {
   const env = cloneEnv(snap.env);
@@ -536,7 +572,17 @@ export function applyUpdateNetwork(
   const net = env.spec.networks[name];
   if (!net) throw new Error(`Netz ${name} fehlt`);
   Object.assign(net, patch);
-  if (patch.natEgress === false) {
+  if (patch.backend === "docker") {
+    net.natEgress = false;
+    net.dhcp = false;
+  }
+  if (net.backend === "docker" && patch.natEgress === true) {
+    net.natEgress = false;
+  }
+  if (net.backend === "docker" && patch.dhcp === true) {
+    net.dhcp = false;
+  }
+  if (patch.natEgress === false || net.backend === "docker" || net.natEgress === false) {
     const policyName = `${name}-default`;
     if (!env.spec.policies.some((p) => p.network === name)) {
       env.spec.policies.push({

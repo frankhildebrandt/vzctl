@@ -108,6 +108,40 @@ export function validateEnvironment(env: Environment): ValidationIssue[] {
     }
   }
 
+  for (const [netName, net] of Object.entries(nets)) {
+    if (net.backend !== "docker") continue;
+    if (net.dhcp) {
+      issues.push({
+        id: `docker-backend-dhcp-${netName}`,
+        severity: "error",
+        code: "DOCKER_BACKEND_DHCP",
+        message: `Netz ${netName}: backend docker darf kein DHCP haben`,
+        nodeId: `net:${netName}`,
+      });
+    }
+    if (net.natEgress !== false) {
+      issues.push({
+        id: `docker-backend-nat-${netName}`,
+        severity: "error",
+        code: "DOCKER_BACKEND_NAT",
+        message: `Netz ${netName}: backend docker braucht natEgress: false`,
+        nodeId: `net:${netName}`,
+      });
+    }
+    const owners = Object.entries(vms).filter(([, vm]) =>
+      vm.networks.some((nic) => nic.name === netName),
+    );
+    if (owners.length !== 1) {
+      issues.push({
+        id: `docker-backend-owner-${netName}`,
+        severity: "error",
+        code: "DOCKER_BACKEND_OWNER",
+        message: `Netz ${netName}: backend docker braucht genau eine Owner-VM (gefunden: ${owners.length})`,
+        nodeId: `net:${netName}`,
+      });
+    }
+  }
+
   const usedIps = new Map<string, string>();
   for (const [vmName, vm] of Object.entries(vms)) {
     if (vm.networks.length === 0) {
@@ -118,6 +152,34 @@ export function validateEnvironment(env: Environment): ValidationIssue[] {
         message: `VM ${vmName} hat kein Netzwerk`,
         nodeId: `vm:${vmName}`,
       });
+    }
+    const attachesDockerBackend = vm.networks.some(
+      (nic) => nets[nic.name]?.backend === "docker",
+    );
+    const hasVmnetAttachment = vm.networks.some(
+      (nic) => nets[nic.name] && nets[nic.name]!.backend !== "docker",
+    );
+    if (attachesDockerBackend && !hasVmnetAttachment) {
+      issues.push({
+        id: `docker-backend-parent-${vmName}`,
+        severity: "error",
+        code: "DOCKER_BACKEND_NEEDS_VMNET",
+        message: `VM ${vmName}: backend-docker-Netz braucht zusätzlich ein vmnet-Attachment`,
+        nodeId: `vm:${vmName}`,
+      });
+    }
+    if (attachesDockerBackend) {
+      const hasDocker = vm.roles.includes("docker");
+      const hasRouter = vm.roles.includes("router");
+      if (!hasDocker || !hasRouter) {
+        issues.push({
+          id: `docker-backend-roles-${vmName}`,
+          severity: "error",
+          code: "DOCKER_BACKEND_ROLES",
+          message: `VM ${vmName}: backend-docker-Netz braucht roles [docker, router]`,
+          nodeId: `vm:${vmName}`,
+        });
+      }
     }
     for (const nic of vm.networks) {
       const net = nets[nic.name];
@@ -149,6 +211,27 @@ export function validateEnvironment(env: Environment): ValidationIssue[] {
           message: `VM ${vmName}: IP ${nic.ip} ist reserviert (.0/.1)`,
           nodeId: `vm:${vmName}`,
         });
+      }
+      if (net.backend === "docker") {
+        const parsed = parseCidr(net.cidr);
+        const parts = nic.ip.split(".").map(Number);
+        if (parsed && parts.length === 4) {
+          const host =
+            (((parts[0]! << 24) >>> 0) +
+              (parts[1]! << 16) +
+              (parts[2]! << 8) +
+              parts[3]!) -
+            parsed.network;
+          if (host !== 2) {
+            issues.push({
+              id: `docker-bip-${vmName}-${nic.name}`,
+              severity: "error",
+              code: "DOCKER_BACKEND_BIP",
+              message: `VM ${vmName}: backend-docker-Netz ${nic.name} braucht Router-IP .2`,
+              nodeId: `vm:${vmName}`,
+            });
+          }
+        }
       }
       const prev = usedIps.get(`${nic.name}|${nic.ip}`);
       if (prev) {
@@ -254,13 +337,14 @@ export function validateEnvironment(env: Environment): ValidationIssue[] {
     policy.allow.forEach((rule, idx) => {
       if (rule.to === "internet") {
         const source = policy.network;
+        const sourceIsDocker = nets[source]?.backend === "docker";
         const hasRouter = Object.values(vms).some(
           (vm) =>
             vm.roles.includes("router") &&
             vm.networks.some((n) => n.name === source) &&
             vm.networks.some((n) => nets[n.name]?.natEgress !== false),
         );
-        if (!hasRouter) {
+        if (!hasRouter && !sourceIsDocker) {
           issues.push({
             id: `policy-internet-${policy.name}-${idx}`,
             severity: "error",

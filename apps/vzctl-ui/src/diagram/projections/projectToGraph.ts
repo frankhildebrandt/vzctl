@@ -260,7 +260,7 @@ export function projectToGraph(
       title: { text: name },
       subtitle: { text: net.cidr },
       meta: {
-        text: `${members.length} VMs · ${net.mode}${net.natEgress === false ? " · isolated" : ""}`,
+        text: `${members.length} VMs · ${net.mode}${net.backend === "docker" ? " · docker" : ""}${net.natEgress === false ? " · isolated" : ""}`,
       },
     };
     const existing = graph.getCellById(id) as Node | null;
@@ -286,7 +286,7 @@ export function projectToGraph(
       syncNetworkPorts(node, name);
     }
 
-    if (showGateways && net.natEgress !== false) {
+    if (showGateways && net.natEgress !== false && net.backend !== "docker") {
       const gid = `igw:${name}`;
       nodeIds.add(gid);
       const gpos = defaultPos(diagram, gid, {

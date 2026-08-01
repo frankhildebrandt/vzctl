@@ -6,7 +6,7 @@ import { layoutByNetwork } from "@/diagram/projections/layout";
 describe("projection helpers", () => {
   it("auto-layout places nets and vms", () => {
     const env = scaffoldEnvironment({ name: "perf" });
-    env.spec.networks.dmz = { cidr: "10.90.0.0/24", mode: "shared", dhcp: false, natEgress: true };
+    env.spec.networks.dmz = { cidr: "10.90.0.0/24", mode: "shared", dhcp: false, natEgress: true, backend: "vmnet" };
     for (let i = 0; i < 20; i++) {
       env.spec.vms[`vm-${i}`] = {
         from: "ubuntu-base",

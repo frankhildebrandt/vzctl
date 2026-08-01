@@ -53,7 +53,14 @@ describe("yaml round-trip", () => {
     const env = parseEnvironmentYaml(raw);
     expect(env.metadata.name).toBe("edge-dmz");
     expect(env.spec.networks.dmz?.cidr).toBe("10.80.0.0/24");
+    expect(env.spec.networks.containers?.backend).toBe("docker");
+    expect(env.spec.vms.docker?.roles).toEqual(
+      expect.arrayContaining(["docker", "router"]),
+    );
     expect(env.spec.vms.router?.roles).toContain("router");
+    const yaml = serializeEnvironmentYaml(env);
+    const again = parseEnvironmentYaml(yaml);
+    expect(again.spec.networks.containers?.backend).toBe("docker");
   });
 
   it("round-trips scaffold", () => {

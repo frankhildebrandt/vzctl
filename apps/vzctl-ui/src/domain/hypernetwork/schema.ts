@@ -6,12 +6,16 @@ const nameId = z
 
 export const NetworkModeSchema = z.enum(["shared", "host"]);
 
+export const NetworkBackendSchema = z.enum(["vmnet", "docker"]);
+
 export const NetworkConfigSchema = z.object({
   cidr: z.string().min(1),
   mode: NetworkModeSchema,
   dhcp: z.boolean().default(false),
   /** Host NAT / Internet; false = isolated (host-only). Default true. */
   natEgress: z.boolean().default(true),
+  /** `vmnet` (default) or `docker` (logical docker0 bip = .2). */
+  backend: NetworkBackendSchema.default("vmnet"),
 });
 
 export const RouteConfigSchema = z.object({
@@ -114,3 +118,4 @@ export type VmConfig = z.infer<typeof VmConfigSchema>;
 export type VmNetwork = z.infer<typeof VmNetworkSchema>;
 export type Protocol = z.infer<typeof ProtocolSchema>;
 export type NetworkMode = z.infer<typeof NetworkModeSchema>;
+export type NetworkBackend = z.infer<typeof NetworkBackendSchema>;

@@ -15,6 +15,7 @@ describe("performance smoke", () => {
       mode: "shared",
       dhcp: false,
       natEgress: true,
+      backend: "vmnet",
     };
     for (let i = 0; i < 200; i++) {
       snap = applyCreateVm(snap, `vm-${i}`, {

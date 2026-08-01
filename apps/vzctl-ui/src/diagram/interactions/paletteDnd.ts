@@ -7,7 +7,8 @@ import {
 
 function rolesForKind(kind: PaletteKind): Array<"router" | "docker"> {
   if (kind === "router") return ["router"];
-  if (kind === "docker") return ["docker"];
+  // Docker-Host kann Owner eines backend:docker-Netzes werden → dual role.
+  if (kind === "docker") return ["docker", "router"];
   return [];
 }
 

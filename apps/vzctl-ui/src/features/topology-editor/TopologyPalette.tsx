@@ -32,7 +32,7 @@ const PALETTE: Array<{
   {
     id: "docker",
     label: "Docker",
-    description: "roles: [docker]",
+    description: "roles: [docker, router]",
     kind: "docker",
   },
 ];

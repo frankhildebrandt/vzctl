@@ -39,7 +39,7 @@ export function scaffoldEnvironment(options: ScaffoldOptions): Environment {
         "ubuntu-base": { from: "ubuntu-latest", role: "base" },
       },
       networks: {
-        lan: { cidr, mode: "shared", dhcp: false, natEgress: true },
+        lan: { cidr, mode: "shared", dhcp: false, natEgress: true, backend: "vmnet" },
       },
       routes: [],
       policies: [],

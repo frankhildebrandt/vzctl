@@ -51,7 +51,10 @@ export function layoutByNetwork(env: Environment): DiagramState["nodes"] {
       width: size.width,
       height: size.height,
     };
-    if (env.spec.networks[netName]?.natEgress !== false) {
+    if (
+      env.spec.networks[netName]?.natEgress !== false &&
+      env.spec.networks[netName]?.backend !== "docker"
+    ) {
       nodes[`igw:${netName}`] = {
         x: cursorX + size.width / 2 - 50,
         y: -12,

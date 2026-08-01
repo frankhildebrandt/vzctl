@@ -19,6 +19,7 @@ describe("firewall / policy validation", () => {
       mode: "shared",
       dhcp: false,
       natEgress: true,
+      backend: "vmnet",
     };
     let snap = { env, diagram: emptyDiagramState() };
     snap = applyEnsurePolicyForNetwork(snap, "lan");
@@ -36,6 +37,7 @@ describe("firewall / policy validation", () => {
       mode: "shared",
       dhcp: false,
       natEgress: true,
+      backend: "vmnet",
     };
     let snap = { env, diagram: emptyDiagramState() };
     snap = applyEnsurePolicyForNetwork(snap, "lan");
@@ -53,6 +55,7 @@ describe("firewall / policy validation", () => {
       mode: "shared",
       dhcp: false,
       natEgress: false,
+      backend: "vmnet",
     };
     env.spec.vms.edge = {
       from: "ubuntu-base",
@@ -86,6 +89,7 @@ describe("firewall / policy validation", () => {
       mode: "shared",
       dhcp: false,
       natEgress: true,
+      backend: "vmnet",
     };
     let snap: EditorSnapshot = {
       env,
@@ -121,10 +125,46 @@ describe("firewall / policy validation", () => {
       { natEgress: false },
     );
     expect(snap.env.spec.networks.priv.natEgress).toBe(false);
+    expect(snap.env.spec.networks.priv.backend).toBe("vmnet");
     expect(
       snap.env.spec.policies.some(
         (p) => p.network === "priv" && p.forward === "deny-all",
       ),
     ).toBe(true);
+  });
+
+  it("backend docker forces isolated and validates owner", () => {
+    let snap = {
+      env: scaffoldEnvironment({ name: "dock" }),
+      diagram: emptyDiagramState(),
+    };
+    snap = applyCreateNetwork(
+      snap,
+      "containers",
+      "10.95.0.0/24",
+      "shared",
+      { x: 10, y: 10 },
+      { backend: "docker" },
+    );
+    expect(snap.env.spec.networks.containers.backend).toBe("docker");
+    expect(snap.env.spec.networks.containers.natEgress).toBe(false);
+    expect(snap.env.spec.networks.containers.dhcp).toBe(false);
+
+    snap.env.spec.vms.docker = {
+      from: "ubuntu-base",
+      clone: "linked",
+      dataDisk: "40G",
+      networks: [
+        { name: "lan", ip: "10.80.0.10" },
+        { name: "containers", ip: "10.95.0.2" },
+      ],
+      dependsOn: [],
+      roles: ["docker", "router"],
+      requires: [],
+      ports: [],
+      mounts: [],
+    };
+    const issues = validateEnvironment(snap.env);
+    expect(issues.some((i) => i.code.startsWith("DOCKER_BACKEND"))).toBe(false);
   });
 });
