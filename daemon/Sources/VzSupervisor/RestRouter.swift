@@ -93,7 +93,7 @@ final class RestRouter: @unchecked Sendable {
             return try routeCerts(method: method, rest: rest)
         }
         if rest.first == "dns" {
-            return try routeDNS(method: method, rest: rest)
+            return try routeDNS(request: request, method: method, rest: rest)
         }
         if rest.first == "oidc" {
             return try routeOIDC(request: request, method: method, rest: rest)
@@ -540,14 +540,66 @@ final class RestRouter: @unchecked Sendable {
         throw RestRouteError(404, .notFound, "certs route")
     }
 
-    private func routeDNS(method: String, rest: [String]) throws -> RestHTTPResponse {
+    private func routeDNS(
+        request: RestHTTPRequest,
+        method: String,
+        rest: [String]
+    ) throws -> RestHTTPResponse {
         if rest == ["dns", "status"], method == "GET" {
             return try rpcOK("dns.status")
         }
         if rest == ["dns", "bind-helper"], method == "POST" {
-            return try workerJSON(["dns", "install-bind-helper", "--format", "json"])
+            var args = ["dns", "install-bind-helper", "--format", "json"]
+            // osascript elevation runs as root without SUDO_UID — pin calling user.
+            args += ["--allow-uid", String(getuid())]
+            return try workerJSONPrivileged(args)
+        }
+        if rest == ["dns", "resolver"] {
+            switch method {
+            case "POST":
+                return try workerJSONPrivileged(dnsResolverArgs(install: true, request: request))
+            case "DELETE":
+                return try workerJSONPrivileged(dnsResolverArgs(install: false, request: request))
+            default:
+                break
+            }
         }
         throw RestRouteError(404, .notFound, "dns route")
+    }
+
+    /// `POST/DELETE /v1/dns/resolver` — body or query: `config` and/or `project`.
+    private func dnsResolverArgs(install: Bool, request: RestHTTPRequest) throws -> [String] {
+        let obj = (try? bodyObject(request)) ?? [:]
+        let config: String? = {
+            if case let .string(value)? = obj["config"], !value.isEmpty { return value }
+            if let value = request.query["config"], !value.isEmpty { return value }
+            return nil
+        }()
+        let project: String? = {
+            if case let .string(value)? = obj["project"], !value.isEmpty { return value }
+            if let value = request.query["project"], !value.isEmpty { return value }
+            return nil
+        }()
+        guard config != nil || project != nil else {
+            throw RestRouteError(
+                400,
+                .badRequest,
+                "dns resolver requires config and/or project"
+            )
+        }
+        var args = [
+            "dns",
+            install ? "install-resolver" : "uninstall-resolver",
+            "--format",
+            "json",
+        ]
+        if let config {
+            args += ["--config", config]
+        }
+        if let project {
+            args += ["--project", project]
+        }
+        return args
     }
 
     private func routeOIDC(
@@ -691,6 +743,124 @@ final class RestRouter: @unchecked Sendable {
     private func workerJSON(_ args: [String]) throws -> RestHTTPResponse {
         let value = try workerResult(args)
         return try RestHTTPResponse.jsonValue(200, value)
+    }
+
+    /// DNS resolver / bind-helper writes need root; retry via macOS Admin dialog.
+    private func workerJSONPrivileged(_ args: [String]) throws -> RestHTTPResponse {
+        let value = try workerResult(args)
+        if !dnsEnvelopeNeedsElevation(value) {
+            return try RestHTTPResponse.jsonValue(200, value)
+        }
+        let elevated = try runElevatedVzctl(args)
+        return try RestHTTPResponse.jsonValue(200, elevated)
+    }
+
+    private func dnsEnvelopeNeedsElevation(_ value: JSONValue) -> Bool {
+        guard case let .object(obj) = value else { return false }
+        if case let .string(status)? = obj["status"], status == "ok" {
+            return false
+        }
+        if case let .number(code)? = obj["exit_code"], code == 19 {
+            return true
+        }
+        let message: String = {
+            if case let .object(summary)? = obj["summary"],
+               case let .string(text)? = summary["message"]
+            {
+                return text
+            }
+            if case let .string(text)? = obj["message"] { return text }
+            return String(describing: value)
+        }()
+        return message.contains("Permission denied")
+            || message.contains("run this command with sudo")
+            || message.contains("os error 13")
+            || message.contains("launchctl bootstrap failed")
+            || message.contains("/Library/LaunchDaemons")
+    }
+
+    private func runElevatedVzctl(_ args: [String]) throws -> JSONValue {
+        let vzctl = try resolveVzctlPath()
+        let shell = ([vzctl] + args).map(shellQuote).joined(separator: " ")
+        let escaped = shell
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escaped)\" with administrator privileges"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        let out = Pipe()
+        let err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        try process.run()
+        process.waitUntilExit()
+        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw RestRouteError(
+                500,
+                .internalError,
+                detail.isEmpty
+                    ? "Admin elevation failed or cancelled for: \(args.joined(separator: " "))"
+                    : detail
+            )
+        }
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let value = try? JSONDecoder().decode(JSONValue.self, from: data)
+        {
+            return value
+        }
+        // osascript may wrap output; recover JSON object if present.
+        if let start = trimmed.firstIndex(of: "{"),
+           let end = trimmed.lastIndex(of: "}"),
+           start < end
+        {
+            let slice = String(trimmed[start ... end])
+            if let data = slice.data(using: .utf8),
+               let value = try? JSONDecoder().decode(JSONValue.self, from: data)
+            {
+                return value
+            }
+        }
+        return .object([
+            "apiVersion": .string("vzctl.dev/v1"),
+            "status": .string("ok"),
+            "exit_code": .number(0),
+            "summary": .object(["message": .string(trimmed.isEmpty ? "elevated ok" : trimmed)]),
+        ])
+    }
+
+    private func resolveVzctlPath() throws -> String {
+        if let env = ProcessInfo.processInfo.environment["VZCTL_BIN"],
+           FileManager.default.isExecutableFile(atPath: env)
+        {
+            return env
+        }
+        let sibling = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent()
+            .appendingPathComponent("vzctl")
+            .path
+        if FileManager.default.isExecutableFile(atPath: sibling) {
+            return sibling
+        }
+        for dir in ["/Users/\(NSUserName())/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
+            let candidate = "\(dir)/vzctl"
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        throw RestRouteError(500, .internalError, "vzctl binary not found (set VZCTL_BIN)")
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        if value.isEmpty { return "''" }
+        if value.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "/._-:@+=".contains(Character($0)) }) {
+            return value
+        }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func workerResult(_ args: [String]) throws -> JSONValue {

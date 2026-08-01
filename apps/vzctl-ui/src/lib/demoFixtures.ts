@@ -614,6 +614,25 @@ export async function mockApiRequest<T = unknown>(
   if (path === "/v1/dns/status") {
     return { ok: true, listeners: ["127.0.0.1:15353"] } as T;
   }
+  if (path.startsWith("/v1/dns/resolver")) {
+    return {
+      apiVersion: "vzctl.dev/v1",
+      command:
+        method === "DELETE" ? "dns.uninstall-resolver" : "dns.install-resolver",
+      status: "ok",
+      exit_code: 0,
+      summary: { message: "resolver unchanged (demo)", change: "unchanged" },
+    } as T;
+  }
+  if (path === "/v1/dns/bind-helper" && method === "POST") {
+    return {
+      apiVersion: "vzctl.dev/v1",
+      command: "dns.install-bind-helper",
+      status: "ok",
+      exit_code: 0,
+      summary: { message: "installed (demo)" },
+    } as T;
+  }
   if (path === "/v1/oidc/uplink") {
     return "" as T;
   }

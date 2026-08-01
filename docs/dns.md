@@ -121,6 +121,16 @@ sudo vzctl dns install-resolver
 sudo vzctl dns uninstall-resolver
 ```
 
+Über die Supervisor-REST-API. Bei Permission Denied zeigt macOS einen
+Admin-Dialog (osascript); dasselbe gilt für Apply/`ensure_dns`:
+
+```http
+POST /v1/dns/resolver
+{"config":"/path/to/stack"}
+
+DELETE /v1/dns/resolver?config=/path/to/stack
+```
+
 Alternativ sind `--config <path>` und `--project <dns-label>` möglich.
 `--project` muss mit `spec.project` übereinstimmen, falls eine Config gelesen
 wird. `VZCTL_DNS_PORT` muss bei `vz-edge` und beim Installieren identisch

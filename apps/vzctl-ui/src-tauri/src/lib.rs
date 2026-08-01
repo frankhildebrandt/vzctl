@@ -49,12 +49,13 @@ struct ApiRequestArgs {
 #[tauri::command]
 async fn api_request(args: ApiRequestArgs) -> Result<api_proxy::ApiResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        api_proxy::request(
+        let response = api_proxy::request(
             &args.method,
             &args.path,
             args.headers.as_deref().unwrap_or(&[]),
             args.body.as_deref(),
-        )
+        )?;
+        maybe_elevate_privileged_dns(&args.method, &args.path, args.body.as_deref(), response)
     })
     .await
     .map_err(|e| format!("api_request task failed: {e}"))?
@@ -810,13 +811,215 @@ fn needs_resolver_elevation(output: &Output) -> bool {
     if output.status.code() == Some(19) {
         return true;
     }
+    if output.status.success() {
+        return false;
+    }
     let text = combined_text(output);
+    text_needs_dns_elevation(&text)
+}
+
+fn text_needs_dns_elevation(text: &str) -> bool {
     text.contains("Permission denied")
         || text.contains("run this command with sudo")
-        || text.contains("/etc/resolver")
+        || text.contains("os error 13")
         || text.contains("/Library/LaunchDaemons")
         || text.contains("launchctl bootstrap failed")
         || text.contains("/usr/local/libexec/vzctl")
+        || text.contains("\"exit_code\":19")
+        || text.contains("\"exit_code\": 19")
+}
+
+/// Privileged DNS REST routes that the LaunchAgent cannot complete without Admin.
+fn is_privileged_dns_route(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    match (method.to_ascii_uppercase().as_str(), path) {
+        ("POST" | "DELETE", "/v1/dns/resolver") => true,
+        ("POST", "/v1/dns/bind-helper") => true,
+        _ => false,
+    }
+}
+
+fn api_response_needs_elevation(response: &api_proxy::ApiResponse) -> bool {
+    if let Ok(value) = serde_json::from_str::<Value>(response.body.trim()) {
+        let exit = value.get("exit_code").and_then(|c| c.as_u64());
+        let status = value.get("status").and_then(|s| s.as_str());
+        if status == Some("ok") || exit == Some(0) {
+            return false;
+        }
+        if exit == Some(19) {
+            return true;
+        }
+        if let Some(msg) = value
+            .pointer("/summary/message")
+            .and_then(|m| m.as_str())
+            .or_else(|| value.get("message").and_then(|m| m.as_str()))
+        {
+            if text_needs_dns_elevation(msg) {
+                return true;
+            }
+        }
+        if let Some(err) = value.pointer("/error/message").and_then(|m| m.as_str()) {
+            if text_needs_dns_elevation(err) {
+                return true;
+            }
+        }
+        if status == Some("fail") && text_needs_dns_elevation(&response.body) {
+            return true;
+        }
+    }
+    if !(response.status == 403 || response.status >= 400) {
+        // HTTP 200 fail-envelope already handled above; bare 200 ok → no elevate.
+        return text_needs_dns_elevation(&response.body)
+            && response.body.contains("\"status\":\"fail\"");
+    }
+    text_needs_dns_elevation(&response.body)
+}
+
+fn maybe_elevate_privileged_dns(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    response: api_proxy::ApiResponse,
+) -> Result<api_proxy::ApiResponse, String> {
+    if !is_privileged_dns_route(method, path) || !api_response_needs_elevation(&response) {
+        return Ok(response);
+    }
+    let vzctl = which_vzctl()?;
+    let args = elevated_dns_args_from_rest(method, path, body)?;
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_elevated(&vzctl, &arg_refs) {
+        Ok(elevated) => {
+            let body = if elevated.trim().is_empty() {
+                response.body
+            } else {
+                elevated
+            };
+            Ok(api_proxy::ApiResponse {
+                status: 200,
+                body,
+                content_type: Some("application/json".into()),
+            })
+        }
+        Err(error) => Err(format!(
+            "Admin-Rechte nötig für `{}`.\n\
+             Passwort-Dialog abgebrochen oder fehlgeschlagen: {error}\n\n\
+             Alternativ:\n  sudo {} {}",
+            args.join(" "),
+            vzctl.display(),
+            args.join(" ")
+        )),
+    }
+}
+
+fn elevated_dns_args_from_rest(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let path_only = path.split('?').next().unwrap_or(path);
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let method = method.to_ascii_uppercase();
+
+    if path_only == "/v1/dns/bind-helper" && method == "POST" {
+        return Ok(bind_helper_elevated_args(&[
+            "dns".into(),
+            "install-bind-helper".into(),
+            "--format".into(),
+            "json".into(),
+        ]));
+    }
+
+    if path_only == "/v1/dns/resolver" && matches!(method.as_str(), "POST" | "DELETE") {
+        let install = method == "POST";
+        let mut args = vec![
+            "dns".into(),
+            if install {
+                "install-resolver".into()
+            } else {
+                "uninstall-resolver".into()
+            },
+            "--format".into(),
+            "json".into(),
+        ];
+        let (config, project) = resolver_scope_from_rest(body, query);
+        if let Some(config) = config {
+            args.push("--config".into());
+            args.push(config);
+        }
+        if let Some(project) = project {
+            args.push("--project".into());
+            args.push(project);
+        }
+        if !args.windows(2).any(|w| w[0] == "--config" || w[0] == "--project") {
+            return Err("dns resolver elevation needs config or project".into());
+        }
+        return Ok(args);
+    }
+
+    Err(format!("unsupported privileged DNS route {method} {path}"))
+}
+
+fn resolver_scope_from_rest(body: Option<&str>, query: &str) -> (Option<String>, Option<String>) {
+    let mut config = None;
+    let mut project = None;
+    if let Some(body) = body {
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            config = value
+                .get("config")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            project = value
+                .get("project")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
+    }
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or("");
+        let raw = parts.next().unwrap_or("");
+        let value = urlencoding_decode(raw);
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "config" if config.is_none() => config = Some(value),
+            "project" if project.is_none() => project = Some(value),
+            _ => {}
+        }
+    }
+    (config, project)
+}
+
+fn urlencoding_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = &input[i + 1..i + 3];
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn lease_wait(output: &Output) -> Option<Duration> {

@@ -367,7 +367,7 @@ fn execute_step(
         "destroy_managed" if options.purge => purge_managed(environment, socket_path),
         "purge_docker_context" if options.purge => purge_docker_context(environment),
         "purge_ports" if options.purge => purge_ports(environment, socket_path),
-        "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => run_self(&[
+        "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => run_self_privileged(&[
             "dns",
             "uninstall-resolver",
             "--project",
@@ -458,7 +458,7 @@ fn ensure_dns(environment: &Environment, config_path: &Path) -> Result<(), Failu
         let path = config::config_path(config_path)
             .to_string_lossy()
             .into_owned();
-        run_self(&[
+        run_self_privileged(&[
             "dns",
             "install-resolver",
             "--config",
@@ -468,7 +468,7 @@ fn ensure_dns(environment: &Environment, config_path: &Path) -> Result<(), Failu
         ])
         .map(|_| ())
     } else {
-        run_self(&[
+        run_self_privileged(&[
             "dns",
             "uninstall-resolver",
             "--project",
@@ -1878,6 +1878,106 @@ fn run_self(args: &[&str]) -> Result<Value, Failure> {
             format!("vzctl {} returned invalid JSON: {error}", args.join(" ")),
         )
     })
+}
+
+
+/// Like `run_self`, but retries via macOS Admin dialog when `/etc/resolver` needs root.
+fn run_self_privileged(args: &[&str]) -> Result<Value, Failure> {
+    match run_self(args) {
+        Ok(value) => Ok(value),
+        Err(failure) if failure_needs_dns_elevation(&failure) => run_self_elevated(args),
+        Err(failure) => Err(failure),
+    }
+}
+
+fn failure_needs_dns_elevation(failure: &Failure) -> bool {
+    failure.code == crate::dns::EXIT_RESOLVER
+        || failure.message.contains("Permission denied")
+        || failure.message.contains("run this command with sudo")
+        || failure.message.contains("os error 13")
+}
+
+fn run_self_elevated(args: &[&str]) -> Result<Value, Failure> {
+    let executable = std::env::current_exe()
+        .map_err(|error| Failure::new(EXIT_STEP, format!("resolve vzctl executable: {error}")))?;
+    let shell = std::iter::once(executable.to_string_lossy().as_ref())
+        .chain(args.iter().copied())
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        escape_applescript(&shell)
+    );
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|error| Failure::new(EXIT_STEP, format!("osascript elevate: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(Failure::new(
+            crate::dns::EXIT_RESOLVER,
+            if stderr.is_empty() {
+                format!(
+                    "Admin elevation failed or cancelled for: vzctl {}",
+                    args.join(" ")
+                )
+            } else {
+                stderr
+            },
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        if value.get("status").and_then(|s| s.as_str()) == Some("fail")
+            || value
+                .get("exit_code")
+                .and_then(|c| c.as_u64())
+                .is_some_and(|c| c != 0)
+        {
+            let message = value
+                .pointer("/summary/message")
+                .and_then(Value::as_str)
+                .unwrap_or("elevated dns command failed")
+                .to_string();
+            return Err(Failure::new(crate::dns::EXIT_RESOLVER, message));
+        }
+        return Ok(value);
+    }
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            if end > start {
+                if let Ok(value) = serde_json::from_str::<Value>(&trimmed[start..=end]) {
+                    return Ok(value);
+                }
+            }
+        }
+    }
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {"message": if trimmed.is_empty() { "elevated ok" } else { trimmed }},
+    }))
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".into();
+    }
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-:@+=".contains(c))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn escape_applescript(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn parse(mode: &str, mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {

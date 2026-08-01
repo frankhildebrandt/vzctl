@@ -140,6 +140,8 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 | `GET` | `/v1/certs/fingerprint` | CA fingerprint |
 | `GET` | `/v1/dns/status` | DNS health |
 | `POST` | `/v1/dns/bind-helper` | Install bind helper |
+| `POST` | `/v1/dns/resolver` | Install macOS `/etc/resolver` (`config` and/or `project`) |
+| `DELETE` | `/v1/dns/resolver` | Uninstall resolver (query/body: `config` and/or `project`) |
 | `GET`/`PUT` | `/v1/oidc/uplink` | Host OIDC uplink |
 | `GET` | `/v1/oidc/status` | OIDC status |
 | `PUT` | `/v1/projects/{project}/oidc/secret` | Project OIDC secret |

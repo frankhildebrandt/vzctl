@@ -149,6 +149,22 @@ export async function runVzctl(
     return await runVzctlOnce(path, command, options);
   } catch (err) {
     const message = String(err);
+
+    if (
+      isResolverPermissionError(message) &&
+      (command === "apply" || command === "up" || command === "down") &&
+      !options.resume &&
+      !options.abort
+    ) {
+      await ensureHostResolver(path, command, options.purge === true);
+      try {
+        await runVzctlOnce(path, "apply", { abort: true });
+      } catch {
+        // no incomplete journal — fine
+      }
+      return await runVzctlOnce(path, command, options);
+    }
+
     const canAutoAbort =
       (command === "apply" || command === "up") &&
       !options.resume &&
@@ -167,6 +183,38 @@ function isIncompleteJournalError(raw: string): boolean {
     raw.includes("incomplete journal") ||
     (raw.includes("--resume") && raw.includes("--abort"))
   );
+}
+
+function isResolverPermissionError(raw: string): boolean {
+  return (
+    raw.includes("Permission denied") ||
+    raw.includes("run this command with sudo") ||
+    raw.includes("os error 13") ||
+    (raw.includes("/etc/resolver") &&
+      (raw.includes("write ") || raw.includes("create directory") || raw.includes("remove ")))
+  );
+}
+
+/** Install/uninstall macOS `/etc/resolver` via REST (Tauri elevates when needed). */
+async function ensureHostResolver(
+  path: string,
+  command: VzctlCommand,
+  purge: boolean,
+): Promise<void> {
+  if (command === "down" && purge) {
+    const envelope = parseEnvelope(
+      await api.delete(`/v1/dns/resolver?config=${encodeURIComponent(path)}`),
+    );
+    assertEnvelopeOk(envelope, "dns uninstall-resolver failed");
+    return;
+  }
+  if (command === "down") {
+    return;
+  }
+  const envelope = parseEnvelope(
+    await api.post("/v1/dns/resolver", { config: path }),
+  );
+  assertEnvelopeOk(envelope, "dns install-resolver failed");
 }
 
 async function runVzctlOnce(
@@ -225,6 +273,22 @@ export async function runVzctlArgv(args: string[]): Promise<string> {
   }
   if (cmd === "dns" && sub === "install-bind-helper") {
     return JSON.stringify(await api.post("/v1/dns/bind-helper"), null, 2);
+  }
+  if (cmd === "dns" && (sub === "install-resolver" || sub === "uninstall-resolver")) {
+    const configIdx = rest.indexOf("--config");
+    const projectIdx = rest.indexOf("--project");
+    const body: Record<string, string> = {};
+    if (configIdx >= 0 && rest[configIdx + 1]) body.config = rest[configIdx + 1];
+    if (projectIdx >= 0 && rest[projectIdx + 1]) body.project = rest[projectIdx + 1];
+    if (sub === "uninstall-resolver") {
+      const qs = new URLSearchParams(body).toString();
+      return JSON.stringify(
+        await api.delete(qs ? `/v1/dns/resolver?${qs}` : "/v1/dns/resolver"),
+        null,
+        2,
+      );
+    }
+    return JSON.stringify(await api.post("/v1/dns/resolver", body), null, 2);
   }
   if (cmd === "certs" && sub === "fingerprint") {
     return JSON.stringify(await api.get("/v1/certs/fingerprint"), null, 2);
