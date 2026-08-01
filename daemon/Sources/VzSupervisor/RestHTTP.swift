@@ -174,10 +174,12 @@ enum RestHTTP {
     }
 
     private static func splitTarget(_ target: String) -> (String, [String: String]) {
+        // Keep the path percent-encoded so `%2F` in resource IDs (e.g. `project%2Fvm`)
+        // survives until `pathSegments` splits and decodes each segment.
         guard let q = target.firstIndex(of: "?") else {
-            return (percentDecode(target), [:])
+            return (target, [:])
         }
-        let path = percentDecode(String(target[..<q]))
+        let path = String(target[..<q])
         let queryString = String(target[target.index(after: q)...])
         var query: [String: String] = [:]
         for pair in queryString.split(separator: "&") {

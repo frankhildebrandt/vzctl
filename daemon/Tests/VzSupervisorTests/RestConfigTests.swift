@@ -47,4 +47,24 @@ struct RestConfigTests {
         let segments = RestHTTP.pathSegments("/v1/vms/proj%2Fweb")
         #expect(segments == ["v1", "vms", "proj/web"])
     }
+
+    @Test func parseRequestKeepsEncodedSlashInPath() {
+        let raw = Data("GET /v1/vms/edge-dmz%2Fdocker/mounts HTTP/1.1\r\nHost: x\r\n\r\n".utf8)
+        let request = RestHTTP.parseRequest(from: raw)
+        #expect(request?.path == "/v1/vms/edge-dmz%2Fdocker/mounts")
+        let segments = RestHTTP.pathSegments(request!.path)
+        #expect(segments == ["v1", "vms", "edge-dmz/docker", "mounts"])
+    }
+
+    @Test func parseRequestDecodesQueryOnly() {
+        let raw = Data(
+            "GET /v1/vms/proj%2Fweb?force=true&path=%2Ftmp%2Fstack HTTP/1.1\r\nHost: x\r\n\r\n"
+                .utf8
+        )
+        let request = RestHTTP.parseRequest(from: raw)
+        #expect(request?.path == "/v1/vms/proj%2Fweb")
+        #expect(request?.query["force"] == "true")
+        #expect(request?.query["path"] == "/tmp/stack")
+        #expect(RestHTTP.pathSegments(request!.path) == ["v1", "vms", "proj/web"])
+    }
 }
