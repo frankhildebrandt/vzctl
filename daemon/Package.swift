@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "vz-helper", targets: ["VzHelper"]),
         .executable(name: "vz-dns-bind", targets: ["VzDnsBind"]),
         .executable(name: "vz-net", targets: ["VzNet"]),
+        .executable(name: "vz-edge", targets: ["VzEdge"]),
         .library(name: "VzDaemonKit", targets: ["VzDaemonKit"]),
     ],
     targets: [
@@ -46,6 +47,10 @@ let package = Package(
                 .linkedFramework("vmnet"),
             ]
         ),
+        .executableTarget(
+            name: "VzEdge",
+            dependencies: ["VzDaemonKit"]
+        ),
         .testTarget(
             name: "VzDaemonKitTests",
             dependencies: ["VzDaemonKit"]
@@ -61,6 +66,10 @@ let package = Package(
         .testTarget(
             name: "VzNetTests",
             dependencies: ["VzNet", "VzDaemonKit"]
+        ),
+        .testTarget(
+            name: "VzEdgeTests",
+            dependencies: ["VzEdge", "VzDaemonKit"]
         ),
     ]
 )
