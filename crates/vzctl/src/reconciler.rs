@@ -517,6 +517,12 @@ fn ensure_vms(
             if !force {
                 return Err(Failure::new(EXIT_INVALID, "VM recreate requires --force"));
             }
+            let bundle = crate::state_dir().join("vms").join(&runtime_id);
+            // After a failed later step, stack resources stay stale and plan keeps
+            // asking for a breaking update. Don't wipe a bundle that already matches.
+            if bundle_matches_vm(&bundle, vm)? {
+                continue;
+            }
             stop_one(&runtime_id, socket_path)?;
             wait_stopped(&runtime_id, socket_path)?;
             remove_managed_vm(&runtime_id)?;
@@ -1217,16 +1223,83 @@ fn remove_managed_vm(vm_id: &str) -> Result<(), Failure> {
         .map_err(|error| Failure::new(EXIT_STEP, format!("purge {}: {error}", bundle.display())))
 }
 
+/// True when an existing bundle already reflects the desired VM roles and
+/// vmnet NIC addresses (docker-backend nets are logical and not in identity).
+fn bundle_matches_vm(bundle: &Path, vm: &VmConfig) -> Result<bool, Failure> {
+    let manifest = bundle.join("vm.json");
+    if !manifest.is_file() {
+        return Ok(false);
+    }
+    let value: Value = serde_json::from_slice(&fs::read(&manifest).map_err(|error| {
+        Failure::new(EXIT_STEP, format!("read {}: {error}", manifest.display()))
+    })?)
+    .map_err(|error| Failure::new(EXIT_STEP, format!("parse {}: {error}", manifest.display())))?;
+    let mut actual_roles = value["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    actual_roles.sort();
+    let mut desired_roles = vm.roles.clone();
+    desired_roles.sort();
+    if actual_roles != desired_roles {
+        return Ok(false);
+    }
+    let actual_ips = value["identity"]["nics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|nic| nic["address"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let desired_ips = vm
+        .networks
+        .iter()
+        .map(|attachment| attachment.ip.clone())
+        .collect::<BTreeSet<_>>();
+    // Identity only lists vmnet NICs; require them to be a subset of desired IPs.
+    if !actual_ips.is_subset(&desired_ips) {
+        return Ok(false);
+    }
+    if !vm.networks.is_empty() && actual_ips.is_empty() {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn apply_routes(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
     if environment.spec.routes.is_empty() && environment.spec.policies.is_empty() {
         return Ok(());
     }
-    rpc(
-        socket_path,
-        "route.apply",
-        json!({"router": null, "policies": environment.spec.policies}),
-    )
-    .map(|_| ())
+    // Fresh clones may still be on the sealed agent unit (no_new_privs) until
+    // cloud-final runs daemon-reload + restart from append_agent_privilege_files.
+    // Docker-role VMs install packages in cloud-config first, so cloud-final can
+    // lag several minutes behind helper/agent readiness.
+    let has_docker = environment
+        .spec
+        .vms
+        .values()
+        .any(|vm| vm.roles.iter().any(|role| role == "docker"));
+    let budget = if has_docker { 600 } else { 180 };
+    let deadline = Instant::now() + Duration::from_secs(budget);
+    loop {
+        match rpc(
+            socket_path,
+            "route.apply",
+            json!({"router": null, "policies": environment.spec.policies}),
+        ) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                let retryable = error.message.contains("no new privileges")
+                    || error.message.contains("guest agent unavailable")
+                    || error.message.contains("Connection reset");
+                if !retryable || Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 fn load_config(path: &Path) -> Result<Environment, Failure> {
