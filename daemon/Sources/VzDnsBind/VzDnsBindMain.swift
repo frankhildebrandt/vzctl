@@ -189,7 +189,33 @@ enum VzDnsBindMain {
                 framed.append(0x0A)
                 try UnixFDPassing.send(payload: framed, fileDescriptor: nil, on: client)
 
+                // Poll listen FD + UDS so peer hangup releases the port promptly
+                // (plain accept() alone leaves EADDRINUSE orphans on rebind).
                 while true {
+                    var pollFds = [
+                        pollfd(fd: bound, events: Int16(POLLIN), revents: 0),
+                        pollfd(fd: client, events: Int16(POLLIN | POLLHUP), revents: 0),
+                    ]
+                    let primed = poll(&pollFds, nfds_t(pollFds.count), -1)
+                    if primed < 0 {
+                        if errno == EINTR { continue }
+                        return
+                    }
+                    let clientEvents = Int32(pollFds[1].revents)
+                    if clientEvents & (POLLHUP | POLLERR | POLLNVAL) != 0 {
+                        return
+                    }
+                    if clientEvents & POLLIN != 0 {
+                        var byte: UInt8 = 0
+                        let n = recv(client, &byte, 1, MSG_DONTWAIT)
+                        if n <= 0 { return }
+                    }
+                    if Int32(pollFds[0].revents) & (POLLIN | POLLERR | POLLNVAL) == 0 {
+                        continue
+                    }
+                    if Int32(pollFds[0].revents) & (POLLERR | POLLNVAL) != 0 {
+                        return
+                    }
                     let accepted = Darwin.accept(bound, nil, nil)
                     if accepted < 0 {
                         if errno == EINTR { continue }
