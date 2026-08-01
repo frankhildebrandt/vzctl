@@ -146,12 +146,8 @@ pub(crate) fn resolve_project_dir(config_path: &Path) -> Result<PathBuf, String>
     let dir = config_file
         .parent()
         .ok_or_else(|| format!("cannot resolve project dir for {}", config_file.display()))?;
-    fs::canonicalize(dir).map_err(|error| {
-        format!(
-            "cannot canonicalize project dir {}: {error}",
-            dir.display()
-        )
-    })
+    fs::canonicalize(dir)
+        .map_err(|error| format!("cannot canonicalize project dir {}: {error}", dir.display()))
 }
 
 /// `--mount` flag: share project dir into the guest at the same absolute path.
@@ -244,10 +240,8 @@ mod tests {
 
     #[test]
     fn docker_project_mount_flag_is_same_path() {
-        let dir = std::env::temp_dir().join(format!(
-            "vzctl-docker-project-mount-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("vzctl-docker-project-mount-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let flag = docker_project_mount_flag(&dir).unwrap();
@@ -263,10 +257,8 @@ mod tests {
 
     #[test]
     fn resolve_project_dir_from_config_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "vzctl-docker-project-dir-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("vzctl-docker-project-dir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let config = dir.join("hypernetwork.config.yaml");

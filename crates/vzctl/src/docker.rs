@@ -30,10 +30,7 @@ fn resolve_docker_bin() -> Result<PathBuf, String> {
             return Ok(candidate);
         }
     }
-    Err(
-        "docker CLI not found (install Docker or ensure /opt/homebrew/bin is on PATH)"
-            .into(),
-    )
+    Err("docker CLI not found (install Docker or ensure /opt/homebrew/bin is on PATH)".into())
 }
 
 fn docker_command() -> Result<Command, String> {
@@ -285,9 +282,7 @@ pub(crate) fn docker_role_cloud_config(
 }
 
 fn docker_daemon_json_write_file(bip: &str) -> YamlValue {
-    let content = format!(
-        "{{\n  \"bip\": \"{bip}\",\n  \"iptables\": false\n}}\n"
-    );
+    let content = format!("{{\n  \"bip\": \"{bip}\",\n  \"iptables\": false\n}}\n");
     let mut file = serde_yaml::Mapping::new();
     file.insert(
         YamlValue::String("path".into()),
@@ -510,11 +505,21 @@ enum OutputFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DockerOp {
     Passthrough(Vec<String>),
-    Ps { all: bool },
-    Inspect { id: String },
-    Start { id: String },
-    Stop { id: String },
-    Restart { id: String },
+    Ps {
+        all: bool,
+    },
+    Inspect {
+        id: String,
+    },
+    Start {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Restart {
+        id: String,
+    },
     Run {
         image: String,
         name: Option<String>,
@@ -820,9 +825,7 @@ pub(crate) fn command(
     match parsed.op {
         DockerOp::Passthrough(passthrough) => {
             if passthrough.is_empty() {
-                eprintln!(
-                    "usage: vzctl docker [--project P] [--] <docker-args...>"
-                );
+                eprintln!("usage: vzctl docker [--project P] [--] <docker-args...>");
                 return ExitCode::from(EXIT_USAGE);
             }
             let status = match docker_command() {
@@ -845,13 +848,7 @@ pub(crate) fn command(
                 }
             }
         }
-        op => run_structured_op(
-            &op,
-            &project,
-            &context,
-            &ssh_command,
-            parsed.format,
-        ),
+        op => run_structured_op(&op, &project, &context, &ssh_command, parsed.format),
     }
 }
 
@@ -894,26 +891,11 @@ fn normalize_container_row(raw: JsonValue) -> JsonValue {
         .or_else(|| raw.get("Name"))
         .cloned()
         .unwrap_or(JsonValue::Null);
-    let image = raw
-        .get("Image")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    let status = raw
-        .get("Status")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    let state = raw
-        .get("State")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    let ports = raw
-        .get("Ports")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    let command = raw
-        .get("Command")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
+    let image = raw.get("Image").cloned().unwrap_or(JsonValue::Null);
+    let status = raw.get("Status").cloned().unwrap_or(JsonValue::Null);
+    let state = raw.get("State").cloned().unwrap_or(JsonValue::Null);
+    let ports = raw.get("Ports").cloned().unwrap_or(JsonValue::Null);
+    let command = raw.get("Command").cloned().unwrap_or(JsonValue::Null);
     let ip = container_ip_from_raw(&raw);
     json!({
         "id": id,
@@ -1063,11 +1045,8 @@ fn run_structured_op(
                     eprint!("{stderr}");
                 });
             }
-            let containers = enrich_containers_with_ips(
-                parse_ndjson_containers(&stdout),
-                context,
-                ssh_command,
-            );
+            let containers =
+                enrich_containers_with_ips(parse_ndjson_containers(&stdout), context, ssh_command);
             let summary = json!({
                 "message": format!("{} container(s)", containers.len()),
                 "project": project,
@@ -1509,13 +1488,8 @@ runcmd: [[systemctl, enable, --now, docker]]
 
     #[test]
     fn parse_unknown_verb_is_passthrough() {
-        let parsed = parse_docker_args(
-            ["compose", "ps"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-        )
-        .unwrap();
+        let parsed =
+            parse_docker_args(["compose", "ps"].into_iter().map(String::from).collect()).unwrap();
         assert_eq!(
             parsed.op,
             DockerOp::Passthrough(vec!["compose".into(), "ps".into()])

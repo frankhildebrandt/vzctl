@@ -109,7 +109,9 @@ fn usage() {
     );
 }
 
-fn parse_format(mut args: impl Iterator<Item = String>) -> Result<(Format, Option<String>), String> {
+fn parse_format(
+    mut args: impl Iterator<Item = String>,
+) -> Result<(Format, Option<String>), String> {
     let mut format = Format::Human;
     let mut project = None;
     while let Some(arg) = args.next() {
@@ -336,15 +338,17 @@ fn status(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCod
         .flatten()
         .and_then(|raw| raw.trim().parse::<i32>().ok())
         .map(|pid| {
-            path_exists(&format!("/proc/{pid}")).then_some(pid).or_else(|| {
-                // macOS: check with kill -0
-                std::process::Command::new("kill")
-                    .args(["-0", &pid.to_string()])
-                    .status()
-                    .ok()
-                    .filter(|s| s.success())
-                    .map(|_| pid)
-            })
+            path_exists(&format!("/proc/{pid}"))
+                .then_some(pid)
+                .or_else(|| {
+                    // macOS: check with kill -0
+                    std::process::Command::new("kill")
+                        .args(["-0", &pid.to_string()])
+                        .status()
+                        .ok()
+                        .filter(|s| s.success())
+                        .map(|_| pid)
+                })
         })
         .flatten();
 
@@ -538,7 +542,11 @@ fn generate_secret(seed: &str) -> String {
 }
 
 /// Persist clients JSON (secrets) under Application Support.
-pub(crate) fn write_clients(state_dir: &Path, project: &str, data: &Value) -> Result<PathBuf, String> {
+pub(crate) fn write_clients(
+    state_dir: &Path,
+    project: &str,
+    data: &Value,
+) -> Result<PathBuf, String> {
     let dir = project_oidc_dir(state_dir, project);
     fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = clients_path(state_dir, project);
@@ -850,10 +858,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "vzctl-oidc-{name}-{}-{unique}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("vzctl-oidc-{name}-{}-{unique}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -886,7 +892,10 @@ mod tests {
         let resolved = merge_uplink(&state, "proj", Some(&host), None)
             .unwrap()
             .unwrap();
-        assert_eq!(resolved.issuer.as_deref(), Some("https://login.example.com"));
+        assert_eq!(
+            resolved.issuer.as_deref(),
+            Some("https://login.example.com")
+        );
         assert_eq!(resolved.client_id, "vzctl-dex");
         assert_eq!(resolved.client_secret, "host-secret");
         assert_eq!(resolved.source, UplinkSource::Host);
@@ -919,7 +928,10 @@ mod tests {
         let resolved = merge_uplink(&state, "edge-dmz", Some(&host), Some(&project))
             .unwrap()
             .unwrap();
-        assert_eq!(resolved.issuer.as_deref(), Some("https://login.corp.example"));
+        assert_eq!(
+            resolved.issuer.as_deref(),
+            Some("https://login.corp.example")
+        );
         assert_eq!(resolved.client_id, "edge-dmz-dex");
         assert_eq!(resolved.client_secret, "host-secret");
         assert_eq!(resolved.source, UplinkSource::Merged);

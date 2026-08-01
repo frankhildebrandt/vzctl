@@ -348,9 +348,9 @@ fn parse_modify(args: Vec<String>) -> Result<Options, Failure> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| usage("--cpus requires a positive integer"))?;
-                let parsed = value.parse::<u32>().map_err(|_| {
-                    Failure::new(EXIT_INVALID, format!("invalid --cpus: {value}"))
-                })?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| Failure::new(EXIT_INVALID, format!("invalid --cpus: {value}")))?;
                 if parsed == 0 {
                     return Err(Failure::new(
                         EXIT_INVALID,
@@ -850,9 +850,7 @@ fn validate_vm_id(id: &str) -> Result<(), Failure> {
     } else {
         Err(Failure::new(
             EXIT_INVALID,
-            format!(
-                "invalid VM id: {id} (flat label or project/vm, alphanumeric/._-)"
-            ),
+            format!("invalid VM id: {id} (flat label or project/vm, alphanumeric/._-)"),
         ))
     }
 }
@@ -2592,9 +2590,9 @@ fn modify_vm(
     let resources = root
         .entry("resources".to_string())
         .or_insert_with(|| json!({ "cpus": 2, "memory_mib": 1024 }));
-    let resources_obj = resources.as_object_mut().ok_or_else(|| {
-        Failure::new(EXIT_VM_DISK, "VM manifest resources is not an object")
-    })?;
+    let resources_obj = resources
+        .as_object_mut()
+        .ok_or_else(|| Failure::new(EXIT_VM_DISK, "VM manifest resources is not an object"))?;
     if let Some(cpus) = cpus {
         resources_obj.insert("cpus".to_string(), json!(cpus));
     }
@@ -2610,7 +2608,10 @@ fn modify_vm(
         .and_then(Value::as_u64)
         .unwrap_or(1024);
     let pretty = serde_json::to_string_pretty(&manifest).map_err(|error| {
-        Failure::new(EXIT_VM_DISK, format!("cannot serialize VM manifest: {error}"))
+        Failure::new(
+            EXIT_VM_DISK,
+            format!("cannot serialize VM manifest: {error}"),
+        )
     })?;
     let path = bundle.join("vm.json");
     fs::write(&path, format!("{pretty}\n")).map_err(|error| {
@@ -3096,10 +3097,9 @@ mod tests {
         assert_eq!(envelope["restart_required"], false);
         assert_eq!(envelope["live"], false);
 
-        let manifest: Value = serde_json::from_str(
-            &fs::read_to_string(state.join("vms/web/vm.json")).unwrap(),
-        )
-        .unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(state.join("vms/web/vm.json")).unwrap())
+                .unwrap();
         assert_eq!(manifest["resources"]["cpus"], 4);
         assert_eq!(manifest["resources"]["memory_mib"], 2048);
 
@@ -3109,15 +3109,9 @@ mod tests {
         assert_eq!(envelope["command"], expected["command"]);
         assert_eq!(envelope["status"], expected["status"]);
         assert_eq!(envelope["exit_code"], expected["exit_code"]);
-        assert_eq!(
-            envelope["vm"]["resources"],
-            expected["vm"]["resources"]
-        );
+        assert_eq!(envelope["vm"]["resources"], expected["vm"]["resources"]);
         assert_eq!(envelope["live"], expected["live"]);
-        assert_eq!(
-            envelope["restart_required"],
-            expected["restart_required"]
-        );
+        assert_eq!(envelope["restart_required"], expected["restart_required"]);
         std::env::remove_var("VZCTL_STATE_DIR");
     }
 

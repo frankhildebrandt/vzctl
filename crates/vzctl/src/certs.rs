@@ -1,8 +1,6 @@
 //! Local CA under Application Support/vzctl/ca/ (v0.2 / #45).
 
-use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-};
+use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -52,10 +50,7 @@ pub(crate) fn command(args: impl Iterator<Item = String>, state_dir: &Path) -> E
                     let mut info = host_trust_status(state_dir);
                     if let Some(obj) = info.as_object_mut() {
                         obj.insert("fingerprint".into(), json!(fp));
-                        obj.insert(
-                            "path".into(),
-                            json!(fingerprint_path(state_dir)),
-                        );
+                        obj.insert("path".into(), json!(fingerprint_path(state_dir)));
                     }
                     emit_ok(format, "certs.fingerprint", info);
                     ExitCode::SUCCESS
@@ -303,8 +298,7 @@ pub(crate) fn read_fingerprint(state_dir: &Path) -> Result<String, String> {
 }
 
 pub(crate) fn read_ca_pem(state_dir: &Path) -> Result<String, String> {
-    fs::read_to_string(ca_cert_path(state_dir))
-        .map_err(|e| format!("read CA cert: {e}"))
+    fs::read_to_string(ca_cert_path(state_dir)).map_err(|e| format!("read CA cert: {e}"))
 }
 
 /// Ensure CA exists; create if missing or `force`.
@@ -322,8 +316,8 @@ pub(crate) fn ensure_ca(state_dir: &Path, force: bool) -> Result<Value, String> 
         }));
     }
 
-    let mut params = CertificateParams::new(Vec::<String>::new())
-        .map_err(|e| format!("CA params: {e}"))?;
+    let mut params =
+        CertificateParams::new(Vec::<String>::new()).map_err(|e| format!("CA params: {e}"))?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.not_before = OffsetDateTime::now_utc() - Duration::minutes(5);
     params.not_after = OffsetDateTime::now_utc() + Duration::days(3650);
@@ -360,8 +354,8 @@ pub(crate) fn mint_leaf(
 ) -> Result<Value, String> {
     ensure_ca(state_dir, false)?;
     let ca_pem = read_ca_pem(state_dir)?;
-    let ca_key_pem = fs::read_to_string(ca_key_path(state_dir))
-        .map_err(|e| format!("read CA key: {e}"))?;
+    let ca_key_pem =
+        fs::read_to_string(ca_key_path(state_dir)).map_err(|e| format!("read CA key: {e}"))?;
     let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| format!("parse CA key: {e}"))?;
     let ca_params =
         CertificateParams::from_ca_cert_pem(&ca_pem).map_err(|e| format!("parse CA cert: {e}"))?;
@@ -376,8 +370,8 @@ pub(crate) fn mint_leaf(
         }
     }
 
-    let mut params = CertificateParams::new(names.clone())
-        .map_err(|e| format!("leaf params: {e}"))?;
+    let mut params =
+        CertificateParams::new(names.clone()).map_err(|e| format!("leaf params: {e}"))?;
     params.not_before = OffsetDateTime::now_utc() - Duration::minutes(5);
     params.not_after = OffsetDateTime::now_utc() + Duration::days(825);
     let mut dn = DistinguishedName::new();

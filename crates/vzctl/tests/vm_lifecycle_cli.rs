@@ -150,6 +150,16 @@ fn vm_start_stop_delete_roundtrip() {
                     "result": [],
                     "id": request["id"],
                 }),
+                "vm.purge" => json!({
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "vm_id": "web",
+                        "purged": true,
+                        "detached_networks": [],
+                        "ports_removed": 0,
+                    },
+                    "id": request["id"],
+                }),
                 "net.list" => json!({
                     "jsonrpc": "2.0",
                     "result": {"networks": [], "attachments": []},
@@ -160,7 +170,8 @@ fn vm_start_stop_delete_roundtrip() {
             writeln!(stream, "{body}").unwrap();
         };
 
-        for _ in 0..6 {
+        // start; stop + wait list; delete via vm.purge
+        for _ in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
             respond(&mut stream);
         }
@@ -195,6 +206,7 @@ fn vm_start_stop_delete_roundtrip() {
     let delete_env: Value = serde_json::from_slice(&delete.stdout).unwrap();
     assert_eq!(delete_env["command"], "vm.delete");
     assert_eq!(delete_env["vm"]["deleted"], true);
+    assert_eq!(delete_env["vm"]["purged_runtime"], true);
     assert!(!state.join("vms/web").exists());
 
     server.join().unwrap();

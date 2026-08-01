@@ -406,7 +406,10 @@ pub fn progress_env_enabled() -> bool {
     match std::env::var("VZCTL_PROGRESS") {
         Ok(value) => {
             let v = value.trim();
-            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("no")
+            !v.is_empty()
+                && v != "0"
+                && !v.eq_ignore_ascii_case("false")
+                && !v.eq_ignore_ascii_case("no")
         }
         Err(_) => false,
     }
@@ -683,28 +686,29 @@ fn list_image_from_manifest(
         .as_str()
         .unwrap_or("raw")
         .to_string();
-    let (path, sha256, format, baked, sealed, agent_version) =
-        if let Some(tag) = tags.iter().find(|tag| tag.sealed).or_else(|| {
-            tags.iter().find(|tag| tag.baked)
-        }) {
-            (
-                tag.path.clone(),
-                tag.sha256.clone(),
-                tag.format.clone(),
-                tag.baked,
-                tag.sealed,
-                tag.agent_version.clone(),
-            )
-        } else {
-            (
-                images_dir.join(&object_relative),
-                object_sha,
-                object_format,
-                false,
-                false,
-                None,
-            )
-        };
+    let (path, sha256, format, baked, sealed, agent_version) = if let Some(tag) = tags
+        .iter()
+        .find(|tag| tag.sealed)
+        .or_else(|| tags.iter().find(|tag| tag.baked))
+    {
+        (
+            tag.path.clone(),
+            tag.sha256.clone(),
+            tag.format.clone(),
+            tag.baked,
+            tag.sealed,
+            tag.agent_version.clone(),
+        )
+    } else {
+        (
+            images_dir.join(&object_relative),
+            object_sha,
+            object_format,
+            false,
+            false,
+            None,
+        )
+    };
     let aliases = manifest["aliases"]
         .as_array()
         .map(|values| {
@@ -721,10 +725,7 @@ fn list_image_from_manifest(
             .unwrap_or(alias)
             .to_string(),
         aliases,
-        distribution: manifest["distribution"]
-            .as_str()
-            .unwrap_or("")
-            .to_string(),
+        distribution: manifest["distribution"].as_str().unwrap_or("").to_string(),
         release: manifest["release"].as_str().unwrap_or("").to_string(),
         architecture: manifest["architecture"]
             .as_str()
@@ -2110,10 +2111,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(&sealed).unwrap(), b"pristine");
-        assert_eq!(
-            sealed,
-            directory.join("sealed/test-latest@v1.raw")
-        );
+        assert_eq!(sealed, directory.join("sealed/test-latest@v1.raw"));
         fs::write(&sealed, b"sealed-and-cleaned").unwrap();
         let marker = directory.join("test.sealed.json");
         fs::write(&marker, b"{}").unwrap();
@@ -2261,7 +2259,8 @@ mod tests {
         ));
         let aliases = directory.join("aliases");
         fs::create_dir_all(&aliases).unwrap();
-        let object = directory.join("objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.raw");
+        let object = directory
+            .join("objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.raw");
         fs::create_dir_all(object.parent().unwrap()).unwrap();
         fs::write(&object, b"raw").unwrap();
         let baked = directory.join("baked/ubuntu-latest@v1.raw");
