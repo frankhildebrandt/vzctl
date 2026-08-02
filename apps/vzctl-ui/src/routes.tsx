@@ -45,6 +45,7 @@ import { VmDetailPage } from "@/components/VmDetailPage";
 import { VmListPage } from "@/components/VmListPage";
 import {
   Alert,
+  ActionRow,
   Button,
   Card,
   EmptyState,
@@ -346,7 +347,7 @@ function ProjectListPage() {
         titleAs="h3"
         subtitle={t("projects.newHint")}
       >
-        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+        <ActionRow gap="md" style={{ flexWrap: "wrap" }}>
           <FormField
             label={<span className="sr-only">{t("projects.nameLabel")}</span>}
             variant="compact"
@@ -369,7 +370,7 @@ function ProjectListPage() {
           >
             {createMutation.isPending ? t("projects.createBusy") : t("projects.create")}
           </Button>
-        </div>
+        </ActionRow>
       </Card>
 
       {error ? (
@@ -897,8 +898,11 @@ function ProjectDetailPage() {
         )
       ) : tab === "config" ? (
         <section>
-          <h2 className="section-title">{t("stack.configTitle")}</h2>
-          <p className="muted">{t("stack.configSubtitle")}</p>
+          <PageHeader
+            layout="detail"
+            title={t("stack.configTitle")}
+            subtitle={t("stack.configSubtitle")}
+          />
           <ProjectOidcUplinkSection projectPath={path} />
         </section>
       ) : (

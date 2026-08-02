@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import {
   Alert,
+  ActionRow,
   Badge,
   Button,
   Card,
@@ -164,8 +165,8 @@ function IncompleteJournalActions({
 
   return (
     <div className="doctor-actions" style={{ marginTop: "0.75rem" }}>
-      <p className="muted">{t("result.incompleteJournalHint")}</p>
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+      <Muted>{t("result.incompleteJournalHint")}</Muted>
+      <ActionRow gap="md" style={{ flexWrap: "wrap" }}>
         <Button
           disabled={busy != null}
           onClick={() => void run("restart")}
@@ -186,7 +187,7 @@ function IncompleteJournalActions({
         >
           {busy === "abort" ? t("result.abortBusy") : t("result.abort")}
         </Button>
-      </div>
+      </ActionRow>
       {msg ? <Muted>{msg}</Muted> : null}
     </div>
   );

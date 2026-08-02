@@ -1,4 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
+import { FormField } from "@/components/ui";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -43,8 +44,7 @@ export function NameField({
   };
 
   return (
-    <label className="topology-field">
-      <span>{fieldLabel}</span>
+    <FormField label={fieldLabel} variant="compact">
       <input
         type="text"
         value={draft}
@@ -57,6 +57,6 @@ export function NameField({
         onBlur={commit}
         onKeyDown={onKeyDown}
       />
-    </label>
+    </FormField>
   );
 }

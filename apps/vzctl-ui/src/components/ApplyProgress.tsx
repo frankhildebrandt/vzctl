@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Card, Muted } from "@/components/ui";
 import { getT, useT, type MessageKey } from "@/lib/i18n";
 import { localeToBcp47 } from "@/lib/i18n/detect";
 import { useSettingsStore } from "@/store/settingsStore";
@@ -352,10 +353,10 @@ export function ApplyProgress({
   const modeLabel = mode ?? t("apply.modeDefault");
 
   return (
-    <div className="card progress-card">
+    <Card className="progress-card">
       <div className="progress-head">
         <h2>{t("apply.progressTitle", { mode: modeLabel })}</h2>
-        <span className="muted">{percent}%</span>
+        <Muted as="span">{percent}%</Muted>
       </div>
       <div className="progress-bar" aria-hidden>
         <div className="progress-fill" style={{ width: `${percent}%` }} />
@@ -374,7 +375,7 @@ export function ApplyProgress({
         ))}
       </ol>
       {error ? <p className="progress-error">{error}</p> : null}
-    </div>
+    </Card>
   );
 }
 
@@ -398,7 +399,7 @@ export function ConsoleLog({
   if (!visible) return null;
 
   return (
-    <div className="card console-card">
+    <Card className="console-card">
       <pre
         ref={scroller}
         className="text-console"
@@ -421,6 +422,6 @@ export function ConsoleLog({
           ))
         )}
       </pre>
-    </div>
+    </Card>
   );
 }
