@@ -1,6 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { ConsoleLog, type ConsoleLine } from "@/components/ApplyProgress";
+import {
+  ActionRow,
+  Alert,
+  Badge,
+  Button,
+  Card,
+  DataTable,
+  EmptyState,
+  FieldError,
+  FormField,
+  FormGrid,
+  LoadingState,
+  Muted,
+  PageHeader,
+  SummaryCard,
+  TableCard,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import { localeToBcp47 } from "@/lib/i18n/detect";
 import {
@@ -134,41 +151,39 @@ export function ImagesPage() {
 
   return (
     <section>
-      <header className="detail-heading" style={{ marginBottom: "1rem" }}>
-        <h2 className="section-title">{t("images.title")}</h2>
-        <p className="muted">
-          {t("images.subtitle")}
-        </p>
-      </header>
+      <PageHeader
+        layout="detail"
+        title={t("images.title")}
+        subtitle={t("images.subtitle")}
+      />
 
-      <div className="card summary-card">
-        <div className="summary-row">
-          <span className="badge ok">{t("images.localCount", { n: images.length })}</span>
-          {listQuery.data?.imagesDir ? (
-            <span className="muted" title={listQuery.data.imagesDir}>
+      <SummaryCard
+        badge={<Badge tone="ok">{t("images.localCount", { n: images.length })}</Badge>}
+        meta={
+          listQuery.data?.imagesDir ? (
+            <Muted as="span" title={listQuery.data.imagesDir}>
               {listQuery.data.imagesDir}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy}
-            onClick={() => void listQuery.refetch()}
-          >
+            </Muted>
+          ) : null
+        }
+        actions={
+          <Button tone="secondary" disabled={busy} onClick={() => void listQuery.refetch()}>
             {t("images.refresh")}
-          </button>
-        </div>
-        {listQuery.isError ? (
-          <p className="tile-error">{String(listQuery.error)}</p>
-        ) : null}
-        {error ? <p className="tile-error">{error}</p> : null}
-        {actionMsg ? <p className="muted">{actionMsg}</p> : null}
+          </Button>
+        }
+      >
+        {actionMsg ? <Muted>{actionMsg}</Muted> : null}
         {busyAlias ? (
-          <p className="muted">
+          <Muted>
             {t("images.busy", { alias: busyAlias })}
-          </p>
+          </Muted>
         ) : null}
-      </div>
+      </SummaryCard>
+
+      {listQuery.isError ? (
+        <Alert title={t("common.error")}>{String(listQuery.error)}</Alert>
+      ) : null}
+      {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
 
       {showJobLog ? (
         <div style={{ marginBottom: "1rem" }}>
@@ -177,11 +192,12 @@ export function ImagesPage() {
         </div>
       ) : null}
 
-      <div className="card">
-        <h3 className="group-title">{t("images.pullTitle")}</h3>
-        <p className="muted">{t("images.pullHint")}</p>
+      <Card
+        title={t("images.pullTitle")}
+        titleAs="h3"
+        subtitle={t("images.pullHint")}
+      >
         <form
-          className="form-grid"
           style={{ alignItems: "end" }}
           onSubmit={(event) => {
             event.preventDefault();
@@ -189,8 +205,8 @@ export function ImagesPage() {
             if (alias) pullMutation.mutate(alias);
           }}
         >
-          <label>
-            {t("images.pullAlias")}
+          <FormGrid>
+          <FormField label={t("images.pullAlias")}>
             <select
               value={pullAlias}
               disabled={busy}
@@ -202,18 +218,20 @@ export function ImagesPage() {
                 </option>
               ))}
             </select>
-          </label>
-          <button type="submit" disabled={busy || !pullAlias.trim()}>
+          </FormField>
+          <Button type="submit" disabled={busy || !pullAlias.trim()}>
             {t("images.pull")}
-          </button>
+          </Button>
+          </FormGrid>
         </form>
-      </div>
+      </Card>
 
-      <div className="card">
-        <h3 className="group-title">{t("images.tagTitle")}</h3>
-        <p className="muted">{t("images.tagHint")}</p>
-        <label>
-          {t("images.tagField")}
+      <Card
+        title={t("images.tagTitle")}
+        titleAs="h3"
+        subtitle={t("images.tagHint")}
+      >
+        <FormField label={t("images.tagField")}>
           <input
             value={imageTag}
             disabled={busy}
@@ -222,17 +240,18 @@ export function ImagesPage() {
             spellCheck={false}
             autoComplete="off"
           />
-        </label>
-        {!tagOk && imageTag.trim() !== "" ? (
-          <p className="form-error">{t("images.tagInvalid")}</p>
-        ) : null}
-      </div>
+        </FormField>
+        <FieldError
+          message={!tagOk && imageTag.trim() !== "" ? t("images.tagInvalid") : null}
+        />
+      </Card>
 
-      <div className="card">
-        <h3 className="group-title">{t("images.sealTitle")}</h3>
-        <p className="muted">{t("images.sealHint")}</p>
+      <Card
+        title={t("images.sealTitle")}
+        titleAs="h3"
+        subtitle={t("images.sealHint")}
+      >
         <form
-          className="form-grid"
           style={{ alignItems: "end" }}
           onSubmit={(event) => {
             event.preventDefault();
@@ -240,8 +259,8 @@ export function ImagesPage() {
             if (target && tagOk) sealMutation.mutate({ target, tag });
           }}
         >
-          <label>
-            {t("images.sealField")}
+          <FormGrid>
+          <FormField label={t("images.sealField")}>
             <input
               value={sealTarget}
               disabled={busy}
@@ -254,23 +273,24 @@ export function ImagesPage() {
                 <option key={image.alias} value={image.alias} />
               ))}
             </datalist>
-          </label>
-          <button type="submit" disabled={busy || !sealTarget.trim() || !tagOk}>
+          </FormField>
+          <Button type="submit" disabled={busy || !sealTarget.trim() || !tagOk}>
             {t("images.seal")}
-          </button>
+          </Button>
+          </FormGrid>
         </form>
-      </div>
+      </Card>
 
       {listQuery.isLoading ? (
-        <p className="muted">{t("images.loading")}</p>
+        <LoadingState message={t("images.loading")} />
       ) : images.length === 0 ? (
-        <div className="card">
-          <h2>{t("images.emptyTitle")}</h2>
-          <p className="muted">{t("images.emptyHint")}</p>
-        </div>
+        <EmptyState
+          title={t("images.emptyTitle")}
+          message={t("images.emptyHint")}
+        />
       ) : (
-        <div className="card" style={{ padding: 0, overflow: "auto" }}>
-          <table className="vm-table">
+        <TableCard>
+          <DataTable>
             <thead>
               <tr>
                 <th>{t("images.col.alias")}</th>
@@ -298,8 +318,8 @@ export function ImagesPage() {
                 />
               ))}
             </tbody>
-          </table>
-        </div>
+          </DataTable>
+        </TableCard>
       )}
     </section>
   );
@@ -336,22 +356,17 @@ function ImageRow({
         </div>
       </td>
       <td>
-        <span
-          className={
-            state === "sealed" ? "badge ok" : state === "baked" ? "badge warn" : "badge"
-          }
-        >
+        <Badge tone={state === "sealed" ? "ok" : state === "baked" ? "warn" : "neutral"}>
           {state}
-        </span>
+        </Badge>
       </td>
       <td>{image.distribution || t("common.emDash")}</td>
       <td>{image.release || t("common.emDash")}</td>
       <td className="muted">{image.agent_version ?? t("common.emDash")}</td>
       <td>
-        <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
-          <button
-            type="button"
-            className="secondary"
+        <ActionRow align="end" gap="sm">
+          <Button
+            tone="secondary"
             disabled={busy || image.sealed || !tagOk}
             title={
               image.sealed
@@ -363,17 +378,16 @@ function ImageRow({
             onClick={onBake}
           >
             {rowBusy ? t("common.ellipsis") : t("images.bake")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+          </Button>
+          <Button
+            tone="secondary"
             disabled={busy || !tagOk}
             title={!tagOk ? t("images.tagInvalid") : t("images.sealHintBtn")}
             onClick={onSeal}
           >
             {t("images.seal")}
-          </button>
-        </div>
+          </Button>
+        </ActionRow>
       </td>
     </tr>
   );

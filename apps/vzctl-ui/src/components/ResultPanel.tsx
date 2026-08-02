@@ -1,6 +1,16 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
-import { copyText } from "@/lib/clipboard";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CodeBlock,
+  EmptyState,
+  LoadingState,
+  Muted,
+  SummaryCard,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
@@ -45,17 +55,13 @@ export function ResultPanel({
 
   if (result.kind === "idle" && !busyLabel) {
     return (
-      <div className="card result-empty">
-        <p className="muted">{t("result.empty")}</p>
-      </div>
+      <EmptyState card className="result-empty" message={t("result.empty")} />
     );
   }
 
   if (busyLabel) {
     return (
-      <div className="card result-empty">
-        <p className="muted">{busyLabel}</p>
-      </div>
+      <LoadingState card className="result-empty" message={busyLabel} />
     );
   }
 
@@ -63,20 +69,19 @@ export function ResultPanel({
     <div className={result.kind === "error" ? "result-panel is-error" : "result-panel"}>
       <div className="result-toolbar">
         <span className="result-label">{labelFor(result.kind, t)}</span>
-        <button
-          type="button"
+        <Button
+          tone="secondary"
           className={debug ? "debug-btn active" : "debug-btn"}
           onClick={() => setDebug((v) => !v)}
         >
           {t("result.debug")}
-        </button>
+        </Button>
       </div>
 
       {debug ? (
         <DebugBlock text={result.raw} error={result.kind === "error"} />
       ) : result.kind === "error" ? (
-        <div className="card error-card">
-          <h3>{t("result.errorTitle")}</h3>
+        <Alert title={t("result.errorTitle")}>
           <p>{result.raw}</p>
           {incompleteJournal && stackPath ? (
             <IncompleteJournalActions
@@ -84,7 +89,7 @@ export function ResultPanel({
               onDone={onJournalRecovered}
             />
           ) : null}
-        </div>
+        </Alert>
       ) : result.kind === "diff" && parsed ? (
         <DiffView data={parsed} />
       ) : result.kind === "status" && parsed ? (
@@ -92,24 +97,23 @@ export function ResultPanel({
       ) : parsed && Array.isArray(parsed.actions) ? (
         <DiffView data={parsed} />
       ) : parsed ? (
-        <div className="card summary-card">
-          <div className="summary-row">
-            <span className="badge ok">{t("result.status.ok")}</span>
-            {parsed.command != null ? (
+        <SummaryCard
+          badge={<Badge tone="ok">{t("result.status.ok")}</Badge>}
+          meta={
+            parsed.command != null ? (
               <span className="path">{String(parsed.command)}</span>
-            ) : null}
-          </div>
-          <p className="muted">
+            ) : null
+          }
+        >
+          <Muted>
             {String(
               (parsed.summary as Record<string, unknown> | undefined)?.message ??
                 t("result.summary.done"),
             )}
-          </p>
-        </div>
+          </Muted>
+        </SummaryCard>
       ) : (
-        <div className="card">
-          <p className="muted">{t("result.noGraphicView")}</p>
-        </div>
+        <EmptyState message={t("result.noGraphicView")} />
       )}
     </div>
   );
@@ -162,31 +166,28 @@ function IncompleteJournalActions({
     <div className="doctor-actions" style={{ marginTop: "0.75rem" }}>
       <p className="muted">{t("result.incompleteJournalHint")}</p>
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button
-          type="button"
+        <Button
           disabled={busy != null}
           onClick={() => void run("restart")}
         >
           {busy === "restart" ? t("result.restartBusy") : t("result.restart")}
-        </button>
-        <button
-          type="button"
-          className="secondary"
+        </Button>
+        <Button
+          tone="secondary"
           disabled={busy != null}
           onClick={() => void run("resume")}
         >
           {busy === "resume" ? t("result.resumeBusy") : t("result.resume")}
-        </button>
-        <button
-          type="button"
-          className="secondary"
+        </Button>
+        <Button
+          tone="secondary"
           disabled={busy != null}
           onClick={() => void run("abort")}
         >
           {busy === "abort" ? t("result.abortBusy") : t("result.abort")}
-        </button>
+        </Button>
       </div>
-      {msg ? <p className="muted">{msg}</p> : null}
+      {msg ? <Muted>{msg}</Muted> : null}
     </div>
   );
 }
@@ -208,28 +209,27 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
 
   return (
     <div className="view-stack">
-      <div className="card summary-card">
-        <div className="summary-row">
-          <span className={changed ? "badge warn" : "badge ok"}>
+      <SummaryCard
+        badge={
+          <Badge tone={changed ? "warn" : "ok"}>
             {changed
               ? t("result.diff.changes", { n: actions.length })
               : t("result.diff.inSync")}
-          </span>
-          {stackId ? <span className="path">{stackId}</span> : null}
-        </div>
-        <p className="muted">{message}</p>
-      </div>
+          </Badge>
+        }
+        meta={stackId ? <span className="path">{stackId}</span> : null}
+      >
+        <Muted>{message}</Muted>
+      </SummaryCard>
 
       {actions.length === 0 ? (
-        <div className="card">
-          <p className="muted">{t("result.diff.equal")}</p>
-        </div>
+        <EmptyState message={t("result.diff.equal")} />
       ) : (
         Object.entries(byKind).map(([kind, items]) => (
-          <div key={kind} className="card">
+          <Card key={kind}>
             <h3 className="group-title">
               <span className="kind-pill">{kind}</span>
-              <span className="muted">{items.length}</span>
+              <Muted as="span">{items.length}</Muted>
             </h3>
             <ul className="action-list">
               {items.map((item) => (
@@ -239,15 +239,15 @@ function DiffView({ data }: { data: Record<string, unknown> }) {
                   </span>
                   <div className="action-body">
                     <strong>{item.name}</strong>
-                    {item.reason ? <span className="muted">{item.reason}</span> : null}
+                    {item.reason ? <Muted as="span">{item.reason}</Muted> : null}
                   </div>
                   {item.breaking ? (
-                    <span className="badge danger">{t("result.status.breaking")}</span>
+                    <Badge tone="danger">{t("result.status.breaking")}</Badge>
                   ) : null}
                 </li>
               ))}
             </ul>
-          </div>
+          </Card>
         ))
       )}
     </div>
@@ -359,17 +359,16 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
 
   return (
     <div className="view-stack">
-      <div className="card status-board">
+      <Card className="status-board">
         <ul className="status-board-list">
           {rows.map((row) => (
             <StatusRow key={row.title} {...row} />
           ))}
         </ul>
-      </div>
+      </Card>
 
       {diffActions.length > 0 ? (
-        <div className="card">
-          <h3 className="group-title">{t("result.status.openDiffActions")}</h3>
+        <Card title={t("result.status.openDiffActions")} titleAs="h3">
           <ul className="action-list compact">
             {diffActions.slice(0, 12).map((item) => (
               <li key={`${item.kind}:${item.name}:${item.action}`} className="action-row">
@@ -383,11 +382,11 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
             ))}
           </ul>
           {diffActions.length > 12 ? (
-            <p className="muted">
+            <Muted>
               {t("result.status.moreActions", { n: diffActions.length - 12 })}
-            </p>
+            </Muted>
           ) : null}
-        </div>
+        </Card>
       ) : null}
     </div>
   );
@@ -414,15 +413,15 @@ function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
     <li className={`status-board-row${ok ? "" : " is-warn"}`}>
       <div className="status-board-main">
         <span className="status-board-title">{title}</span>
-        <span className={ok ? "badge ok" : "badge warn"}>
+        <Badge tone={ok ? "ok" : "warn"}>
           {ok ? t("result.status.ok") : t("result.status.check")}
-        </span>
+        </Badge>
         <p className="status-board-facts" title={visibleFacts.join(" · ")}>
           {visibleFacts.length > 0 ? visibleFacts.join(" · ") : emDash}
         </p>
       </div>
       {error ? <p className="status-board-error">{error}</p> : null}
-      {hint ? <p className="muted status-board-hint">{hint}</p> : null}
+      {hint ? <Muted className="status-board-hint">{hint}</Muted> : null}
       {action ? <div className="status-board-action">{action}</div> : null}
     </li>
   );
@@ -435,8 +434,7 @@ function CaInstallButton() {
 
   return (
     <div className="doctor-actions">
-      <button
-        type="button"
+      <Button
         disabled={busy}
         onClick={() => {
           setBusy(true);
@@ -455,8 +453,8 @@ function CaInstallButton() {
         }}
       >
         {busy ? t("result.status.caInstallBusy") : t("result.status.caInstall")}
-      </button>
-      {msg ? <p className="muted">{msg}</p> : null}
+      </Button>
+      {msg ? <Muted>{msg}</Muted> : null}
     </div>
   );
 }
@@ -477,8 +475,7 @@ function DnsBindHelperButton() {
 
   return (
     <div className="doctor-actions">
-      <button
-        type="button"
+      <Button
         disabled={busy}
         onClick={() => {
           setBusy(true);
@@ -497,33 +494,14 @@ function DnsBindHelperButton() {
         }}
       >
         {busy ? t("result.status.bindInstallBusy") : t("result.status.bindInstall")}
-      </button>
-      {msg ? <p className="muted">{msg}</p> : null}
+      </Button>
+      {msg ? <Muted>{msg}</Muted> : null}
     </div>
   );
 }
 
 function DebugBlock({ text, error }: { text: string; error?: boolean }) {
-  const t = useT();
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className={error ? "out-wrap error" : "out-wrap"}>
-      <button
-        type="button"
-        className="out-copy"
-        onClick={() => {
-          void copyText(text).then((ok) => {
-            if (!ok) return;
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-          });
-        }}
-      >
-        {copied ? t("common.copied") : t("common.copy")}
-      </button>
-      <pre className={error ? "out error" : "out"}>{text}</pre>
-    </div>
-  );
+  return <CodeBlock value={text} copyable tone={error ? "error" : "default"} />;
 }
 
 function labelFor(

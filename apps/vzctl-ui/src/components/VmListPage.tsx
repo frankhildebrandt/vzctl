@@ -4,6 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconButton, IconPlay, IconStop, IconTrash } from "@/components/IconButton";
 import { StackCardsSection } from "@/components/StackCard";
+import {
+  ActionRow,
+  Alert,
+  Button,
+  DataTable,
+  EmptyState,
+  LoadingState,
+  PageHeader,
+  StatusPill,
+  TableCard,
+} from "@/components/ui";
 import { VmForm } from "@/components/VmForm";
 import { useT } from "@/lib/i18n";
 import { listProjects, projectKeys } from "@/lib/projects";
@@ -147,15 +158,15 @@ export function VmListPage() {
         <StackCardsSection title={t("vms.stacksTitle")} projects={activeProjects} />
       ) : null}
 
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div>
-          <h2 className="section-title">{t("vms.title")}</h2>
-          <p className="muted">{t("vms.subtitle")}</p>
-        </div>
-        <button type="button" onClick={() => setShowCreate((v) => !v)}>
-          {showCreate ? t("vms.cancelCreate") : t("vms.create")}
-        </button>
-      </div>
+      <PageHeader
+        title={t("vms.title")}
+        subtitle={t("vms.subtitle")}
+        actions={
+          <Button onClick={() => setShowCreate((v) => !v)}>
+            {showCreate ? t("vms.cancelCreate") : t("vms.create")}
+          </Button>
+        }
+      />
 
       {showCreate ? (
         <VmForm
@@ -168,34 +179,26 @@ export function VmListPage() {
         />
       ) : null}
 
-      {error ? (
-        <div className="card error-card">
-          <h3>{t("common.error")}</h3>
-          <p>{error}</p>
-        </div>
-      ) : null}
+      {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
 
       {listQuery.isError ? (
-        <div className="card error-card">
-          <h3>{t("vms.listFailed")}</h3>
-          <p>{String(listQuery.error)}</p>
-        </div>
+        <Alert title={t("vms.listFailed")}>{String(listQuery.error)}</Alert>
       ) : null}
 
       {listQuery.isLoading ? (
-        <p className="muted">{t("vms.loading")}</p>
+        <LoadingState message={t("vms.loading")} />
       ) : standaloneVms.length === 0 ? (
-        <div className="card">
-          <h2>{t("vms.emptyTitle")}</h2>
-          <p className="muted">
-            {activeProjects.length > 0
+        <EmptyState
+          title={t("vms.emptyTitle")}
+          message={
+            activeProjects.length > 0
               ? t("vms.emptyInStacks")
-              : t("vms.emptyHint")}
-          </p>
-        </div>
+              : t("vms.emptyHint")
+          }
+        />
       ) : (
-        <div className="card" style={{ padding: 0, overflow: "auto" }}>
-          <table className="vm-table">
+        <TableCard>
+          <DataTable>
             <thead>
               <tr>
                 <th>{t("vms.col.id")}</th>
@@ -218,8 +221,8 @@ export function VmListPage() {
                 />
               ))}
             </tbody>
-          </table>
-        </div>
+          </DataTable>
+        </TableCard>
       )}
 
       <ConfirmDialog
@@ -278,13 +281,13 @@ function VmRow({
         </Link>
       </td>
       <td>
-        <span className={`vm-state state-${vm.state}`}>{vm.state}</span>
+        <StatusPill state={vm.state} />
       </td>
       <td className="mono">{vm.ips.join(", ") || t("common.emDash")}</td>
       <td>{vm.roles.join(", ") || t("common.emDash")}</td>
       <td className="mono">{vm.pid ?? t("common.emDash")}</td>
       <td>
-        <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
+        <ActionRow align="end" gap="sm">
           {running ? (
             <IconButton label={t("vms.stop")} disabled={busy} onClick={onStop} tone="danger">
               <IconStop />
@@ -297,7 +300,7 @@ function VmRow({
           <IconButton label={t("common.delete")} disabled={busy} onClick={onDelete} tone="danger">
             <IconTrash />
           </IconButton>
-        </div>
+        </ActionRow>
       </td>
     </tr>
   );

@@ -1,5 +1,16 @@
-import { useState } from "react";
-import { copyText } from "@/lib/clipboard";
+import {
+  Badge,
+  Button,
+  Card,
+  CodeBlock,
+  CopyButton,
+  DescriptionList,
+  EmptyState,
+  Muted,
+  PageHeader,
+  SummaryCard,
+  type DescriptionItem,
+} from "@/components/ui";
 import { localeToBcp47 } from "@/lib/i18n/detect";
 import { useT } from "@/lib/i18n";
 import type { MessageKey } from "@/lib/i18n";
@@ -40,78 +51,47 @@ export function ErrorsPage() {
   const t = useT();
   const errors = useErrorStore((s) => s.errors);
   const clear = useErrorStore((s) => s.clear);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [copiedAll, setCopiedAll] = useState(false);
-
-  const flash = (id: string | null) => {
-    setCopiedId(id);
-    window.setTimeout(() => setCopiedId(null), 1500);
-  };
-
-  const onCopyOne = (entry: ReportedError) => {
-    void copyText(formatErrorForClipboard(entry)).then((ok) => {
-      if (ok) flash(entry.id);
-    });
-  };
-
-  const onCopyAll = () => {
-    void copyText(formatAllErrorsForClipboard(errors)).then((ok) => {
-      if (!ok) return;
-      setCopiedAll(true);
-      window.setTimeout(() => setCopiedAll(false), 1500);
-    });
-  };
 
   return (
     <section>
-      <header className="detail-heading" style={{ marginBottom: "1rem" }}>
-        <h2 className="section-title">{t("errors.title")}</h2>
-        <p className="muted">{t("errors.subtitle")}</p>
-      </header>
+      <PageHeader
+        layout="detail"
+        title={t("errors.title")}
+        subtitle={t("errors.subtitle")}
+      />
 
-      <div className="card summary-card">
-        <div className="summary-row">
-          <span className="muted">
+      <SummaryCard
+        meta={
+          <Muted as="span">
             {errors.length === 0
               ? t("errors.none")
               : t("errors.count", { n: errors.length })}
-          </span>
+          </Muted>
+        }
+        actions={
           <div className="errors-toolbar">
-            <button
-              type="button"
-              className="secondary"
+            <CopyButton
+              value={formatAllErrorsForClipboard(errors)}
               disabled={errors.length === 0}
-              onClick={onCopyAll}
-            >
-              {copiedAll ? t("common.copied") : t("errors.copyAll")}
-            </button>
-            <button
-              type="button"
-              className="secondary"
+              label={t("errors.copyAll")}
+            />
+            <Button
+              tone="secondary"
               disabled={errors.length === 0}
               onClick={() => clear()}
             >
               {t("errors.clear")}
-            </button>
+            </Button>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {errors.length === 0 ? (
-        <div className="card">
-          <p className="muted" style={{ margin: 0 }}>
-            {t("errors.empty")}
-          </p>
-        </div>
+        <EmptyState message={t("errors.empty")} />
       ) : (
         <div className="errors-list">
           {errors.map((entry) => (
-            <ErrorEntryCard
-              key={entry.id}
-              entry={entry}
-              copied={copiedId === entry.id}
-              onCopy={() => onCopyOne(entry)}
-            />
+            <ErrorEntryCard key={entry.id} entry={entry} />
           ))}
         </div>
       )}
@@ -121,75 +101,66 @@ export function ErrorsPage() {
 
 function ErrorEntryCard({
   entry,
-  copied,
-  onCopy,
 }: {
   entry: ReportedError;
-  copied: boolean;
-  onCopy: () => void;
 }) {
   const t = useT();
   const locale = useSettingsStore((s) => s.locale);
   const details = detailsText(entry.details);
+  const fields: DescriptionItem[] = [];
+  if (entry.method || entry.path) {
+    fields.push({
+      label: t("errors.field.request"),
+      value: (
+        <code>
+          {entry.method ?? "?"} {entry.path ?? "?"}
+        </code>
+      ),
+    });
+  }
+  if (entry.route) {
+    fields.push({
+      label: t("errors.field.route"),
+      value: <code>{entry.route}</code>,
+    });
+  }
+  if (entry.queryKey) {
+    fields.push({
+      label: t("errors.field.queryKey"),
+      value: <code>{entry.queryKey}</code>,
+    });
+  }
+  if (entry.mutationKey) {
+    fields.push({
+      label: t("errors.field.mutationKey"),
+      value: <code>{entry.mutationKey}</code>,
+    });
+  }
 
   return (
-    <article className="card error-card error-entry">
+    <Card as="article" tone="error" className="error-entry">
       <div className="error-entry-head">
         <div className="error-entry-meta">
-          <span className="badge danger">{sourceLabel(entry.source, t)}</span>
-          <time className="muted" dateTime={new Date(entry.ts).toISOString()}>
+          <Badge tone="danger">{sourceLabel(entry.source, t)}</Badge>
+          <Muted as="span">
             {formatTime(entry.ts, localeToBcp47(locale))}
-          </time>
+          </Muted>
           {entry.code ? <code className="error-entry-code">{entry.code}</code> : null}
           {entry.status != null && entry.status > 0 ? (
-            <span className="muted">
+            <Muted as="span">
               {t("errors.http", { status: entry.status })}
-            </span>
+            </Muted>
           ) : null}
         </div>
-        <button type="button" className="secondary out-copy-inline" onClick={onCopy}>
-          {copied ? t("common.copied") : t("common.copy")}
-        </button>
+        <CopyButton
+          value={formatErrorForClipboard(entry)}
+          tone="inline"
+        />
       </div>
       <p className="error-entry-message">{entry.message}</p>
-      <dl className="kv error-entry-kv">
-        {entry.method || entry.path ? (
-          <div className="kv-row">
-            <dt>{t("errors.field.request")}</dt>
-            <dd>
-              <code>
-                {entry.method ?? "?"} {entry.path ?? "?"}
-              </code>
-            </dd>
-          </div>
-        ) : null}
-        {entry.route ? (
-          <div className="kv-row">
-            <dt>{t("errors.field.route")}</dt>
-            <dd>
-              <code>{entry.route}</code>
-            </dd>
-          </div>
-        ) : null}
-        {entry.queryKey ? (
-          <div className="kv-row">
-            <dt>{t("errors.field.queryKey")}</dt>
-            <dd>
-              <code>{entry.queryKey}</code>
-            </dd>
-          </div>
-        ) : null}
-        {entry.mutationKey ? (
-          <div className="kv-row">
-            <dt>{t("errors.field.mutationKey")}</dt>
-            <dd>
-              <code>{entry.mutationKey}</code>
-            </dd>
-          </div>
-        ) : null}
-      </dl>
+      <DescriptionList stacked className="error-entry-kv" items={fields} />
       {details ? (
-        <pre className="error-entry-details">{details}</pre>
+        <CodeBlock value={details} className="error-entry-details" tone="error" />
       ) : null}
       {entry.stack ? (
         <details className="error-entry-stack">
@@ -197,6 +168,6 @@ function ErrorEntryCard({
           <pre>{entry.stack}</pre>
         </details>
       ) : null}
-    </article>
+    </Card>
   );
 }

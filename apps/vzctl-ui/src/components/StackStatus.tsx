@@ -1,4 +1,5 @@
 import { StackVmList } from "@/components/StackVmList";
+import { Card, Muted, PathText, StackPhasePill } from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import { formatOpenedAt } from "@/lib/projects";
 import type { StackInventory, StackPhase } from "@/lib/stackStatus";
@@ -51,25 +52,25 @@ export function StackStatusCard({
         : t("stackCard.noInventory");
 
   return (
-    <div className={`card stack-status phase-${phase}`}>
+    <Card className={`stack-status phase-${phase}`}>
       <div className="stack-status-head">
         <div className="stack-status-identity">
           <h2 className="stack-status-title">{title}</h2>
-          <p className="path stack-status-path">{path}</p>
+          <PathText className="stack-status-path">{path}</PathText>
           {openedAt != null ? (
-            <p className="muted stack-status-meta">
+            <Muted className="stack-status-meta">
               {t("stack.lastOpened", { date: formatOpenedAt(openedAt) })}
-            </p>
+            </Muted>
           ) : null}
         </div>
-        <span className={`stack-pill phase-${phase}`}>
-          {loading ? t("common.ellipsis") : label}
-        </span>
+        <StackPhasePill phase={phase} loading={loading}>
+          {label}
+        </StackPhasePill>
       </div>
 
-      <p className="muted stack-status-summary">{vmSummary}</p>
+      <Muted className="stack-status-summary">{vmSummary}</Muted>
 
       <StackVmList items={items} stackPath={path} />
-    </div>
+    </Card>
   );
 }

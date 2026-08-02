@@ -1,6 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import {
+  Badge,
+  Button,
+  Card,
+  DescriptionList,
+  LoadingState,
+  Mono,
+  Muted,
+  PageHeader,
+  SummaryCard,
+  type BadgeTone,
+} from "@/components/ui";
 import { getT, useT } from "@/lib/i18n";
 import { assertEnvelopeOk, parseEnvelope } from "@/lib/vzctl";
 
@@ -95,80 +107,78 @@ export function DoctorPage() {
 
   return (
     <section>
-      <header className="detail-heading" style={{ marginBottom: "1rem" }}>
-        <h2 className="section-title">{t("doctor.title")}</h2>
-        <p className="muted">{t("doctor.subtitle")}</p>
-      </header>
+      <PageHeader
+        layout="detail"
+        title={t("doctor.title")}
+        subtitle={t("doctor.subtitle")}
+      />
 
-      <div className="card summary-card">
-        <div className="summary-row">
-          <span
-            className={
-              doctorQuery.data?.status === "fail"
-                ? "badge danger"
-                : doctorQuery.data?.status === "warn"
-                  ? "badge warn"
-                  : "badge ok"
-            }
-          >
+      <SummaryCard
+        badge={
+          <Badge tone={badgeTone(doctorQuery.data?.status ?? "ok")}>
             {doctorQuery.data?.status ?? (doctorQuery.isLoading ? t("common.ellipsis") : t("common.emDash"))}
-          </span>
-          {summary ? (
-            <span className="muted">
+          </Badge>
+        }
+        meta={
+          summary ? (
+            <Muted as="span">
               {t("doctor.summaryOk", {
                 ok: String(summary.ok ?? 0),
                 warnings: String(summary.warnings ?? 0),
                 failures: String(summary.failures ?? 0),
               })}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy}
-            onClick={() => void doctorQuery.refetch()}
-          >
+            </Muted>
+          ) : null
+        }
+        actions={
+          <Button tone="secondary" disabled={busy} onClick={() => void doctorQuery.refetch()}>
             {t("doctor.refresh")}
-          </button>
-        </div>
+          </Button>
+        }
+      >
         {doctorQuery.isError ? (
           <p className="tile-error">{String(doctorQuery.error)}</p>
         ) : null}
-        {actionMsg ? <p className="muted">{actionMsg}</p> : null}
-      </div>
+        {actionMsg ? <Muted>{actionMsg}</Muted> : null}
+      </SummaryCard>
 
-      <div className="card">
-        <div className="summary-row">
-          <h3 className="group-title">{t("doctor.bindTitle")}</h3>
-          <span className={bindReady ? "badge ok" : "badge warn"}>
+      <Card
+        title={t("doctor.bindTitle")}
+        titleAs="h3"
+        actions={
+          <Badge tone={bindReady ? "ok" : "warn"}>
             {bindReady ? t("doctor.bindReady") : t("doctor.bindMissing")}
-          </span>
-        </div>
-        <p className="muted">{t("doctor.bindHint")}</p>
-        <dl className="kv">
-          <div className="kv-row">
-            <dt>{t("doctor.bindSocket")}</dt>
-            <dd title={String(bindDetails?.socket ?? "")}>
-              {bindDetails?.socket_connectable
-                ? t("doctor.bindSocketOk")
-                : bindDetails?.socket != null
-                  ? String(bindDetails.socket)
-                  : t("common.emDash")}
-            </dd>
-          </div>
-          <div className="kv-row">
-            <dt>{t("doctor.bindGuestPort")}</dt>
-            <dd>
-              {bindDetails?.guest_port != null
-                ? String(bindDetails.guest_port)
-                : t("common.emDash")}
-            </dd>
-          </div>
-        </dl>
+          </Badge>
+        }
+      >
+        <Muted>{t("doctor.bindHint")}</Muted>
+        <DescriptionList
+          stacked
+          items={[
+            {
+              label: t("doctor.bindSocket"),
+              value: (
+                <span title={String(bindDetails?.socket ?? "")}>
+                  {bindDetails?.socket_connectable
+                    ? t("doctor.bindSocketOk")
+                    : bindDetails?.socket != null
+                      ? String(bindDetails.socket)
+                      : t("common.emDash")}
+                </span>
+              ),
+            },
+            {
+              label: t("doctor.bindGuestPort"),
+              value:
+                bindDetails?.guest_port != null
+                  ? String(bindDetails.guest_port)
+                  : t("common.emDash"),
+            },
+          ]}
+        />
         <div className="doctor-actions">
           {bindNeedsInstall ? (
-            <button
-              type="button"
+            <Button
               disabled={busy}
               onClick={() => {
                 setActionMsg(null);
@@ -176,48 +186,56 @@ export function DoctorPage() {
               }}
             >
               {t("doctor.bindInstall")}
-            </button>
+            </Button>
           ) : null}
           {bindReady ? (
-            <p className="muted">{t("doctor.bindActive")}</p>
+            <Muted>{t("doctor.bindActive")}</Muted>
           ) : null}
         </div>
-      </div>
+      </Card>
 
-      <div className="card">
-        <div className="summary-row">
-          <h3 className="group-title">{t("doctor.caTitle")}</h3>
-          <span className={caTrusted ? "badge ok" : caPresent ? "badge warn" : "badge ok"}>
+      <Card
+        title={t("doctor.caTitle")}
+        titleAs="h3"
+        actions={
+          <Badge tone={caTrusted ? "ok" : caPresent ? "warn" : "ok"}>
             {caTrusted
               ? t("doctor.caTrusted")
               : caPresent
                 ? t("doctor.caNotTrusted")
                 : t("doctor.caNone")}
-          </span>
-        </div>
-        <p className="muted">{t("doctor.caHint")}</p>
-        <dl className="kv">
-          <div className="kv-row">
-            <dt>{t("doctor.caFingerprint")}</dt>
-            <dd title={String(trustDetails?.fingerprint ?? "")}>
-              {shortFp(
-                trustDetails?.fingerprint != null
-                  ? String(trustDetails.fingerprint)
-                  : null,
-              )}
-            </dd>
-          </div>
-          <div className="kv-row">
-            <dt>{t("doctor.caCert")}</dt>
-            <dd title={String(trustDetails?.cert ?? "")}>
-              {trustDetails?.cert != null ? String(trustDetails.cert) : t("common.emDash")}
-            </dd>
-          </div>
-        </dl>
+          </Badge>
+        }
+      >
+        <Muted>{t("doctor.caHint")}</Muted>
+        <DescriptionList
+          stacked
+          items={[
+            {
+              label: t("doctor.caFingerprint"),
+              value: (
+                <span title={String(trustDetails?.fingerprint ?? "")}>
+                  {shortFp(
+                    trustDetails?.fingerprint != null
+                      ? String(trustDetails.fingerprint)
+                      : null,
+                  )}
+                </span>
+              ),
+            },
+            {
+              label: t("doctor.caCert"),
+              value: (
+                <span title={String(trustDetails?.cert ?? "")}>
+                  {trustDetails?.cert != null ? String(trustDetails.cert) : t("common.emDash")}
+                </span>
+              ),
+            },
+          ]}
+        />
         <div className="doctor-actions">
           {!caPresent ? (
-            <button
-              type="button"
+            <Button
               disabled={busy}
               onClick={() => {
                 setActionMsg(null);
@@ -225,11 +243,10 @@ export function DoctorPage() {
               }}
             >
               {t("doctor.caInit")}
-            </button>
+            </Button>
           ) : null}
           {caPresent && !caTrusted ? (
-            <button
-              type="button"
+            <Button
               disabled={busy}
               onClick={() => {
                 setActionMsg(null);
@@ -237,19 +254,17 @@ export function DoctorPage() {
               }}
             >
               {t("doctor.caInstall")}
-            </button>
+            </Button>
           ) : null}
           {caTrusted ? (
-            <p className="muted">{t("doctor.caTrustOk")}</p>
+            <Muted>{t("doctor.caTrustOk")}</Muted>
           ) : null}
         </div>
-      </div>
+      </Card>
 
       <div className="view-stack">
         {doctorQuery.isLoading && checks.length === 0 ? (
-          <div className="card">
-            <p className="muted">{t("doctor.running")}</p>
-          </div>
+          <LoadingState card message={t("doctor.running")} />
         ) : (
           checks.map((check) => (
             <DoctorCheckRow
@@ -295,25 +310,23 @@ function DoctorCheckRow({
     check.status !== "ok";
 
   return (
-    <div className="card doctor-check">
+    <Card className="doctor-check">
       <div className="summary-row">
-        <span className={`badge ${badgeTone(check.status)}`}>
-          {check.status}
-        </span>
-        <code className="path">{check.id}</code>
+        <Badge tone={badgeTone(check.status)}>{check.status}</Badge>
+        <Mono className="path">{check.id}</Mono>
       </div>
       <p>{check.message}</p>
       {showInstallCa ? (
-        <button type="button" disabled={busy} onClick={onInstallCa}>
+        <Button disabled={busy} onClick={onInstallCa}>
           {t("doctor.caInstall")}
-        </button>
+        </Button>
       ) : null}
       {showInstallBind ? (
-        <button type="button" disabled={busy} onClick={onInstallBindHelper}>
+        <Button disabled={busy} onClick={onInstallBindHelper}>
           {t("doctor.bindInstall")}
-        </button>
+        </Button>
       ) : null}
-    </div>
+    </Card>
   );
 }
 
@@ -333,7 +346,7 @@ async function loadDoctor(): Promise<{
   };
 }
 
-function badgeTone(status: string): string {
+function badgeTone(status: string): BadgeTone {
   if (status === "ok") return "ok";
   if (status === "fail") return "danger";
   return "warn";

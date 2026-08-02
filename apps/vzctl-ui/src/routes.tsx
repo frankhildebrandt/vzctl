@@ -43,6 +43,15 @@ import { ImagesPage } from "@/components/ImagesPage";
 import { NetworksPage } from "@/components/NetworksPage";
 import { VmDetailPage } from "@/components/VmDetailPage";
 import { VmListPage } from "@/components/VmListPage";
+import {
+  Alert,
+  Button,
+  Card,
+  EmptyState,
+  FormField,
+  Muted,
+  PageHeader,
+} from "@/components/ui";
 import { parseIngressInfo } from "@/lib/ingress";
 import {
   forgetProject,
@@ -314,17 +323,12 @@ function ProjectListPage() {
 
   return (
     <section>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div>
-          <h2 className="section-title">{t("projects.title")}</h2>
-          <p className="muted">
-            {t("projects.subtitle")}
-          </p>
-        </div>
-        <div className="row" style={{ gap: "0.5rem" }}>
-          <button
-            type="button"
-            className="secondary"
+      <PageHeader
+        title={t("projects.title")}
+        subtitle={t("projects.subtitle")}
+        actions={
+          <Button
+            tone="secondary"
             disabled={busy}
             onClick={() => {
               setError(null);
@@ -332,16 +336,22 @@ function ProjectListPage() {
             }}
           >
             {addMutation.isPending ? t("projects.openBusy") : t("projects.open")}
-          </button>
-        </div>
-      </div>
+          </Button>
+        }
+      />
 
-      <div className="card create-project-card">
-        <h3>{t("projects.newTitle")}</h3>
-        <p className="muted">{t("projects.newHint")}</p>
+      <Card
+        className="create-project-card"
+        title={t("projects.newTitle")}
+        titleAs="h3"
+        subtitle={t("projects.newHint")}
+      >
         <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-          <label className="topology-field" style={{ flex: "1 1 12rem" }}>
-            <span className="sr-only">{t("projects.nameLabel")}</span>
+          <FormField
+            label={<span className="sr-only">{t("projects.nameLabel")}</span>}
+            variant="compact"
+            style={{ flex: "1 1 12rem" }}
+          >
             <input
               value={createName}
               onChange={(e) => setCreateName(e.target.value)}
@@ -349,9 +359,8 @@ function ProjectListPage() {
               aria-label={t("projects.nameLabel")}
               disabled={busy}
             />
-          </label>
-          <button
-            type="button"
+          </FormField>
+          <Button
             disabled={busy || !createName.trim()}
             onClick={() => {
               setError(null);
@@ -359,22 +368,19 @@ function ProjectListPage() {
             }}
           >
             {createMutation.isPending ? t("projects.createBusy") : t("projects.create")}
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {error ? (
-        <div className="card error-card">
-          <h3>{t("common.error")}</h3>
-          <p>{error}</p>
-        </div>
+        <Alert title={t("common.error")}>{error}</Alert>
       ) : null}
 
       {projects.length === 0 ? (
-        <div className="card">
-          <h2>{t("projects.emptyTitle")}</h2>
-          <p className="muted">{t("projects.emptyHint")}</p>
-        </div>
+        <EmptyState
+          title={t("projects.emptyTitle")}
+          message={t("projects.emptyHint")}
+        />
       ) : (
         <ul className="project-list">
           {projects.map((project) => (
@@ -386,20 +392,19 @@ function ProjectListPage() {
               >
                 <span className="project-name">{project.name}</span>
                 <span className="path">{project.path}</span>
-                <span className="muted project-meta">
+                <Muted as="span" className="project-meta">
                   {t("stack.openedAt", { date: formatOpenedAt(project.openedAt) })}
-                </span>
+                </Muted>
               </Link>
-              <button
-                type="button"
-                className="secondary"
+              <Button
+                tone="secondary"
                 disabled={busy}
                 onClick={() =>
                   setPendingRemove({ path: project.path, name: project.name })
                 }
               >
                 {t("projects.remove")}
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -883,10 +888,7 @@ function ProjectDetailPage() {
 
       {tab === "topology" ? (
         topologyError ? (
-          <div className="card error-card">
-            <h3>{t("stack.topologyLoadFail")}</h3>
-            <p>{topologyError}</p>
-          </div>
+          <Alert title={t("stack.topologyLoadFail")}>{topologyError}</Alert>
         ) : (
           <TopologyEditor
             projectPath={path}
@@ -938,15 +940,15 @@ function ProjectDetailPage() {
                 })}
           </span>
           <div className="apply-banner-actions">
-            <button
-              type="button"
+            <Button
+              tone="secondary"
               className="debug-btn"
               onClick={() => setLogOpen((open) => !open)}
             >
               {logOpen ? t("apply.logOff") : t("apply.logOn")}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              tone="secondary"
               className="debug-btn"
               onClick={() => {
                 progress.reset();
@@ -954,7 +956,7 @@ function ProjectDetailPage() {
               }}
             >
               {t("apply.close")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}

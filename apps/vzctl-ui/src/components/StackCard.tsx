@@ -13,6 +13,14 @@ import {
   IconStop,
 } from "@/components/IconButton";
 import { StackVmList } from "@/components/StackVmList";
+import {
+  Card,
+  FieldError,
+  Muted,
+  PathText,
+  SectionTitle,
+  StackPhasePill,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import {
   formatOpenedAt,
@@ -227,7 +235,7 @@ export function StackCard({
 
   return (
     <>
-      <article className={`card stack-card phase-${phase}`}>
+      <Card as="article" className={`stack-card phase-${phase}`}>
         <div className="stack-card-head">
           <div className="stack-card-title">
             <p className="stack-status-kicker">{t("stackCard.kicker")}</p>
@@ -238,25 +246,21 @@ export function StackCard({
             >
               {project.name}
             </Link>
-            {stackId ? <p className="path stack-card-id">{stackId}</p> : null}
-            <p className="muted stack-card-meta">
+            {stackId ? <PathText className="stack-card-id">{stackId}</PathText> : null}
+            <Muted className="stack-card-meta">
               {formatOpenedAt(project.openedAt)}
-            </p>
+            </Muted>
           </div>
-          <span className={`stack-pill phase-${phase}`}>
-            {statusQuery.isFetching && !inventory
-              ? t("common.ellipsis")
-              : stack.label}
-          </span>
+          <StackPhasePill phase={phase} loading={statusQuery.isFetching && !inventory}>
+            {stack.label}
+          </StackPhasePill>
         </div>
 
-        <p className="muted stack-status-summary">{vmSummary}</p>
+        <Muted className="stack-status-summary">{vmSummary}</Muted>
 
         <StackVmList items={items} stackPath={project.path} />
 
-        {error && confirm == null && orphan == null ? (
-          <p className="form-error">{error}</p>
-        ) : null}
+        <FieldError message={error && confirm == null && orphan == null ? error : null} />
 
         <div
           className="stack-card-actions"
@@ -307,7 +311,7 @@ export function StackCard({
             {t("stackCard.details")}
           </Link>
         </div>
-      </article>
+      </Card>
 
       <ConfirmDialog
         open={confirm != null}
@@ -358,23 +362,23 @@ export function StackCardsSection({
 
   if (projects.length === 0) {
     return (
-      <div className="card">
+      <Card>
         {sectionTitle ? <h2>{sectionTitle}</h2> : null}
-        <p className="muted">
+        <Muted>
           {emptyHint ?? (
             <>
               {t("stackCard.emptyTitle")}{" "}
               <Link to="/projects">{t("stackCard.emptyLink")}</Link>
             </>
           )}
-        </p>
-      </div>
+        </Muted>
+      </Card>
     );
   }
 
   return (
     <section className="stack-cards-section">
-      {sectionTitle ? <h2 className="section-title">{sectionTitle}</h2> : null}
+      {sectionTitle ? <SectionTitle>{sectionTitle}</SectionTitle> : null}
       <div className="stack-cards">
         {projects.map((project) => (
           <StackCard key={project.path} project={project} />

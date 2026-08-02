@@ -1904,6 +1904,10 @@ button.secondary:hover:not(:disabled) {
   margin: 0;
 }
 
+.kv-row {
+  display: contents;
+}
+
 .kv dt {
   color: var(--muted);
   font-size: 0.85rem;
