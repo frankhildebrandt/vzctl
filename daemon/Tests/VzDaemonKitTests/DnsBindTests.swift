@@ -57,11 +57,13 @@ import VzDaemonKit
 
     let firewall = try DnsBind.parseOperation(Data(#"""
     {
-      "op":"firewall.reconcile",
+      "op":"firewall.reconcile.v2",
       "bindings":[{
         "cidr":"10.90.0.0/24",
         "allowed_sources":["10.90.0.0/24","10.95.0.0/24"],
-        "tcp_ports":[80,443]
+        "tcp_ports":[80,443],
+        "dns_port":53,
+        "dns_backend_port":15054
       }]
     }
     """#.utf8))
@@ -69,21 +71,62 @@ import VzDaemonKit
         .init(
             cidr: "10.90.0.0/24",
             allowedSources: ["10.90.0.0/24", "10.95.0.0/24"],
-            tcpPorts: [80, 443]
+            tcpPorts: [80, 443],
+            dnsPort: 53,
+            dnsBackendPort: 15_054
         ),
     ])))
+    #expect(throws: DnsBind.ValidationError.invalidFirewall(
+        "DNS redirect requires firewall.reconcile.v2"
+    )) {
+        try DnsBind.parseOperation(Data(#"""
+        {
+          "op":"firewall.reconcile",
+          "bindings":[{
+            "cidr":"10.90.0.0/24",
+            "allowed_sources":["10.90.0.0/24"],
+            "tcp_ports":[],
+            "dns_port":53,
+            "dns_backend_port":15054
+          }]
+        }
+        """#.utf8))
+    }
+    #expect(throws: DnsBind.ValidationError.invalidFirewall(
+        "DNS public and backend ports must both be greater than zero"
+    )) {
+        try DnsBind.validate(.init(bindings: [
+            .init(
+                cidr: "10.90.0.0/24",
+                allowedSources: ["10.90.0.0/24"],
+                tcpPorts: [],
+                dnsPort: 53
+            ),
+        ]))
+    }
 
     let rules = try DnsBind.firewallRules(
         bindings: [
             .init(
                 cidr: "10.90.0.0/24",
                 allowedSources: ["10.95.0.0/24", "10.90.0.0/24"],
-                tcpPorts: [443, 80]
+                tcpPorts: [443, 80],
+                dnsPort: 53,
+                dnsBackendPort: 15_054
             ),
             .init(cidr: "10.80.0.0/24", allowedSources: ["10.80.0.0/24"], tcpPorts: []),
         ],
         interfaceByCIDR: ["10.80.0.0/24": "bridge100", "10.90.0.0/24": "bridge101"]
     )
+    #expect(rules.contains(
+        "rdr pass on bridge101 inet proto udp from { 10.90.0.0/24, 10.95.0.0/24 } to 10.90.0.0 port 53 -> 10.90.0.0 port 15054"
+    ))
+    #expect(rules.contains(
+        "block in quick on bridge101 inet proto udp from any to 10.90.0.0 port 53"
+    ))
+    #expect(rules.contains(
+        "pass in quick on bridge101 inet proto udp from { 10.90.0.0/24, 10.95.0.0/24 } to 224.0.0.251 port 5353 keep state"
+    ))
     #expect(rules.contains("block in quick on bridge100 inet from any to 10.80.0.1"))
     #expect(rules.contains(
         "pass in quick on bridge101 inet proto tcp from { 10.90.0.0/24, 10.95.0.0/24 } to 10.90.0.1 port { 80, 443 }"

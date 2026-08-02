@@ -13,15 +13,16 @@ Port 53 (UDP) und Ingress-Ports 80/443 (TCP) sind privilegiert. Der
 unprivilegierte `vz-edge`-LaunchAgent nutzt den Root-LaunchDaemon
 `vz-dns-bind` (SCM_RIGHTS):
 
-- **UDP** (`:53`): Helper bindet und gibt den Socket-FD zurück (Guest-DNS auf
-  Bridge-`.0`).
+- **UDP** (`:53`): PF leitet Guest-Pakete auf Bridge-`.0` transparent zum
+  exklusiven `vz-edge`-Backend `:15054` um. Dadurch kann macOS
+  `mDNSResponder` mit seinem Wildcard-Listener nicht den Host-Horizont liefern.
 - **TCP** (`:80`/`:443`): Helper legt bei Bedarf Host-Service-Alias `.1` auf dem
   Bridge an, bindet+listens und streamt akzeptierte Client-FDs über dieselbe
   UDS-Verbindung. Ingress-`*.svc` ist Split-Horizon:
   Host-Listener (`127.0.0.1:15353`) → `127.0.0.1` (Mac kann Bridge-`.1` nicht
   dialen: `EHOSTDOWN`); Guest-Listener (`.0:53`) → Host-Service-`.1` (vmnet
-  verwirft Guest-TCP zu `.0`; Loopback wäre im Guest tot, falls mDNSResponder
-  die Query stiehlt).
+  verwirft Guest-TCP zu `.0`; der PF-Redirect verhindert, dass mDNSResponder
+  stattdessen die Host-Loopback-Antwort liefert).
 
 `vz-edge` ordnet jedem Guest-Listener fest sein vmnet und Projekt zu. Eine
 Ingress-Query an `10.90.0.0:53` liefert deshalb ausschließlich `10.90.0.1`;
@@ -36,7 +37,7 @@ Der Helper akzeptiert dafür idempotente, kanonische Netzwerkoperationen:
 ```json
 {"op":"alias.ensure","cidr":"10.90.0.0/24"}
 {"op":"alias.remove","cidr":"10.90.0.0/24"}
-{"op":"firewall.reconcile","bindings":[{"cidr":"10.90.0.0/24","allowed_sources":["10.90.0.0/24"],"tcp_ports":[80,443]}]}
+{"op":"firewall.reconcile.v2","bindings":[{"cidr":"10.90.0.0/24","allowed_sources":["10.90.0.0/24"],"tcp_ports":[80,443],"dns_port":53,"dns_backend_port":15054}]}
 ```
 
 Aliases und PF-Token liegen geschützt unter `/var/run/vzctl/`; `/etc/pf.conf`
@@ -48,13 +49,17 @@ sudo vzctl dns install-bind-helper
 sudo vzctl dns uninstall-bind-helper
 ```
 
-Ohne Helper schlägt `.0:53` mit `Permission denied` fehl (`dns_ok=false`);
-Guest-Ingress über `.0:80/:443` bleibt dann ebenfalls ohne Proxy-Listener.
+Ohne Helper schlägt die geschützte PF-/Alias-Generation vor Veröffentlichung
+fehl (`dns_ok=false`); Guest-DNS und Guest-Ingress bleiben beim Last-Known-Good.
 Für unprivilegierte Dev-Läufe ohne Helper:
 
 ```sh
 VZCTL_DNS_GUEST_PORT=15353
 ```
+
+Der Backend-Port ist mit `VZCTL_DNS_GUEST_BACKEND_PORT` überschreibbar. Bei
+einem unprivilegierten `VZCTL_DNS_GUEST_PORT` sind Public- und Backend-Port
+standardmäßig identisch und es entsteht keine PF-Umleitung.
 
 Der produktive Guest-Pfad setzt Port 53 voraus (Guest-`nameserver` ist
 Bridge-`.0` ohne Port-Override). Netze mit `backend: docker` haben keine
@@ -62,11 +67,36 @@ Host-Bridge-IP und bekommen weder Guest-DNS-Listener noch `*.svc`-Gateway-Record
 
 ## Autoritative Zone
 
-Aus jeder Attachment-Row eines aktiven Netzes entsteht:
+`spec.project` ist der kanonische DNS-Stackname. Aus jeder Attachment-Row
+eines aktiven vmnet-Netzes entsteht:
 
 ```text
 {vm}.{net}.{project}.vz.test.  15 IN A {attachment-ip}
+*.{vm}.{net}.{project}.vz.test. 15 IN A {attachment-ip}
 ```
+
+Laufende, deklarierte Docker-/Compose-Container erhalten nach `stack apply`
+dieselbe Form mit ihrem Docker-Backend-Netz:
+
+```text
+{container}.{docker-net}.{project}.vz.test.   15 IN A {container-ip}
+*.{container}.{docker-net}.{project}.vz.test. 15 IN A {container-ip}
+```
+
+Auf dem Guest-DNS-Listener des eigenen Netzes reicht zusätzlich der einzelne
+VM-/Containername (`web`, `redis`). Kurzformen sind auf dem Mac und auf fremden
+Netzen nicht autoritativ. Container-Kurznamen sind an die primäre vmnet-NIC
+ihrer Docker-VM gebunden. Vollqualifizierte Namen und Wildcards funktionieren
+auf Host und Guests.
+
+Für jede IPv4-Adresse entsteht außerdem ein PTR auf den kanonischen Namen,
+zum Beispiel `10.0.80.10.in-addr.arpa → web.dmz.shop.vz.test`. Unbekannte
+Reverse-Namen werden wie andere externe Queries zum Upstream weitergeleitet.
+
+`svc` ist für Ingress (`{service}.svc.{project}.vz.test`) reserviert. VM-,
+Container- und Netzwerknamen müssen gültige kleingeschriebene DNS-Labels sein
+und dürfen nicht `svc` heißen; ungültige deklarative Namen stoppen die
+Validierung, ungültige Runtime-Container stoppen die Veröffentlichung.
 
 `attachment.project` gewinnt vor `network.project`. Fehlt das Projekt oder ist
 ein Teil kein gültiges DNS-Label, wird kein Record erzeugt. Die Zone wird nach
@@ -168,6 +198,23 @@ Zones. Zwei Configs mit demselben `spec.project` würden dieselbe Zone
 beanspruchen; der Config-Owner-Marker macht das zum harten Konflikt. Das Projekt
 muss deshalb repository-/hostweit eindeutig sein.
 
+Zusätzlich verwaltet vzctl gemeinsam für alle Projekte
+`/etc/resolver/in-addr.arpa`. Damit erreichen macOS-Systemabfragen für IPv4-PTR
+den Host-Listener. Diese Datei bleibt bestehen, solange mindestens ein
+verwalteter Projekt-Resolver existiert, und wird beim letzten Uninstall
+ownership-geprüft entfernt. Eine fremde Reverse-Resolver-Datei wird nie
+überschrieben.
+
+## mDNS
+
+Der PF-Anchor lässt IPv4-mDNS (`224.0.0.251:5353/UDP`) aus den dem vmnet
+zugeordneten Quellnetzen passieren. mDNS bleibt jedoch gemäß RFC 6762
+link-lokal: vzctl routet oder reflektiert Multicast nicht zwischen vmnet,
+Docker-Bridges und dem Mac und veröffentlicht `.vz.test` nicht als `.local`.
+Die oben beschriebenen A-/Wildcard-/PTR-Namen laufen über Unicast-DNS auf
+`.0:53`; vorhandene `.local`-mDNS-Nutzung im selben Layer-2-Netz bleibt davon
+unberührt.
+
 Der spätere Stack-Reconciler (#34) ruft bei `down --purge` denselben
 ownership-geprüften Cleanup-Pfad auf. Bis dieser P3-Command vorhanden ist,
 erfolgt der Cleanup explizit mit `dns uninstall-resolver`.
@@ -205,10 +252,11 @@ vzctl dns query web.dmz.edge-dmz.vz.test
 vzctl dns query --type A --server 127.0.0.1:15353 \
   web.dmz.edge-dmz.vz.test
 vzctl dns query --type AAAA web.dmz.edge-dmz.vz.test --format json
+vzctl dns query --type PTR 10.0.80.10.in-addr.arpa
 ```
 
 Default-Server ist `127.0.0.1:15353`, Default-Typ `A`; unterstützt werden `A`
-und `AAAA`. Die Human-Ausgabe verwendet das Format
+`AAAA` und `PTR`. Die Human-Ausgabe verwendet das Format
 `NAME TTL CLASS TYPE DATA`. Das CLI-v1-JSON enthält Query, RCODE,
 Authoritative-/Truncated-Flags und `answers[]`:
 

@@ -1,4 +1,5 @@
 use crate::config::{self, Environment, VmConfig};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -24,6 +25,7 @@ const APPLY_STEPS: &[&str] = &[
     "acquire_lease",
     "ensure_nets",
     "ensure_dns",
+    "ensure_ca",
     "ensure_images",
     // Attach desired IPs before create so ensure_vm_network / cidata reuse them
     // instead of auto-allocating .10+ that later diverge from DB attachments.
@@ -32,7 +34,6 @@ const APPLY_STEPS: &[&str] = &[
     "start_helpers",
     "await_agents",
     "ensure_docker_project_mount",
-    "ensure_ca",
     "ensure_oidc",
     "ensure_ingress",
     "ensure_ca_rollout",
@@ -226,6 +227,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
     let steps = if effective_mode == Mode::Down {
         vec![
             "purge_ingress",
+            "purge_dns_records",
             "purge_oidc",
             "stop_helpers",
             "detach_nets",
@@ -359,10 +361,11 @@ fn execute_step(
         "ensure_ca_rollout" => ensure_ca_rollout(environment, socket_path),
         "ensure_oidc_inject" => ensure_oidc_inject(environment, socket_path),
         "ensure_docker_context" => ensure_docker_context(environment),
-        "ensure_containers" => ensure_containers(environment, &options.config),
+        "ensure_containers" => ensure_containers(environment, &options.config, socket_path),
         "ensure_ports" => ensure_ports(environment, socket_path),
         "apply_routes_policies" => apply_routes(environment, socket_path),
         "purge_ingress" => purge_ingress(environment, socket_path),
+        "purge_dns_records" => purge_dns_records(environment, socket_path),
         "purge_oidc" => purge_oidc(environment, socket_path),
         "stop_helpers" => stop_helpers(environment, socket_path, options.purge),
         "detach_nets" if options.purge => detach_networks(environment, socket_path),
@@ -1061,12 +1064,17 @@ fn ensure_docker_context(environment: &Environment) -> Result<(), Failure> {
     Ok(())
 }
 
-fn ensure_containers(environment: &Environment, config_path: &Path) -> Result<(), Failure> {
+fn ensure_containers(
+    environment: &Environment,
+    config_path: &Path,
+    socket_path: &Path,
+) -> Result<(), Failure> {
     let config_dir = config::config_path(config_path)
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let state_dir = crate::state_dir();
+    let mut dns_records = Vec::new();
     for (vm_key, vm) in &environment.spec.vms {
         if !vm.roles.iter().any(|role| role == "docker") {
             continue;
@@ -1088,7 +1096,70 @@ fn ensure_containers(environment: &Environment, config_path: &Path) -> Result<()
                 format!("ensure containers on VM {vm_key}: {error}"),
             )
         })?;
+
+        let docker_attachment = vm
+            .networks
+            .iter()
+            .find(|attachment| {
+                environment
+                    .spec
+                    .networks
+                    .get(&attachment.name)
+                    .is_some_and(|network| network.backend == crate::config::NetworkBackend::Docker)
+            })
+            .ok_or_else(|| {
+                Failure::new(
+                    EXIT_STEP,
+                    format!("docker VM {vm_key} has no backend: docker network"),
+                )
+            })?;
+        let primary = vm
+            .networks
+            .iter()
+            .find(|attachment| {
+                environment
+                    .spec
+                    .networks
+                    .get(&attachment.name)
+                    .is_some_and(|network| network.backend != crate::config::NetworkBackend::Docker)
+            })
+            .ok_or_else(|| {
+                Failure::new(
+                    EXIT_STEP,
+                    format!("docker VM {vm_key} has no primary vmnet network"),
+                )
+            })?;
+        let docker_cidr = environment.spec.networks[&docker_attachment.name]
+            .cidr
+            .parse::<ipnet::Ipv4Net>()
+            .map_err(|error| Failure::new(EXIT_STEP, format!("docker DNS CIDR: {error}")))?;
+        let discovered = crate::docker::collect_vm_container_dns(
+            &environment.spec.project,
+            &state_dir,
+            vm_key,
+            &vm.compose_files,
+            docker_cidr,
+        )
+        .map_err(|error| Failure::new(EXIT_STEP, format!("container DNS: {error}")))?;
+        dns_records.extend(discovered.into_iter().map(|record| {
+            json!({
+                "name": record.name,
+                "network": docker_attachment.name,
+                "listener_network": primary.name,
+                "stack": environment.spec.project,
+                "project": environment.spec.project,
+                "ip": record.ip.to_string(),
+            })
+        }));
     }
+    rpc(
+        socket_path,
+        "dns.records.ensure",
+        json!({
+            "project": environment.spec.project,
+            "records": dns_records,
+        }),
+    )?;
     Ok(())
 }
 
@@ -1379,26 +1450,131 @@ fn ensure_ca_rollout(environment: &Environment, socket_path: &Path) -> Result<()
     let pem = crate::certs::read_ca_pem(&state_dir).map_err(|e| Failure::new(EXIT_STEP, e))?;
     let fingerprint =
         crate::certs::read_fingerprint(&state_dir).map_err(|e| Failure::new(EXIT_STEP, e))?;
-    for name in environment.spec.vms.keys() {
-        let runtime_id = vm_runtime_id(environment, name);
-        // Best-effort live inject via supervisor → helper → agent exec.
-        let script = format!(
-            "mkdir -p /usr/local/share/ca-certificates /var/lib/vzctl && \
-             cat > /usr/local/share/ca-certificates/vzctl-local.crt <<'EOF'\n{pem}\nEOF\n\
-             echo {fingerprint} > /var/lib/vzctl/ca.fingerprint && \
-             (sudo -n /usr/sbin/update-ca-certificates || update-ca-certificates || true)"
-        );
-        let _ = rpc(
-            socket_path,
+    let targets = environment
+        .spec
+        .vms
+        .keys()
+        .map(|name| vm_runtime_id(environment, name))
+        .collect::<Vec<_>>();
+    rollout_ca_to_vms(&targets, &pem, &fingerprint, |method, params| {
+        rpc(socket_path, method, params)
+    })
+}
+
+const LEGACY_CA_INSTALL_SCRIPT: &str = r#"set -eu
+fingerprint=$1
+pem_b64=$2
+ca_dir=/usr/local/share/ca-certificates
+fingerprint_file=/var/lib/vzctl/ca.fingerprint
+install -d -m 0755 "$ca_dir" /var/lib/vzctl
+pem_tmp=$(mktemp "$ca_dir/.vzctl-local.crt.XXXXXX")
+der_tmp=$(mktemp)
+fingerprint_tmp=$(mktemp /var/lib/vzctl/.ca.fingerprint.XXXXXX)
+trap 'rm -f "$pem_tmp" "$der_tmp" "$fingerprint_tmp"' EXIT
+printf '%s' "$pem_b64" | base64 -d >"$pem_tmp"
+openssl x509 -in "$pem_tmp" -outform DER >"$der_tmp"
+actual=$(openssl dgst -sha256 -r "$der_tmp" | awk '{print $1}')
+[ "$actual" = "$fingerprint" ] || {
+  echo "CA fingerprint mismatch: expected $fingerprint, got $actual" >&2
+  exit 1
+}
+chmod 0644 "$pem_tmp"
+mv -f "$pem_tmp" "$ca_dir/vzctl-local.crt"
+/usr/sbin/update-ca-certificates
+openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt "$ca_dir/vzctl-local.crt" >/dev/null
+printf '%s\n' "$fingerprint" >"$fingerprint_tmp"
+chmod 0644 "$fingerprint_tmp"
+mv -f "$fingerprint_tmp" "$fingerprint_file"
+"#;
+
+fn rollout_ca_to_vms<F>(
+    targets: &[String],
+    pem: &str,
+    fingerprint: &str,
+    mut call: F,
+) -> Result<(), Failure>
+where
+    F: FnMut(&str, Value) -> Result<Value, Failure>,
+{
+    let pem_b64 = base64::engine::general_purpose::STANDARD.encode(pem.as_bytes());
+    let mut failures = Vec::new();
+    for vm_id in targets {
+        let primary = call(
+            "vm.agent.ca_inject",
+            json!({
+                "vm_id": vm_id,
+                "pem": pem,
+                "fingerprint": fingerprint,
+                "name": "vzctl-local",
+            }),
+        )
+        .and_then(|result| validate_ca_inject_result(&result, fingerprint));
+        if primary.is_ok() {
+            continue;
+        }
+        let primary_message = primary
+            .err()
+            .map(|failure| failure.message)
+            .unwrap_or_else(|| "unknown ca_inject failure".to_string());
+        let fallback = call(
             "vm.exec",
             json!({
-                "vm_id": runtime_id,
-                "cmd": ["bash", "-lc", script],
+                "vm_id": vm_id,
+                "cmd": [
+                    "sudo",
+                    "-n",
+                    "sh",
+                    "-c",
+                    LEGACY_CA_INSTALL_SCRIPT,
+                    "vzctl-ca-fallback",
+                    fingerprint,
+                    pem_b64,
+                ],
                 "timeout_ms": 60_000,
             }),
-        );
+        )
+        .and_then(validate_ca_exec_result);
+        if let Err(failure) = fallback {
+            failures.push(format!(
+                "{vm_id}: ca_inject failed ({primary_message}); compatibility fallback failed ({})",
+                failure.message
+            ));
+        }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            EXIT_STEP,
+            format!("CA rollout failed: {}", failures.join("; ")),
+        ))
+    }
+}
+
+fn validate_ca_inject_result(result: &Value, fingerprint: &str) -> Result<Value, Failure> {
+    if result["installed"] == true && result["fingerprint"].as_str() == Some(fingerprint) {
+        Ok(result.clone())
+    } else {
+        Err(Failure::new(
+            EXIT_STEP,
+            "ca_inject returned an invalid result",
+        ))
+    }
+}
+
+fn validate_ca_exec_result(result: Value) -> Result<Value, Failure> {
+    if result["exit"].as_i64() == Some(0) {
+        return Ok(result);
+    }
+    let detail = result["stderr"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| result["stdout"].as_str())
+        .unwrap_or("missing vm.exec result");
+    Err(Failure::new(
+        EXIT_STEP,
+        format!("guest command exited with {}: {detail}", result["exit"]),
+    ))
 }
 
 fn ensure_oidc_inject(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
@@ -1450,6 +1626,15 @@ fn purge_ingress(environment: &Environment, socket_path: &Path) -> Result<(), Fa
     let _ = rpc(
         socket_path,
         "ingress.purge",
+        json!({ "project": environment.spec.project }),
+    );
+    Ok(())
+}
+
+fn purge_dns_records(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+    let _ = rpc(
+        socket_path,
+        "dns.records.purge",
         json!({ "project": environment.spec.project }),
     );
     Ok(())
@@ -2371,6 +2556,56 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ca_is_ensured_before_vm_creation() {
+        let ca = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "ensure_ca")
+            .unwrap();
+        let vms = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "ensure_vms")
+            .unwrap();
+        assert!(ca < vms);
+    }
+
+    #[test]
+    fn ca_rollout_uses_primary_agent_method_without_fallback() {
+        let targets = vec!["demo/web".to_string()];
+        let fingerprint = "a".repeat(64);
+        let mut methods = Vec::new();
+        rollout_ca_to_vms(&targets, "pem", &fingerprint, |method, _| {
+            methods.push(method.to_string());
+            Ok(json!({"installed": true, "fingerprint": fingerprint}))
+        })
+        .unwrap();
+        assert_eq!(methods, vec!["vm.agent.ca_inject"]);
+    }
+
+    #[test]
+    fn ca_rollout_falls_back_and_aggregates_vm_failures() {
+        let targets = vec!["demo/web".to_string(), "demo/db".to_string()];
+        let fingerprint = "b".repeat(64);
+        let mut calls = Vec::new();
+        let failure = rollout_ca_to_vms(&targets, "pem", &fingerprint, |method, params| {
+            let vm_id = params["vm_id"].as_str().unwrap().to_string();
+            calls.push((vm_id.clone(), method.to_string()));
+            if method == "vm.agent.ca_inject" {
+                return Err(Failure::new(EXIT_STEP, "old agent"));
+            }
+            if vm_id == "demo/web" {
+                Ok(json!({"exit": 1, "stderr": "update failed"}))
+            } else {
+                Ok(json!({"exit": 0, "stdout": "ok", "stderr": ""}))
+            }
+        })
+        .unwrap_err();
+        assert!(failure.message.contains("demo/web"));
+        assert!(failure.message.contains("update failed"));
+        assert!(!failure.message.contains("demo/db:"));
+        assert_eq!(calls.len(), 4);
+    }
 
     fn resource(kind: &str, name: &str, spec: &str, state: &str) -> Resource {
         Resource {

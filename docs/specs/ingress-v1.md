@@ -23,8 +23,9 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
     `ingress.bind` (default `127.0.0.1`) → Caddy on unprivileged loopback ports
     (`http_port+18000` / `https_port+18000`, e.g. `18080`/`18443`)
   - Privileged TCP: `vz-dns-bind` aliases `.1` on the bridge if needed, listens,
-    and streams accepted client FDs to the supervisor (UDP `:53` still hands back
-    the bound socket FD on `.0`)
+    and streams accepted client FDs to the supervisor. Guest-UDP `.0:53` wird im
+    PF-Anchor auf den exklusiven `vz-edge`-Port `.0:15054` umgeleitet, damit der
+    macOS-Wildcard-DNS keine Host-Antwort übernehmen kann.
   - Der Helper legt `.1` für jedes aktive vmnet an. Ein PF-Anchor
     `com.apple/vzctl` erlaubt auf `.1` nur die konfigurierten Ingress-Ports;
     andere Host-Dienste sowie UDP/ICMP bleiben gesperrt.
@@ -35,6 +36,8 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
   - Caddy itself binds only `ingress.bind` on those unprivileged ports so the
     user-level process does not need root for `:80/:443`
 - Direct guest→VM traffic uses `{vm}.{net}.{project}.vz.test`, not `*.svc`
+- `svc` is the reserved ingress namespace and is invalid as a VM, container or
+  network name.
 
 ## Routes
 

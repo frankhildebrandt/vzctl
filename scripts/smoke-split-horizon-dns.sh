@@ -17,6 +17,7 @@ foreign_host="${FOREIGN_HOST:-web.svc.foreign.vz.test}"
 ingress_port="${INGRESS_PORT:-443}"
 blocked_port="${BLOCKED_PORT:-18081}"
 docker_image="${DOCKER_IMAGE:-curlimages/curl:8.15.0}"
+dns_backend_port="${VZCTL_DNS_GUEST_BACKEND_PORT:-15054}"
 pf_anchor="com.apple/vzctl"
 service_pid=""
 service_log=""
@@ -70,6 +71,8 @@ import sys
 network = ipaddress.ip_network(sys.argv[1], strict=True)
 if sys.argv[2] == "alias":
     print(network.network_address + 1)
+elif sys.argv[2] == "gateway":
+    print(network.network_address)
 elif sys.argv[2] == "mask":
     print(f"0x{int(network.netmask):08x}")
 else:
@@ -81,6 +84,8 @@ cidr_a="$(network_cidr "$network_a")"
 cidr_b="$(network_cidr "$network_b")"
 alias_a="$(cidr_value "$cidr_a" alias)"
 alias_b="$(cidr_value "$cidr_b" alias)"
+gateway_a="$(cidr_value "$cidr_a" gateway)"
+gateway_b="$(cidr_value "$cidr_b" gateway)"
 mask_a="$(cidr_value "$cidr_a" mask)"
 mask_b="$(cidr_value "$cidr_b" mask)"
 
@@ -96,10 +101,15 @@ assert_alias "$alias_a" "$mask_a"
 assert_alias "$alias_b" "$mask_b"
 
 pf_rules="$(sudo pfctl -a "$pf_anchor" -sr 2>/dev/null)"
+pf_redirects="$(sudo pfctl -a "$pf_anchor" -sn 2>/dev/null)"
 for address in "$alias_a" "$alias_b"; do
   grep -Fq "to $address" <<<"$pf_rules" || fail "PF-Regeln für $address fehlen"
   grep -Fq "block in quick" <<<"$(grep -F "to $address" <<<"$pf_rules")" \
     || fail "PF-Blockregel für $address fehlt"
+done
+for gateway in "$gateway_a" "$gateway_b"; do
+  grep -F "$gateway" <<<"$pf_redirects" | grep -Fq "$dns_backend_port" \
+    || fail "DNS-Redirect $gateway:53 -> $gateway:$dns_backend_port fehlt"
 done
 
 host_answers="$($vzctl_bin dns query "$ingress_host" --format json \
@@ -164,16 +174,23 @@ fi
 "$vzctl_bin" apply -C "$config" --format json >/dev/null
 aliases_before="$(ifconfig | grep -E "inet (${alias_a//./\\.}|${alias_b//./\\.}) " | sort)"
 pf_before="$(sudo pfctl -a "$pf_anchor" -sr 2>/dev/null)"
+pf_redirects_before="$(sudo pfctl -a "$pf_anchor" -sn 2>/dev/null)"
 "$vzctl_bin" apply -C "$config" --format json >/dev/null
 aliases_after="$(ifconfig | grep -E "inet (${alias_a//./\\.}|${alias_b//./\\.}) " | sort)"
 pf_after="$(sudo pfctl -a "$pf_anchor" -sr 2>/dev/null)"
+pf_redirects_after="$(sudo pfctl -a "$pf_anchor" -sn 2>/dev/null)"
 [[ "$aliases_before" == "$aliases_after" ]] || fail "Alias-Reconcile ist nicht idempotent"
 [[ "$pf_before" == "$pf_after" ]] || fail "PF-Reconcile ist nicht idempotent"
+[[ "$pf_redirects_before" == "$pf_redirects_after" ]] \
+  || fail "PF-DNS-Redirect ist nicht idempotent"
 
 if [[ "${VZCTL_SMOKE_CRASH_HELPER:-0}" == "1" ]]; then
   sudo launchctl kill SIGKILL system/com.vzctl.dns-bind
   pf_after_crash="$(sudo pfctl -a "$pf_anchor" -sr 2>/dev/null)"
+  pf_redirects_after_crash="$(sudo pfctl -a "$pf_anchor" -sn 2>/dev/null)"
   [[ "$pf_after_crash" == "$pf_after" ]] || fail "PF-Regeln gingen beim Helper-Crash verloren"
+  [[ "$pf_redirects_after_crash" == "$pf_redirects_after" ]] \
+    || fail "PF-DNS-Redirect ging beim Helper-Crash verloren"
   for _ in {1..20}; do
     [[ -S /var/run/vzctl/dns-bind.sock ]] && break
     sleep 0.25

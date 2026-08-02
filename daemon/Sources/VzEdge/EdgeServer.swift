@@ -35,6 +35,7 @@ final class EdgeServer: @unchecked Sendable {
     private var digest = ""
     private var desired: JSONValue = .object([:])
     private var lastError: String?
+    private let dnsConfiguration: DNSConfiguration
     private let dnsServer: DNSServer
     private let portProxy = PortForwardProxy()
     private let gatewayProxy = HostGatewayIngressProxy()
@@ -47,6 +48,7 @@ final class EdgeServer: @unchecked Sendable {
         hostNetworking: HostNetworkReconciler = HostNetworkReconciler()
     ) throws {
         self.stateDirectory = stateDirectory
+        self.dnsConfiguration = dnsConfiguration
         self.hostNetworking = hostNetworking
         dnsServer = DNSServer(configuration: dnsConfiguration)
         runtimeDirectory = stateDirectory.appendingPathComponent("runtime/edge", isDirectory: true)
@@ -217,6 +219,7 @@ final class EdgeServer: @unchecked Sendable {
         let desired = try object(value)
         let snapshot = try parseSnapshot(desired["network_snapshot"] ?? .object([:]))
         let hostServices = try strings(desired["host_services"] ?? .array([]))
+        let dnsRecords = try array(desired["dns_records"] ?? .array([])).map(parseDNSRecord)
         let ports = try array(desired["port_forwards"] ?? .array([])).map(parsePort)
         let ingress = try array(desired["ingress"] ?? .array([]))
         let oidc = try array(desired["oidc"] ?? .array([]))
@@ -233,7 +236,9 @@ final class EdgeServer: @unchecked Sendable {
                 DnsBind.FirewallBinding(
                     cidr: network.cidr,
                     allowedSources: [network.cidr],
-                    tcpPorts: []
+                    tcpPorts: [],
+                    dnsPort: dnsConfiguration.guestPort,
+                    dnsBackendPort: dnsConfiguration.guestBackendPort
                 )
             )
         })
@@ -337,6 +342,7 @@ final class EdgeServer: @unchecked Sendable {
             )
         }
         dnsServer.setHostServices(hostServices)
+        dnsServer.setRuntimeRecords(dnsRecords)
         let dns = dnsServer.reload(snapshot: snapshot)
         guard dns.ok else { throw EdgeServerError.invalid(dns.lastError ?? "DNS reconcile failed") }
         try hostNetworking.finish(
@@ -432,6 +438,18 @@ final class EdgeServer: @unchecked Sendable {
         return NetworkSnapshot(networks: networks, attachments: attachments)
     }
 
+    private func parseDNSRecord(_ value: JSONValue) throws -> DNSRuntimeRecord {
+        let item = try object(value)
+        return DNSRuntimeRecord(
+            name: try string("name", item),
+            network: try string("network", item),
+            listenerNetwork: try string("listener_network", item),
+            stack: try string("stack", item),
+            project: try string("project", item),
+            ip: try string("ip", item)
+        )
+    }
+
     private func parsePort(_ raw: JSONValue) throws -> PortForwardRecord {
         let item = try object(raw)
         return PortForwardRecord(
@@ -493,7 +511,9 @@ private func mergeFirewallBinding(
     bindings[cidr] = DnsBind.FirewallBinding(
         cidr: cidr,
         allowedSources: Array(Set((existing?.allowedSources ?? []) + allowedSources)).sorted(),
-        tcpPorts: Array(Set((existing?.tcpPorts ?? []) + ports)).sorted()
+        tcpPorts: Array(Set((existing?.tcpPorts ?? []) + ports)).sorted(),
+        dnsPort: existing?.dnsPort,
+        dnsBackendPort: existing?.dnsBackendPort
     )
 }
 

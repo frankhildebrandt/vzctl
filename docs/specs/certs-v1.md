@@ -48,10 +48,19 @@ manuellen CA-Import.
 
 1. **Boot seed (NoCloud):** write
    `/usr/local/share/ca-certificates/vzctl-local.crt` and run
-   `update-ca-certificates`.
-2. **Live:** Guest-Agent method `ca_inject` (capability `ca_inject`).
+   `update-ca-certificates`; CA creation happens before VM creation so the seed
+   is present on the first apply.
+2. **Live:** Supervisor method `vm.agent.ca_inject` routes through the helper to
+   Guest-Agent method `ca_inject` (capability `ca_inject`). The agent invokes the
+   restricted root helper `/usr/local/lib/vzctl/ca-inject`, which validates the
+   fingerprint, installs atomically, refreshes and verifies the system bundle.
+   Existing sealed agents fall back to the equivalent `vm.exec` + `sudo` path.
 3. Lockfile / SQLite stores the CA fingerprint; drift → reinject
    (`certs.onRotate: reinject`) or reboot (`reboot`).
+
+The apply step attempts every desired VM, aggregates per-VM failures and fails
+hard if both the primary method and its compatibility fallback fail. A partial
+or skipped rollout must never be reported as successful.
 
 Java trust stores are out of Alpha / Nice-to-have.
 

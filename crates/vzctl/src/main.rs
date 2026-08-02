@@ -2706,6 +2706,7 @@ fn prepare_cloud_init_seed(
     })];
     append_virtiofs_bind_files(&mut write_files);
     append_router_apply_files(&mut write_files);
+    append_ca_inject_files(&mut write_files);
     let mut runcmd = Vec::new();
     append_agent_privilege_files(&mut write_files, &mut runcmd);
     if let Ok(ca_files) = crate::certs::nocloud_ca_write_files(&state_dir()) {
@@ -2730,24 +2731,7 @@ fn prepare_cloud_init_seed(
                 map
             }));
         }
-        write_files.push(serde_yaml::Value::Mapping({
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                serde_yaml::Value::String("path".into()),
-                serde_yaml::Value::String("/etc/sudoers.d/vzctl-ca".into()),
-            );
-            map.insert(
-                serde_yaml::Value::String("permissions".into()),
-                serde_yaml::Value::String("0440".into()),
-            );
-            map.insert(
-                serde_yaml::Value::String("content".into()),
-                serde_yaml::Value::String(
-                    "vzctl-agent ALL=(root) NOPASSWD: /usr/sbin/update-ca-certificates\n".into(),
-                ),
-            );
-            map
-        }));
+        append_ca_trust_update_command(&mut runcmd);
     }
 
     if roles.iter().any(|role| role == "router") {
@@ -3008,6 +2992,63 @@ fn append_router_apply_files(write_files: &mut Vec<serde_yaml::Value>) {
         );
         file
     }));
+}
+
+fn append_ca_inject_files(write_files: &mut Vec<serde_yaml::Value>) {
+    let script = include_str!("../../../guest-agent/scripts/ca-inject");
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/usr/local/lib/vzctl/ca-inject".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0755".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(script.to_string()),
+        );
+        file
+    }));
+    write_files.push(serde_yaml::Value::Mapping({
+        let mut file = serde_yaml::Mapping::new();
+        file.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/sudoers.d/vzctl-ca".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("owner".into()),
+            serde_yaml::Value::String("root:root".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("permissions".into()),
+            serde_yaml::Value::String("0440".into()),
+        );
+        file.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(
+                "vzctl-agent ALL=(root) NOPASSWD: /usr/local/lib/vzctl/ca-inject\n".into(),
+            ),
+        );
+        file
+    }));
+}
+
+fn append_ca_trust_update_command(runcmd: &mut Vec<serde_yaml::Value>) {
+    runcmd.push(serde_yaml::Value::Sequence(vec![
+        serde_yaml::Value::String("sh".into()),
+        serde_yaml::Value::String("-c".into()),
+        serde_yaml::Value::String(
+            "/usr/sbin/update-ca-certificates && openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/vzctl-local.crt"
+                .into(),
+        ),
+    ]));
 }
 
 /// Passwordless sudo for `vzctl-agent` plus a unit refresh so clones pick up
@@ -4513,6 +4554,22 @@ fn macos_major() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ca_nocloud_assets_include_privileged_installer_and_trust_update() {
+        let mut write_files = Vec::new();
+        append_ca_inject_files(&mut write_files);
+        let files = serde_yaml::to_string(&write_files).unwrap();
+        assert!(files.contains("/usr/local/lib/vzctl/ca-inject"));
+        assert!(files.contains("/etc/sudoers.d/vzctl-ca"));
+        assert!(files.contains("NOPASSWD: /usr/local/lib/vzctl/ca-inject"));
+
+        let mut runcmd = Vec::new();
+        append_ca_trust_update_command(&mut runcmd);
+        let commands = serde_yaml::to_string(&runcmd).unwrap();
+        assert!(commands.contains("/usr/sbin/update-ca-certificates"));
+        assert!(commands.contains("openssl verify"));
+    }
     use std::cell::RefCell;
 
     #[test]

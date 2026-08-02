@@ -41,6 +41,7 @@ dns_bind="$root/daemon/.build/release/vz-dns-bind"
 oidc_simple="$root/target/release/vzctl-oidc-simple"
 tauri_app="$root/apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app"
 postinstall_src="$root/packaging/macos/postinstall"
+stop_helpers_src="$root/daemon/scripts/stop-vz-helpers.sh"
 
 die() {
   echo "package-macos: $*" >&2
@@ -63,6 +64,7 @@ need_file "$edge"
 need_file "$dns_bind"
 need_dir "$tauri_app"
 [ -f "$postinstall_src" ] || die "missing $postinstall_src"
+[ -f "$stop_helpers_src" ] || die "missing $stop_helpers_src"
 
 rm -rf "$tar_dir" "$pkg_root" "$dmg_stage" "$scripts_dir"
 mkdir -p "$dist" "$tar_dir" "$pkg_root/usr/local/bin" "$pkg_root/Applications" \
@@ -91,6 +93,7 @@ fi
 ditto "$tauri_app" "$pkg_root/Applications/vzctl.app"
 
 install -m 0755 "$postinstall_src" "$scripts_dir/postinstall"
+install -m 0755 "$stop_helpers_src" "$scripts_dir/stop-vz-helpers.sh"
 
 pkgbuild \
   --root "$pkg_root" \

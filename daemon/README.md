@@ -62,8 +62,11 @@ CLI, `vz-net`, `vz-edge`, Supervisor, Helper und `vz-dns-bind` landen standardm�
 und aktiviert LaunchDaemon `com.vzctl.dns-bind`. Das Ziel kann mit `PREFIX` oder
 `BINDIR` 체berschrieben werden. `ACTIVATE=0` installiert und validiert den
 LaunchAgent, ohne ihn zu laden. Wiederholtes `make install` ersetzt die Binaries
-atomar und startet Net-, Edge- und Control-Plane-LaunchAgents neu. Laufende VM-Helper bleiben
-unangetastet, damit keine VM f체r ein Tool-Update stoppt.
+atomar und startet Net-, Edge- und Control-Plane-LaunchAgents neu. Vor dem
+`vz-net`-Shutdown werden laufende VM-Helper per SIGTERM graceful gestoppt, weil
+ihre serialisierten Attachments einen `vz-net`-Neustart nicht 체berleben. Bleibt
+ein Helper h채ngen, bricht die Installation ab und l채sst `vz-net` unangetastet;
+SIGKILL wird nicht verwendet. `vzctl up -C <stack>` startet die VMs danach neu.
 
 ## VM bundle and run
 

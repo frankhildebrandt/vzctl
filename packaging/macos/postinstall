@@ -24,6 +24,8 @@ fi
 
 uid=$(id -u "$console_user")
 domain="gui/$uid"
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+stop_helpers="$script_dir/stop-vz-helpers.sh"
 launch_agents_dir="$console_home/Library/LaunchAgents"
 log_dir="$console_home/Library/Logs/vzctl"
 user_apps="$console_home/Applications"
@@ -94,6 +96,14 @@ wait_sock() {
   done
   return 1
 }
+
+# Recreating vz-net disconnects helper-side serialized refs. Stop VMs first;
+# never continue to vz-net while a helper refuses graceful shutdown.
+if [ ! -x "$stop_helpers" ]; then
+  echo "postinstall: missing executable: $stop_helpers" >&2
+  exit 3
+fi
+"$stop_helpers" "$uid"
 
 # Stop existing agents before rewriting plists (vz-net graceful only).
 if agent_loaded "$label_supervisor"; then

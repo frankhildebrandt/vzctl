@@ -656,6 +656,12 @@ fn validate_references(
         &mut issues,
     );
     validate_name_keys("$.spec.vms", environment.spec.vms.keys(), &mut issues);
+    validate_dns_keys(
+        "$.spec.networks",
+        environment.spec.networks.keys(),
+        &mut issues,
+    );
+    validate_dns_keys("$.spec.vms", environment.spec.vms.keys(), &mut issues);
     validate_volume_keys(&environment.spec.volumes, config_dir, &mut issues);
 
     for (name, network) in &environment.spec.networks {
@@ -928,6 +934,21 @@ fn validate_references(
             &mut issues,
         );
         validate_vm_containers(vm_name, vm, &vm_base, config_dir, &mut issues);
+        if (!vm.compose_files.is_empty() || !vm.containers.is_empty())
+            && !vm.networks.iter().any(|attachment| {
+                environment
+                    .spec
+                    .networks
+                    .get(&attachment.name)
+                    .is_some_and(|network| network.backend == NetworkBackend::Docker)
+            })
+        {
+            issues.push(ValidationIssue::new(
+                format!("{vm_base}.networks"),
+                "container DNS requires an attached backend: docker network",
+                "semantic",
+            ));
+        }
         if let Some(0) = vm.cpus {
             issues.push(ValidationIssue::new(
                 format!("{vm_base}.cpus"),
@@ -1679,6 +1700,34 @@ fn valid_name(name: &str) -> bool {
         })
 }
 
+fn validate_dns_keys<'a>(
+    base: &str,
+    names: impl Iterator<Item = &'a String>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for name in names {
+        if !valid_dns_label(name) {
+            issues.push(ValidationIssue::new(
+                json_path_key(base, name),
+                "DNS-visible name must be lowercase a-z, 0-9, hyphen; never svc",
+                "semantic",
+            ));
+        }
+    }
+}
+
+fn valid_dns_label(name: &str) -> bool {
+    name != "svc"
+        && (1..=63).contains(&name.len())
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'-')
+        })
+        && name
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+}
+
 pub(crate) fn valid_image_tag(tag: &str) -> bool {
     (1..=64).contains(&tag.len())
         && tag.bytes().enumerate().all(|(index, byte)| {
@@ -1804,6 +1853,13 @@ fn validate_vm_containers(
             issues.push(ValidationIssue::new(
                 base.clone(),
                 "container name must be 1-63 ASCII characters: alphanumeric, underscore, dot, or dash",
+                "semantic",
+            ));
+        }
+        if !valid_dns_label(name) {
+            issues.push(ValidationIssue::new(
+                base.clone(),
+                "container DNS name must be lowercase a-z, 0-9, hyphen; never svc",
                 "semantic",
             ));
         }
@@ -2243,6 +2299,23 @@ mod tests {
             docker.containers["redis"].restart.as_deref(),
             Some("unless-stopped")
         );
+    }
+
+    #[test]
+    fn dns_visible_vm_network_and_container_names_reserve_svc() {
+        let source = include_str!("../tests/fixtures/validate/valid-docker-containers.yaml");
+        for changed in [
+            source
+                .replacen("    lan:", "    svc:", 1)
+                .replace("name: lan", "name: svc"),
+            source.replacen("    docker:", "    svc:", 1),
+            source.replacen("        redis:", "        svc:", 1),
+        ] {
+            let issues = validate_source(&changed).unwrap_err();
+            assert!(issues
+                .iter()
+                .any(|issue| issue.message.contains("never svc")));
+        }
     }
 
     #[test]

@@ -8,6 +8,12 @@ private let dnsHeaderLength = 12
 struct DNSZone: Equatable, Sendable {
     /// Guest-horizon A records (and shared VM records).
     let records: [String: [String]]
+    /// Base names for `*.{host}.{network}.{stack}.vz.test` synthesis.
+    let wildcardRecords: [String: [String]]
+    /// Listener-scoped single-label names, keyed by `{stack}|{listener-network}`.
+    let shortRecords: [String: [String: [String]]]
+    /// Reverse IPv4 owner name → canonical host/container FQDN.
+    let ptrRecords: [String: [String]]
     /// Host-horizon A records for ingress/OIDC names (loopback for Mac clients).
     let hostRecords: [String: [String]]
     /// Project ownership for host-managed ingress/OIDC names.
@@ -22,26 +28,56 @@ struct DNSZone: Equatable, Sendable {
             if let host = hostRecords[canonical] {
                 return host
             }
-            return records[canonical]
+            return records[canonical] ?? wildcardAddresses(for: canonical)
         case let .guest(context):
             if hostRecords[canonical] != nil {
                 guard ingressProjects[canonical] == context.project else { return nil }
                 return [context.hostService]
             }
-            return records[canonical]
+            if let exact = records[canonical] ?? wildcardAddresses(for: canonical) {
+                return exact
+            }
+            guard !canonical.contains(".") else { return nil }
+            return shortRecords[DNSZoneBuilder.contextKey(
+                stack: context.stack,
+                network: context.network
+            )]?[canonical]
         }
     }
 
-    func isAuthoritative(for name: String) -> Bool {
+    func ptrNames(for name: String) -> [String]? {
+        ptrRecords[DNSZoneBuilder.canonicalName(name)]
+    }
+
+    func isAuthoritative(for name: String, horizon: DNSHorizon) -> Bool {
         let canonical = DNSZoneBuilder.canonicalName(name)
-        return canonical == "vz.test"
+        return addresses(for: canonical, horizon: horizon) != nil
+            || ptrRecords[canonical] != nil
+            || canonical == "vz.test"
             || canonical.hasSuffix(".vz.test")
     }
+
+    private func wildcardAddresses(for name: String) -> [String]? {
+        wildcardRecords
+            .filter { name != $0.key && name.hasSuffix(".\($0.key)") }
+            .sorted { $0.key.count > $1.key.count }
+            .first?.value
+    }
+}
+
+struct DNSRuntimeRecord: Equatable, Sendable {
+    let name: String
+    let network: String
+    let listenerNetwork: String
+    let stack: String
+    let project: String
+    let ip: String
 }
 
 struct DNSGuestContext: Equatable, Sendable {
     let network: String
     let project: String?
+    let stack: String?
     let gateway: String
     let hostService: String
 }
@@ -65,10 +101,14 @@ enum DNSZoneBuilder {
     static func build(
         snapshot: NetworkSnapshot,
         ttl: UInt32,
-        hostServices: [String] = []
+        hostServices: [String] = [],
+        runtimeRecords: [DNSRuntimeRecord] = []
     ) -> DNSZone {
         let networks = Dictionary(uniqueKeysWithValues: snapshot.networks.map { ($0.name, $0) })
         var records: [String: Set<String>] = [:]
+        var wildcardRecords: [String: Set<String>] = [:]
+        var shortRecords: [String: [String: Set<String>]] = [:]
+        var ptrRecords: [String: Set<String>] = [:]
         var zones: Set<String> = []
         for attachment in snapshot.attachments {
             guard let network = networks[attachment.networkName],
@@ -76,15 +116,26 @@ enum DNSZoneBuilder {
                   let project = attachment.project ?? network.project,
                   let vm = dnsLabel(vmDNSLabel(attachment.vmID)),
                   let net = dnsLabel(attachment.networkName),
-                  let projectLabel = dnsLabel(project),
+                  let stack = dnsLabel(project),
                   ipv4Bytes(attachment.ip) != nil
             else {
                 continue
             }
 
-            let zone = "\(projectLabel).vz.test"
+            let zone = "\(stack).vz.test"
             zones.insert(zone)
-            records["\(vm).\(net).\(zone)", default: []].insert(attachment.ip)
+            let fqdn = "\(vm).\(net).\(zone)"
+            insertMachineRecord(
+                name: vm,
+                fqdn: fqdn,
+                ip: attachment.ip,
+                listenerNetwork: attachment.networkName,
+                stack: stack,
+                records: &records,
+                wildcardRecords: &wildcardRecords,
+                shortRecords: &shortRecords,
+                ptrRecords: &ptrRecords
+            )
 
             let rawServices = attachment.labels[serviceLabel]
                 ?? network.labels[serviceLabel]
@@ -96,6 +147,28 @@ enum DNSZoneBuilder {
                 }
                 records["\(service).svc.\(zone)", default: []].insert(attachment.ip)
             }
+        }
+
+        for runtime in runtimeRecords {
+            guard let name = dnsLabel(runtime.name), name != "svc",
+                  let network = dnsLabel(runtime.network),
+                  let stack = dnsLabel(runtime.stack),
+                  ipv4Bytes(runtime.ip) != nil
+            else { continue }
+            let zone = "\(stack).vz.test"
+            let fqdn = "\(name).\(network).\(zone)"
+            zones.insert(zone)
+            insertMachineRecord(
+                name: name,
+                fqdn: fqdn,
+                ip: runtime.ip,
+                listenerNetwork: runtime.listenerNetwork,
+                stack: stack,
+                records: &records,
+                wildcardRecords: &wildcardRecords,
+                shortRecords: &shortRecords,
+                ptrRecords: &ptrRecords
+            )
         }
 
         var hostRecords: [String: [String]] = [:]
@@ -132,6 +205,11 @@ enum DNSZoneBuilder {
 
         return DNSZone(
             records: records.mapValues { $0.sorted() },
+            wildcardRecords: wildcardRecords.mapValues { $0.sorted() },
+            shortRecords: shortRecords.mapValues { names in
+                names.mapValues { $0.sorted() }
+            },
+            ptrRecords: ptrRecords.mapValues { $0.sorted() },
             hostRecords: hostRecords,
             ingressProjects: ingressProjects,
             zones: zones.filter { !$0.isEmpty },
@@ -141,6 +219,35 @@ enum DNSZoneBuilder {
 
     static func canonicalName(_ name: String) -> String {
         name.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    static func contextKey(stack: String?, network: String) -> String {
+        "\(stack ?? "")|\(canonicalName(network))"
+    }
+
+    private static func insertMachineRecord(
+        name: String,
+        fqdn: String,
+        ip: String,
+        listenerNetwork: String,
+        stack: String,
+        records: inout [String: Set<String>],
+        wildcardRecords: inout [String: Set<String>],
+        shortRecords: inout [String: [String: Set<String>]],
+        ptrRecords: inout [String: Set<String>]
+    ) {
+        records[fqdn, default: []].insert(ip)
+        wildcardRecords[fqdn, default: []].insert(ip)
+        let key = contextKey(stack: stack, network: listenerNetwork)
+        shortRecords[key, default: [:]][name, default: []].insert(ip)
+        if let reverse = reverseName(for: ip) {
+            ptrRecords[reverse, default: []].insert(fqdn)
+        }
+    }
+
+    static func reverseName(for ip: String) -> String? {
+        guard let bytes = ipv4Bytes(ip) else { return nil }
+        return bytes.reversed().map(String.init).joined(separator: ".") + ".in-addr.arpa"
     }
 
     private static func zoneName(from host: String) -> String {
@@ -175,18 +282,41 @@ enum DNSZoneBuilder {
 struct DNSConfiguration: Sendable {
     let hostAddress: String
     let hostPort: UInt16
+    /// Public port configured as nameserver in Guests.
     let guestPort: UInt16
+    /// Exclusive socket port behind the PF redirect for privileged Guest DNS.
+    let guestBackendPort: UInt16
     let ttl: UInt32
     let upstream: String
+
+    init(
+        hostAddress: String,
+        hostPort: UInt16,
+        guestPort: UInt16,
+        guestBackendPort: UInt16? = nil,
+        ttl: UInt32,
+        upstream: String
+    ) {
+        self.hostAddress = hostAddress
+        self.hostPort = hostPort
+        self.guestPort = guestPort
+        self.guestBackendPort = guestBackendPort
+            ?? (DnsBind.needsPrivilege(port: guestPort)
+                ? DnsBind.defaultGuestDNSBackendPort : guestPort)
+        self.ttl = ttl
+        self.upstream = upstream
+    }
 
     static func environment(
         _ values: [String: String] = ProcessInfo.processInfo.environment
     ) -> DNSConfiguration {
-        DNSConfiguration(
+        let guestPort = port(values["VZCTL_DNS_GUEST_PORT"])
+            ?? DnsBind.defaultGuestDNSPort
+        return DNSConfiguration(
             hostAddress: values["VZCTL_DNS_HOST"] ?? "127.0.0.1",
             hostPort: port(values["VZCTL_DNS_PORT"]) ?? 15_353,
-            guestPort: port(values["VZCTL_DNS_GUEST_PORT"])
-                ?? 53,
+            guestPort: guestPort,
+            guestBackendPort: port(values["VZCTL_DNS_GUEST_BACKEND_PORT"]),
             ttl: UInt32(values["VZCTL_DNS_TTL"] ?? "") ?? 15,
             upstream: values["VZCTL_DNS_UPSTREAM"] ?? "system"
         )
@@ -244,6 +374,7 @@ final class DNSServer: @unchecked Sendable {
     private var desiredListeners: Set<String> = []
     private var guestContexts: [DNSGuestContext] = []
     private var hostServices: [String] = []
+    private var runtimeRecords: [DNSRuntimeRecord] = []
     private var lastError: String?
     private var stopped = false
 
@@ -251,6 +382,9 @@ final class DNSServer: @unchecked Sendable {
         self.configuration = configuration
         zone = DNSZone(
             records: [:],
+            wildcardRecords: [:],
+            shortRecords: [:],
+            ptrRecords: [:],
             hostRecords: [:],
             ingressProjects: [:],
             zones: [],
@@ -264,13 +398,18 @@ final class DNSServer: @unchecked Sendable {
         }
     }
 
+    func setRuntimeRecords(_ records: [DNSRuntimeRecord]) {
+        lock.withLock { runtimeRecords = records }
+    }
+
     @discardableResult
     func reload(snapshot: NetworkSnapshot) -> DNSHealth {
-        let services = lock.withLock { hostServices }
+        let state = lock.withLock { (hostServices, runtimeRecords) }
         let nextZone = DNSZoneBuilder.build(
             snapshot: snapshot,
             ttl: configuration.ttl,
-            hostServices: services
+            hostServices: state.0,
+            runtimeRecords: state.1
         )
         let contexts = snapshot.networks.compactMap { network -> DNSGuestContext? in
             guard network.runtimeState == "active", !network.isDockerBackend else { return nil }
@@ -280,6 +419,7 @@ final class DNSServer: @unchecked Sendable {
             return DNSGuestContext(
                 network: network.name,
                 project: network.project.map(DNSZoneBuilder.canonicalName),
+                stack: network.project.map(DNSZoneBuilder.canonicalName),
                 gateway: gateway,
                 hostService: hostService
             )
@@ -363,17 +503,24 @@ final class DNSServer: @unchecked Sendable {
         guard let parsed = parseEndpoint(value) else {
             throw DNSError.invalidEndpoint(value)
         }
-        if DnsBind.needsPrivilege(port: parsed.port) {
+        let bindPort: UInt16
+        switch horizon {
+        case .host:
+            bindPort = parsed.port
+        case .guest:
+            bindPort = configuration.guestBackendPort
+        }
+        if DnsBind.needsPrivilege(port: bindPort) {
             let descriptor = try DnsBindClient.bindUDP(
                 address: parsed.address,
-                port: parsed.port
+                port: bindPort
             )
             return try adoptListener(horizon: horizon, descriptor: descriptor)
         }
         return try bindListenerLocally(
-            endpoint: value,
+            endpoint: endpoint(parsed.address, bindPort),
             address: parsed.address,
-            port: parsed.port,
+            port: bindPort,
             horizon: horizon
         )
     }
@@ -474,7 +621,7 @@ final class DNSServer: @unchecked Sendable {
             return errorResponse(request, responseCode: 1)
         }
         let snapshot = lock.withLock { zone }
-        if snapshot.isAuthoritative(for: question.name) {
+        if snapshot.isAuthoritative(for: question.name, horizon: horizon) {
             if question.type == 1,
                question.dnsClass == 1,
                let addresses = snapshot.addresses(for: question.name, horizon: horizon)
@@ -486,7 +633,19 @@ final class DNSServer: @unchecked Sendable {
                     ttl: snapshot.ttl
                 )
             }
+            if question.type == 12,
+               question.dnsClass == 1,
+               let names = snapshot.ptrNames(for: question.name)
+            {
+                return authoritativePTRResponse(
+                    request,
+                    question: question,
+                    names: names,
+                    ttl: snapshot.ttl
+                )
+            }
             let exists = snapshot.addresses(for: question.name, horizon: horizon) != nil
+                || snapshot.ptrNames(for: question.name) != nil
             return authoritativeResponse(
                 request,
                 question: question,
@@ -681,6 +840,45 @@ private func authoritativeResponse(
         response.append(contentsOf: bytes)
     }
     return response
+}
+
+private func authoritativePTRResponse(
+    _ request: Data,
+    question: DNSQuestion,
+    names: [String],
+    ttl: UInt32
+) -> Data {
+    var response = Data()
+    appendUInt16(readUInt16(request, 0) ?? 0, to: &response)
+    let requestFlags = readUInt16(request, 2) ?? 0
+    appendUInt16(0x8480 | (requestFlags & 0x0100), to: &response)
+    appendUInt16(1, to: &response)
+    appendUInt16(UInt16(names.count), to: &response)
+    appendUInt16(0, to: &response)
+    appendUInt16(0, to: &response)
+    response.append(request[dnsHeaderLength..<question.endOffset])
+
+    for name in names {
+        guard let encoded = encodeDNSName(name) else { continue }
+        appendUInt16(0xC00C, to: &response)
+        appendUInt16(12, to: &response)
+        appendUInt16(1, to: &response)
+        appendUInt32(ttl, to: &response)
+        appendUInt16(UInt16(encoded.count), to: &response)
+        response.append(encoded)
+    }
+    return response
+}
+
+private func encodeDNSName(_ name: String) -> Data? {
+    var encoded = Data()
+    for label in DNSZoneBuilder.canonicalName(name).split(separator: ".") {
+        guard !label.isEmpty, label.utf8.count <= 63 else { return nil }
+        encoded.append(UInt8(label.utf8.count))
+        encoded.append(contentsOf: label.utf8)
+    }
+    encoded.append(0)
+    return encoded
 }
 
 private func errorResponse(_ request: Data, responseCode: UInt16) -> Data {

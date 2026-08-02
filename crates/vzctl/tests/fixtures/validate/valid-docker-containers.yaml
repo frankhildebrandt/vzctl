@@ -20,6 +20,11 @@ spec:
       cidr: 10.90.0.0/24
       mode: shared
       natEgress: false
+    containers:
+      cidr: 10.95.0.0/24
+      mode: shared
+      natEgress: false
+      backend: docker
   routes: []
   policies: []
   vms:
@@ -29,7 +34,8 @@ spec:
       dataDisk: 40G
       networks:
         - { name: lan, ip: 10.90.0.10 }
-      roles: [docker]
+        - { name: containers, ip: 10.95.0.2 }
+      roles: [docker, router]
       composeFiles:
         - compose.yaml
       containers:

@@ -36,6 +36,10 @@ beginnen bei `.10`. Auf `.1` veröffentlicht vzctl ausschließlich konfigurierte
 Ingress-Ports. Eine Attachment-IP muss `.2` oder im
 Guest-Bereich liegen; IPs sind pro Netz eindeutig.
 
+`.0:53` bleibt der logische Guest-DNS-Endpunkt. PF leitet ihn intern auf einen
+exklusiven hohen `vz-edge`-Port um, damit `mDNSResponder` nicht versehentlich
+die Host-Antwort ausliefert. Die Guest-Konfiguration ändert sich dadurch nicht.
+
 ## Default-Netzwerk
 
 Issue [#51](https://github.com/frankhildebrandt/vzctl/issues/51) ergänzt den
@@ -62,8 +66,8 @@ Multi-NIC-Attachments, etwa für Router, bleiben erhalten.
 `shared` lässt NAT44 standardmäßig aktiv (`natEgress: true`) und bietet damit
 Zugriff auf Host und Internet. Mit `natEgress: false` wird das Netz als
 host-only (`VMNET_HOST_MODE`) angelegt: ICMP zum Host-Gateway `.0` bleibt
-erreichbar, **Gast-DNS UDP `.0:53` ist auf Host-Mode derzeit unzuverlässig**
-(Shared-Mode-Netze sind davon nicht betroffen). Internet-NAT entfällt; Gäste
+erreichbar; Guest-DNS `.0:53` läuft über denselben PF-Redirect wie in
+Shared-Mode-Netzen. Internet-NAT entfällt; Gäste
 nutzen dann Router `.2` als Default-Gateway und brauchen Policy `to: internet`
 auf dem Router. Für Stacks, die Gast-DNS brauchen (cloud-init/`apt`), `lan`
 daher mit `natEgress: true` belassen und Router-Zuordnung über `policies.*.via`
@@ -75,6 +79,13 @@ projektgebundenen Netz wird zusätzlich `{project}.vz.test` als Search-Domain
 gesetzt. Das gilt identisch für explizite und automatische Default-Attachments
 sowie für die Primär-NIC einer Router-VM. Router `.2` bleibt der Next Hop für
 explizite Cross-Net-Routen.
+Auf dem eigenen Listener ist deshalb `{vm}` als Kurzname gültig; vollständig
+heißen VM und Container `{name}.{network}.{project}.vz.test`, inklusive
+Wildcard-A und IPv4-PTR. Docker-Container verwenden als Kurzname-Kontext die
+primäre vmnet-NIC ihrer Docker-VM. `svc` bleibt als VM-, Container- und
+Netzwerkname reserviert. IPv4-mDNS auf `224.0.0.251:5353` bleibt innerhalb des
+jeweiligen Layer-2-Netzes erlaubt, wird aber nicht zwischen vmnet/Docker-Netzen
+reflektiert.
 Cross-Net-Traffic wird dadurch nicht freigeschaltet: Dafür bleiben Router plus
 [#33](https://github.com/frankhildebrandt/vzctl/issues/33) zuständig.
 

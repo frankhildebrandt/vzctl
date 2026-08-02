@@ -377,7 +377,7 @@ Konfiguration, Rollen oder Topologien.
 ```bash
 vzctl dns status [--format human|json]
 vzctl dns query <name> \
-  [--type A|AAAA] [--server <IP:port>] [--format human|json]
+  [--type A|AAAA|PTR] [--server <IP:port>] [--format human|json]
 ```
 
 `dns.status` ruft Supervisor-RPC `dns.status` auf und spiegelt
@@ -389,7 +389,7 @@ mit `status=fail` und dem `dns`-Payload. Usage `2`.
 `dns.query` sendet ein UDP-DNS-Paket direkt an den angegebenen Server. Der
 Default ist `127.0.0.1:15353`; der Command hängt nicht von `/etc/resolver` oder
 der libc-Namensauflösung ab. Der Default-Typ ist `A`, zusätzlich wird `AAAA`
-unterstützt.
+und `PTR` unterstützt.
 
 Das JSON-Envelope enthält `query`, `rcode`, `rcode_code`, `authoritative`,
 `truncated` und `answers[]`. Jeder Answer enthält `name`, `type`, `class`,
@@ -417,6 +417,10 @@ Die kanonischen Commands heißen `dns.install-resolver` und
 Ungültige Projekte/Configs liefern Exit `3`. Fehlende Rechte, fremde Dateien,
 Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`. Idempotente
 No-op-Installationen und -Deinstallationen liefern Exit `0`.
+Install verwaltet zusätzlich den gemeinsamen Scope
+`/etc/resolver/in-addr.arpa`; er wird erst nach dem letzten vzctl-Projekt
+entfernt. Kollisionen mit einem fremden Reverse-Scope liefern ebenfalls Exit
+`19`.
 
 ```bash
 vzctl docker [--project <name>] [--format human|json] ps [--all]

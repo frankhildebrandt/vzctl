@@ -24,6 +24,8 @@ pub(crate) const BIND_HELPER_PLIST: &str = "/Library/LaunchDaemons/com.vzctl.dns
 pub(crate) const BIND_HELPER_SOCKET_DEFAULT: &str = "/var/run/vzctl/dns-bind.sock";
 
 const MANAGED_MARKER: &str = "# managed-by: vzctl";
+const REVERSE_RESOLVER_DOMAIN: &str = "in-addr.arpa";
+const REVERSE_SCOPE_MARKER: &str = "# scope: ipv4-reverse";
 const DEFAULT_DNS_SERVER: &str = "127.0.0.1:15353";
 const DNS_TIMEOUT: Duration = Duration::from_secs(2);
 const DNS_HEADER_LENGTH: usize = 12;
@@ -69,6 +71,7 @@ impl Action {
 enum QueryType {
     A,
     Aaaa,
+    Ptr,
 }
 
 impl QueryType {
@@ -76,6 +79,7 @@ impl QueryType {
         match self {
             Self::A => 1,
             Self::Aaaa => 28,
+            Self::Ptr => 12,
         }
     }
 
@@ -83,6 +87,7 @@ impl QueryType {
         match self {
             Self::A => "A",
             Self::Aaaa => "AAAA",
+            Self::Ptr => "PTR",
         }
     }
 }
@@ -303,10 +308,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                         "--type is only valid for dns query",
                     ));
                 }
-                let value = next_value(&mut args, "--type requires A or AAAA")?;
+                let value = next_value(&mut args, "--type requires A, AAAA, or PTR")?;
                 query_type = match value.to_ascii_uppercase().as_str() {
                     "A" => QueryType::A,
                     "AAAA" => QueryType::Aaaa,
+                    "PTR" => QueryType::Ptr,
                     _ => {
                         return Err(Failure::new(
                             EXIT_INVALID,
@@ -1234,29 +1240,84 @@ fn install(resolver_dir: &Path, scope: &Scope, port: u16) -> Result<(PathBuf, Ch
     ensure_resolver_dir(resolver_dir)?;
     let path = resolver_path(resolver_dir, &scope.project);
     let desired = resolver_content(scope, port);
-    let change = match read_existing(&path)? {
+    let forward_change = match read_existing(&path)? {
         None => Change::Installed,
         Some(existing) => {
             ensure_owned(&path, &existing, scope)?;
             if existing == desired {
-                return Ok((path, Change::Unchanged));
+                Change::Unchanged
+            } else {
+                Change::Updated
             }
-            Change::Updated
         }
     };
-    atomic_write(&path, desired.as_bytes()).map_err(|error| io_failure("write", &path, error))?;
+
+    let reverse_path = reverse_resolver_path(resolver_dir);
+    let reverse_desired = reverse_resolver_content(port);
+    let reverse_change = match read_existing(&reverse_path)? {
+        None => Change::Installed,
+        Some(existing) => {
+            ensure_reverse_owned(&reverse_path, &existing)?;
+            if existing == reverse_desired {
+                Change::Unchanged
+            } else {
+                Change::Updated
+            }
+        }
+    };
+
+    // Publish the shared reverse scope first. An extra forwarding scope is safe if
+    // publishing the project scope fails afterwards; the inverse would make host
+    // PTR lookups silently bypass vz-edge.
+    if reverse_change != Change::Unchanged {
+        atomic_write(&reverse_path, reverse_desired.as_bytes())
+            .map_err(|error| io_failure("write", &reverse_path, error))?;
+    }
+    if forward_change != Change::Unchanged {
+        atomic_write(&path, desired.as_bytes())
+            .map_err(|error| io_failure("write", &path, error))?;
+    }
+    let change = if forward_change == Change::Unchanged && reverse_change != Change::Unchanged {
+        Change::Updated
+    } else {
+        forward_change
+    };
     Ok((path, change))
 }
 
 fn uninstall(resolver_dir: &Path, scope: &Scope) -> Result<(PathBuf, Change), Failure> {
     let path = resolver_path(resolver_dir, &scope.project);
-    let Some(existing) = read_existing(&path)? else {
-        return Ok((path, Change::Absent));
+    let existing = read_existing(&path)?;
+    if let Some(content) = existing.as_deref() {
+        ensure_owned(&path, content, scope)?;
+    }
+
+    let has_other_project = has_other_managed_resolver(resolver_dir, &path)?;
+    let reverse_path = reverse_resolver_path(resolver_dir);
+    let reverse = if has_other_project {
+        None
+    } else {
+        read_existing(&reverse_path)?
     };
-    ensure_owned(&path, &existing, scope)?;
-    let before =
-        fs::symlink_metadata(&path).map_err(|error| io_failure("inspect", &path, error))?;
-    let after = fs::symlink_metadata(&path).map_err(|error| io_failure("inspect", &path, error))?;
+    if let Some(content) = reverse.as_deref() {
+        ensure_reverse_owned(&reverse_path, content)?;
+    }
+
+    let change = if existing.is_some() {
+        remove_regular_file(&path)?;
+        Change::Removed
+    } else {
+        Change::Absent
+    };
+    if reverse.is_some() {
+        remove_regular_file(&reverse_path)?;
+    }
+    Ok((path, change))
+}
+
+fn remove_regular_file(path: &Path) -> Result<(), Failure> {
+    let before = fs::symlink_metadata(path).map_err(|error| io_failure("inspect", path, error))?;
+    let after = fs::symlink_metadata(path).map_err(|error| io_failure("inspect", path, error))?;
     if before.dev() != after.dev() || before.ino() != after.ino() || !after.file_type().is_file() {
         return Err(Failure::new(
             EXIT_RESOLVER,
@@ -1266,8 +1327,7 @@ fn uninstall(resolver_dir: &Path, scope: &Scope) -> Result<(PathBuf, Change), Fa
             ),
         ));
     }
-    fs::remove_file(&path).map_err(|error| io_failure("remove", &path, error))?;
-    Ok((path, Change::Removed))
+    fs::remove_file(path).map_err(|error| io_failure("remove", path, error))
 }
 
 fn ensure_resolver_dir(path: &Path) -> Result<(), Failure> {
@@ -1329,8 +1389,57 @@ fn ensure_owned(path: &Path, content: &str, scope: &Scope) -> Result<(), Failure
     }
 }
 
+fn ensure_reverse_owned(path: &Path, content: &str) -> Result<(), Failure> {
+    if content.lines().any(|line| line == MANAGED_MARKER)
+        && content.lines().any(|line| line == REVERSE_SCOPE_MARKER)
+    {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            EXIT_RESOLVER,
+            format!(
+                "resolver collision at {}; reverse scope is not managed by vzctl",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn has_other_managed_resolver(resolver_dir: &Path, current: &Path) -> Result<bool, Failure> {
+    let entries = match fs::read_dir(resolver_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(io_failure("read directory", resolver_dir, error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| io_failure("read directory", resolver_dir, error))?;
+        let path = entry.path();
+        if path == current || path == reverse_resolver_path(resolver_dir) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".vz.test") {
+            continue;
+        }
+        if let Some(content) = read_existing(&path)? {
+            if content.lines().any(|line| line == MANAGED_MARKER)
+                && content.lines().any(|line| line.starts_with("# project: "))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn resolver_path(resolver_dir: &Path, project: &str) -> PathBuf {
     resolver_dir.join(format!("{project}.vz.test"))
+}
+
+fn reverse_resolver_path(resolver_dir: &Path) -> PathBuf {
+    resolver_dir.join(REVERSE_RESOLVER_DOMAIN)
 }
 
 fn resolver_content(scope: &Scope, port: u16) -> String {
@@ -1338,6 +1447,10 @@ fn resolver_content(scope: &Scope, port: u16) -> String {
         "{MANAGED_MARKER}\n# project: {}\n# owner: {}\nnameserver 127.0.0.1\nport {port}\n",
         scope.project, scope.owner
     )
+}
+
+fn reverse_resolver_content(port: u16) -> String {
+    format!("{MANAGED_MARKER}\n{REVERSE_SCOPE_MARKER}\nnameserver 127.0.0.1\nport {port}\n")
 }
 
 fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
@@ -1563,7 +1676,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
+    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA|PTR] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
 }
 
 pub(crate) struct DoctorBindHelperCheck {
@@ -1704,14 +1817,56 @@ mod tests {
         let scope = scope("config-a");
         let (path, first) = install(&dir, &scope, 15353).unwrap();
         assert_eq!(first, Change::Installed);
+        let reverse = reverse_resolver_path(&dir);
+        assert!(fs::read_to_string(&reverse)
+            .unwrap()
+            .contains(REVERSE_SCOPE_MARKER));
         assert_eq!(install(&dir, &scope, 15353).unwrap().1, Change::Unchanged);
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o644
         );
         assert_eq!(uninstall(&dir, &scope).unwrap().1, Change::Removed);
+        assert!(!reverse.exists());
         assert_eq!(uninstall(&dir, &scope).unwrap().1, Change::Absent);
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn shared_reverse_resolver_survives_until_last_project_is_removed() {
+        let dir = temp_dir("shared-reverse");
+        let first = scope("config-a");
+        let second = Scope {
+            project: "payments".to_string(),
+            owner: "config-b".to_string(),
+        };
+        install(&dir, &first, 15353).unwrap();
+        install(&dir, &second, 15353).unwrap();
+        let reverse = reverse_resolver_path(&dir);
+
+        uninstall(&dir, &first).unwrap();
+        assert!(reverse.exists());
+        uninstall(&dir, &second).unwrap();
+        assert!(!reverse.exists());
+        fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn foreign_reverse_resolver_is_never_overwritten() {
+        let dir = temp_dir("reverse-collision");
+        let reverse = reverse_resolver_path(&dir);
+        fs::write(&reverse, "nameserver 192.0.2.53\n").unwrap();
+
+        assert_eq!(
+            install(&dir, &scope("config-a"), 15353).unwrap_err().code,
+            EXIT_RESOLVER
+        );
+        assert_eq!(
+            fs::read_to_string(reverse).unwrap(),
+            "nameserver 192.0.2.53\n"
+        );
+        assert!(!resolver_path(&dir, "edge-dmz").exists());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1921,6 +2076,14 @@ mod tests {
         assert_eq!(options.query_type, QueryType::Aaaa);
         assert_eq!(options.server, "[::1]:15353");
         assert_eq!(options.format, Format::Json);
+
+        let reverse = parse(
+            ["query", "10.0.80.10.in-addr.arpa", "--type", "PTR"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(reverse.query_type, QueryType::Ptr);
     }
 
     #[test]
@@ -2035,6 +2198,45 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.answers[0].record_type, "AAAA");
         assert_eq!(parsed.answers[0].data, "::1");
+    }
+
+    #[test]
+    fn response_parser_decodes_ptr_answer() {
+        let transaction_id = 0x5678;
+        let query_name = "10.0.80.10.in-addr.arpa";
+        let target = "web.dmz.edge-dmz.vz.test";
+        let request = build_query(transaction_id, query_name, QueryType::Ptr);
+        let mut response = Vec::new();
+        append_u16(&mut response, transaction_id);
+        append_u16(&mut response, 0x8480);
+        append_u16(&mut response, 1);
+        append_u16(&mut response, 1);
+        append_u16(&mut response, 0);
+        append_u16(&mut response, 0);
+        response.extend_from_slice(&request[DNS_HEADER_LENGTH..]);
+        append_u16(&mut response, 0xc00c);
+        append_u16(&mut response, 12);
+        append_u16(&mut response, 1);
+        response.extend_from_slice(&15_u32.to_be_bytes());
+        let mut encoded_target = Vec::new();
+        for label in target.split('.') {
+            encoded_target.push(label.len() as u8);
+            encoded_target.extend_from_slice(label.as_bytes());
+        }
+        encoded_target.push(0);
+        append_u16(&mut response, encoded_target.len() as u16);
+        response.extend_from_slice(&encoded_target);
+
+        let parsed = parse_response(
+            &response,
+            transaction_id,
+            query_name,
+            QueryType::Ptr,
+            DEFAULT_DNS_SERVER,
+        )
+        .unwrap();
+        assert_eq!(parsed.answers[0].record_type, "PTR");
+        assert_eq!(parsed.answers[0].data, target);
     }
 
     #[test]

@@ -34,6 +34,19 @@ import VzDaemonKit
     #expect(health.upstream == "system")
 }
 
+@Test func dnsConfigurationRedirectsOnlyPrivilegedGuestPortByDefault() {
+    let production = DNSConfiguration.environment(["VZCTL_DNS_GUEST_PORT": "53"])
+    let development = DNSConfiguration.environment(["VZCTL_DNS_GUEST_PORT": "15353"])
+    let overridden = DNSConfiguration.environment([
+        "VZCTL_DNS_GUEST_PORT": "53",
+        "VZCTL_DNS_GUEST_BACKEND_PORT": "16053",
+    ])
+
+    #expect(production.guestBackendPort == DnsBind.defaultGuestDNSBackendPort)
+    #expect(development.guestBackendPort == 15_353)
+    #expect(overridden.guestBackendPort == 16_053)
+}
+
 @Test func hostServicesUseSplitHorizonAddresses() {
     let snapshot = NetworkSnapshot(
         networks: [
@@ -205,6 +218,95 @@ import VzDaemonKit
     #expect(zone.addresses(for: "edge-dmz/web.dmz.edge-dmz.vz.test", horizon: guestHorizon()) == nil)
     #expect(DNSZoneBuilder.vmDNSLabel("edge-dmz/web") == "web")
     #expect(DNSZoneBuilder.vmDNSLabel("web") == "web")
+}
+
+@Test func vmAndContainerDNSProvidesFQDNWildcardShortAndPTR() {
+    let snapshot = NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "dmz",
+                cidr: "10.80.0.0/24",
+                project: "shop",
+                stack: "platform:shop"
+            ),
+            NetworkRecord(
+                name: "lan",
+                cidr: "10.90.0.0/24",
+                project: "shop",
+                stack: "platform:shop"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "shop/web",
+                networkName: "dmz",
+                ip: "10.80.0.10",
+                project: "shop",
+                stack: "platform:shop"
+            ),
+        ]
+    )
+    let zone = DNSZoneBuilder.build(
+        snapshot: snapshot,
+        ttl: 15,
+        runtimeRecords: [
+            DNSRuntimeRecord(
+                name: "api",
+                network: "containers",
+                listenerNetwork: "dmz",
+                stack: "shop",
+                project: "shop",
+                ip: "10.95.0.10"
+            ),
+        ]
+    )
+    let dmz = DNSHorizon.guest(DNSGuestContext(
+        network: "dmz", project: "shop", stack: "shop",
+        gateway: "10.80.0.0", hostService: "10.80.0.1"
+    ))
+    let lan = DNSHorizon.guest(DNSGuestContext(
+        network: "lan", project: "shop", stack: "shop",
+        gateway: "10.90.0.0", hostService: "10.90.0.1"
+    ))
+
+    #expect(zone.addresses(for: "web.dmz.shop.vz.test", horizon: .host) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "metrics.web.dmz.shop.vz.test", horizon: .host) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "web", horizon: dmz) == ["10.80.0.10"])
+    #expect(zone.addresses(for: "web", horizon: .host) == nil)
+    #expect(zone.addresses(for: "web", horizon: lan) == nil)
+    #expect(zone.addresses(for: "api.containers.shop.vz.test", horizon: .host) == ["10.95.0.10"])
+    #expect(zone.addresses(for: "x.api.containers.shop.vz.test", horizon: dmz) == ["10.95.0.10"])
+    #expect(zone.addresses(for: "api", horizon: dmz) == ["10.95.0.10"])
+    #expect(zone.ptrNames(for: "10.0.80.10.in-addr.arpa") == ["web.dmz.shop.vz.test"])
+    #expect(zone.ptrNames(for: "10.0.95.10.in-addr.arpa") == ["api.containers.shop.vz.test"])
+}
+
+@Test func ptrWireResponseContainsCanonicalMachineName() {
+    let server = DNSServer(configuration: DNSConfiguration(
+        hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+        ttl: 15, upstream: "127.0.0.1:9"
+    ))
+    defer { server.shutdown() }
+    _ = server.reload(snapshot: NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "dmz", cidr: "10.80.0.0/24", project: "shop",
+                stack: "platform:shop"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "shop/web", networkName: "dmz", ip: "10.80.0.10",
+                project: "shop", stack: "platform:shop"
+            ),
+        ]
+    ))
+
+    let response = server.response(for: dnsQuery("10.0.80.10.in-addr.arpa", type: 12))
+
+    #expect(read16(response, 6) == 1)
+    #expect(response.suffix(encodedDNSName("web.dmz.shop.vz.test").count)
+        == encodedDNSName("web.dmz.shop.vz.test"))
 }
 
 @Test func attachmentProjectOverridesNetworkAndServicesReturnAllBackends() {
@@ -428,6 +530,7 @@ private func guestHorizon(
     return .guest(DNSGuestContext(
         network: network,
         project: project,
+        stack: project,
         gateway: gateway,
         hostService: "\(prefix).1"
     ))
@@ -437,14 +540,26 @@ private func dnsResponseCode(_ response: Data) -> UInt8 {
     response.count >= 4 ? response[3] & 0x0F : 0xFF
 }
 
-private func dnsQuery(_ name: String) -> Data {
+private func dnsQuery(_ name: String, type: UInt16 = 1) -> Data {
     var data = Data([0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
     for label in name.split(separator: ".") {
         data.append(UInt8(label.utf8.count))
         data.append(contentsOf: label.utf8)
     }
     data.append(0)
-    data.append(contentsOf: [0, 1, 0, 1])
+    data.append(UInt8((type >> 8) & 0xFF))
+    data.append(UInt8(type & 0xFF))
+    data.append(contentsOf: [0, 1])
+    return data
+}
+
+private func encodedDNSName(_ name: String) -> Data {
+    var data = Data()
+    for label in name.split(separator: ".") {
+        data.append(UInt8(label.utf8.count))
+        data.append(contentsOf: label.utf8)
+    }
+    data.append(0)
     return data
 }
 

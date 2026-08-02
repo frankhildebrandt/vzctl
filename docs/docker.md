@@ -23,7 +23,10 @@ Data-Disk unter `/var/lib/docker` und legt Apt-Caches dorthin. User `vzctl`
 5. Apply-Step `ensure_containers` (danach): pro Docker-VM `composeFiles` via
    `docker compose up -d` und deklarative `containers` ensure-only
    (Labels `vzctl.dev/managed`, `vzctl.dev/vm`, `vzctl.dev/hash`).
-6. `down --purge` entfernt den Context.
+6. Danach veröffentlicht vzctl laufende, stack-eigene Container als
+   `{container}.{docker-net}.{project}.vz.test` (A, Wildcard-A und PTR).
+   Der Kurzname gilt am Guest-DNS der primären vmnet-NIC der Docker-VM.
+7. `down --purge` entfernt DNS-Records und Context.
 
 ## Deklarative Container
 
@@ -48,6 +51,14 @@ vms:
 - Mehrere Compose-Files sind erlaubt (je eigenes Compose-Projekt `{vm}-{stem}`).
 - Ensure-only: fehlende/geänderte managed Container anlegen/recreaten; manuell
   gestartete Container bleiben. Kein Prune.
+- DNS berücksichtigt nur laufende deklarative Container und Container aus den
+  konfigurierten Compose-Projekten. Manuelle Container werden nicht als Teil
+  des Stacks veröffentlicht. Namen müssen kleingeschriebene DNS-Labels sein;
+  `svc` ist reserviert.
+- Compose-Container werden dafür idempotent zusätzlich mit der verwalteten
+  Docker-Bridge verbunden. Der DNS-A-Record verwendet nur die Adresse aus dem
+  deklarierten `backend: docker`-CIDR; die Compose-interne Verbindung bleibt
+  erhalten.
 - Bind-Mounts nutzen den Project-Mount (Host-Pfad = Guest-Pfad).
 
 ## `backend: docker` (Hypernetwork)

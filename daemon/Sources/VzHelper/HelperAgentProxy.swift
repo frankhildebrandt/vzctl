@@ -18,6 +18,12 @@ enum HelperAgentRequest {
         let rows: Int
     }
 
+    struct CAInjectParams: Equatable, Sendable {
+        let pem: String
+        let fingerprint: String
+        let name: String
+    }
+
     static func parseExec(_ value: JSONValue?) throws -> ExecParams {
         guard case let .object(params)? = value else {
             throw RouteApplyError.invalid("agent.exec params must be an object")
@@ -113,6 +119,27 @@ enum HelperAgentRequest {
         }
         return ExecTTYParams(cmd: base.cmd, cwd: base.cwd, env: base.env, cols: cols, rows: rows)
     }
+
+    static func parseCAInject(_ value: JSONValue?) throws -> CAInjectParams {
+        guard case let .object(params)? = value else {
+            throw RouteApplyError.invalid("agent.ca_inject params must be an object")
+        }
+        guard case let .string(pem)? = params["pem"], !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RouteApplyError.invalid("agent.ca_inject requires pem")
+        }
+        guard case let .string(fingerprint)? = params["fingerprint"], !fingerprint.isEmpty else {
+            throw RouteApplyError.invalid("agent.ca_inject requires fingerprint")
+        }
+        let name: String
+        if case let .string(value)? = params["name"] {
+            name = value
+        } else if params["name"] == nil || params["name"] == .null {
+            name = "vzctl-local"
+        } else {
+            throw RouteApplyError.invalid("agent.ca_inject name must be a string")
+        }
+        return CAInjectParams(pem: pem, fingerprint: fingerprint, name: name)
+    }
 }
 
 enum HelperAgentProxy {
@@ -123,6 +150,7 @@ enum HelperAgentProxy {
         "agent.version",
         "agent.report_ip",
         "agent.ping",
+        "agent.ca_inject",
     ]
 
     static func run(
@@ -191,6 +219,30 @@ enum HelperAgentProxy {
         case "agent.ping":
             try client.ping()
             return .object(["pong": .bool(true)])
+        case "agent.ca_inject":
+            let ca = try HelperAgentRequest.parseCAInject(params)
+            let result = try client.caInject(
+                pem: ca.pem,
+                fingerprint: ca.fingerprint,
+                name: ca.name,
+                timeout: 60
+            )
+            guard
+                let installed = result["installed"] as? Bool,
+                let fingerprint = result["fingerprint"] as? String,
+                let name = result["name"] as? String
+            else {
+                throw RouteApplyError.guest("ca_inject returned an invalid result")
+            }
+            var response: [String: JSONValue] = [
+                "installed": .bool(installed),
+                "fingerprint": .string(fingerprint),
+                "name": .string(name),
+            ]
+            if let path = result["path"] as? String {
+                response["path"] = .string(path)
+            }
+            return .object(response)
         default:
             throw RouteApplyError.invalid("unknown agent method: \(method)")
         }

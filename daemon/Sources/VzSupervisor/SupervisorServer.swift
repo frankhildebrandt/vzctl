@@ -24,6 +24,13 @@ enum SupervisorError: Error, CustomStringConvertible {
 }
 
 final class SupervisorServer: @unchecked Sendable {
+    static let proxiedAgentMethods: Set<String> = [
+        "vm.agent.health",
+        "vm.agent.version",
+        "vm.agent.report_ip",
+        "vm.agent.ca_inject",
+    ]
+
     let socketPath: String
     let databasePath: String
 
@@ -651,6 +658,43 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return networkErrorResponse(error, request: request)
             }
+        case "dns.records.ensure":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                let records = params["records"] ?? .array([])
+                guard case .array = records else {
+                    return JSONRPCResponse(
+                        error: JSONRPCError(code: -32602, message: "records must be an array"),
+                        id: request.id ?? .null
+                    )
+                }
+                try database.setEdgeDNSRecords(project: project, records: records)
+                let edge = try reconcileEdgeThrowing(reason: "dns.records.ensure")
+                return JSONRPCResponse(
+                    result: .object([
+                        "project": .string(project),
+                        "records": records,
+                        "dns": edgeDNS(from: edge),
+                    ]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
+        case "dns.records.purge":
+            do {
+                let params = try networkParams(request.params)
+                let project = try requiredString("project", from: params)
+                try database.setEdgeDNSRecords(project: project, records: .array([]))
+                try reconcileEdgeThrowing(reason: "dns.records.purge")
+                return JSONRPCResponse(
+                    result: .object(["project": .string(project), "purged": .bool(true)]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return networkErrorResponse(error, request: request)
+            }
         case "dns.host_services.ensure":
             do {
                 let params = try networkParams(request.params)
@@ -819,17 +863,18 @@ final class SupervisorServer: @unchecked Sendable {
             } catch {
                 return routeErrorResponse(error, request: request)
             }
-        case "vm.agent.health", "vm.agent.version", "vm.agent.report_ip":
+        case let method where Self.proxiedAgentMethods.contains(method):
             do {
-                let params = try objectParams(request.params, context: request.method)
+                let params = try objectParams(request.params, context: method)
                 let vmID = try requiredReconcileString("vm_id", from: params)
                 try requireRunningHelper(vmID: vmID)
-                let helperMethod = "agent." + String(request.method.dropFirst("vm.agent.".count))
+                let helperMethod = "agent." + String(method.dropFirst("vm.agent.".count))
                 let result = try HelperAgentClient.run(
                     method: helperMethod,
                     params: request.params,
                     vmID: vmID,
-                    stateDirectory: stateDirectory
+                    stateDirectory: stateDirectory,
+                    timeoutSeconds: method == "vm.agent.ca_inject" ? 65 : 35
                 )
                 return JSONRPCResponse(result: result, id: request.id ?? .null)
             } catch {
@@ -1606,12 +1651,19 @@ final class SupervisorServer: @unchecked Sendable {
                 }
                 return values
             }
+            let dnsRecords = try projects.flatMap { record -> [JSONValue] in
+                guard case let .array(values) = record.dnsRecords else {
+                    throw SupervisorError.database("edge DNS records must be an array")
+                }
+                return values
+            }
             let ingress = projects.compactMap(\.ingress)
             let oidc = projects.compactMap(\.oidc)
             let ports = try database.portForwards()
             let desired: JSONValue = .object([
                 "network_snapshot": try networkRegistry.snapshot().json,
                 "host_services": .array(hostServices),
+                "dns_records": .array(dnsRecords),
                 "port_forwards": .array(ports.map(\.json)),
                 "ingress": .array(ingress),
                 "oidc": .array(oidc),

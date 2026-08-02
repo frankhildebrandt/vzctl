@@ -313,7 +313,7 @@ final class GuestAgentClient: @unchecked Sendable {
         pem: String,
         fingerprint: String,
         name: String = "vzctl-local",
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 60
     ) throws -> [String: Any] {
         try request(
             method: "ca_inject",

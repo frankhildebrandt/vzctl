@@ -110,8 +110,9 @@ test: test-cli test-daemon test-agent ## Alle Tests ausführen
 test-cli: ## Rust-Tests ausführen
 	$(CARGO) test --workspace
 
-test-daemon: ## Swift-Tests ausführen
+test-daemon: ## Swift- und Daemon-Script-Tests ausführen
 	$(SWIFT) test --package-path daemon
+	daemon/scripts/test-stop-vz-helpers.sh
 
 test-agent: ## Guest-Agent-Tests ausführen
 	$(GO) test -C guest-agent ./...

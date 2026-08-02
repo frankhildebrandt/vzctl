@@ -140,6 +140,42 @@ import Testing
     }
 }
 
+@Test func caInjectUsesGuestAgentWireMethod() throws {
+    let observedMethod = LockedValue<String?>(nil)
+    let observedName = LockedValue<String?>(nil)
+    try withMockServer { server in
+        let request = try readObject(from: server)
+        guard
+            let id = request["id"] as? String,
+            let params = request["params"] as? [String: Any]
+        else { return }
+        observedMethod.set(request["method"] as? String)
+        observedName.set(params["name"] as? String)
+        try writeObject(
+            [
+                "v": 1,
+                "id": id,
+                "ok": true,
+                "result": [
+                    "installed": true,
+                    "fingerprint": String(repeating: "a", count: 64),
+                    "name": "vzctl-local",
+                    "path": "/usr/local/share/ca-certificates/vzctl-local.crt",
+                ],
+            ],
+            to: server
+        )
+    } client: { client in
+        let result = try client.caInject(
+            pem: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n",
+            fingerprint: String(repeating: "a", count: 64)
+        )
+        #expect(result["installed"] as? Bool == true)
+    }
+    #expect(observedMethod.get() == "ca_inject")
+    #expect(observedName.get() == "vzctl-local")
+}
+
 @Test func hostTokenRequiresMode0600() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("vzctl-token-\(UUID().uuidString)", isDirectory: true)

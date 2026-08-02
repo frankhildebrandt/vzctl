@@ -107,6 +107,7 @@ final class StateDatabase {
                 CREATE TABLE IF NOT EXISTS edge_projects (
                     project TEXT PRIMARY KEY,
                     host_services_json TEXT NOT NULL DEFAULT '[]',
+                    dns_records_json TEXT NOT NULL DEFAULT '[]',
                     ingress_json TEXT,
                     oidc_json TEXT,
                     updated_at TEXT NOT NULL
@@ -125,6 +126,9 @@ final class StateDatabase {
             // Older DBs: add backend if missing (vmnet | docker).
             _ = try? execute(
                 "ALTER TABLE networks ADD COLUMN backend TEXT NOT NULL DEFAULT 'vmnet';"
+            )
+            _ = try? execute(
+                "ALTER TABLE edge_projects ADD COLUMN dns_records_json TEXT NOT NULL DEFAULT '[]';"
             )
             try quickCheck()
         } catch {
@@ -476,7 +480,7 @@ final class StateDatabase {
     func edgeProjects() throws -> [EdgeProjectRecord] {
         try withStatement(
             """
-            SELECT project, host_services_json, ingress_json, oidc_json, updated_at
+            SELECT project, host_services_json, dns_records_json, ingress_json, oidc_json, updated_at
             FROM edge_projects ORDER BY project;
             """
         ) { statement in
@@ -486,9 +490,10 @@ final class StateDatabase {
                     EdgeProjectRecord(
                         project: text(statement, 0),
                         hostServices: try decodeJSON(text(statement, 1)),
-                        ingress: try optionalText(statement, 2).map { try decodeJSON($0) },
-                        oidc: try optionalText(statement, 3).map { try decodeJSON($0) },
-                        updatedAt: text(statement, 4)
+                        dnsRecords: try decodeJSON(text(statement, 2)),
+                        ingress: try optionalText(statement, 3).map { try decodeJSON($0) },
+                        oidc: try optionalText(statement, 4).map { try decodeJSON($0) },
+                        updatedAt: text(statement, 5)
                     )
                 )
             }
@@ -498,6 +503,10 @@ final class StateDatabase {
 
     func setEdgeHostServices(project: String, hosts: JSONValue) throws {
         try upsertEdgeProject(project: project, column: "host_services_json", value: hosts)
+    }
+
+    func setEdgeDNSRecords(project: String, records: JSONValue) throws {
+        try upsertEdgeProject(project: project, column: "dns_records_json", value: records)
     }
 
     func setEdgeIngress(project: String, value: JSONValue?) throws {
@@ -529,7 +538,9 @@ final class StateDatabase {
     }
 
     private func upsertEdgeProject(project: String, column: String, value: JSONValue?) throws {
-        guard ["host_services_json", "ingress_json", "oidc_json"].contains(column) else {
+        guard ["host_services_json", "dns_records_json", "ingress_json", "oidc_json"]
+            .contains(column)
+        else {
             throw SupervisorError.database("invalid edge project column")
         }
         let now = ISO8601DateFormatter().string(from: Date())
@@ -1046,6 +1057,7 @@ enum ReconcileDatabaseError: Error {
 struct EdgeProjectRecord: Sendable {
     let project: String
     let hostServices: JSONValue
+    let dnsRecords: JSONValue
     let ingress: JSONValue?
     let oidc: JSONValue?
     let updatedAt: String

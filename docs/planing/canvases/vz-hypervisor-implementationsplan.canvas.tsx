@@ -463,7 +463,9 @@ export default function VzHypervisorImplementationsplan() {
           Supervisor-owned UDP-Listener, Actual-State A-Records, TTL 5–30s,
           Hot-Reload, System-/expliziter Forwarder sowie DNS-Health und Events.
           macOS-Resolver werden atomar, idempotent und collision-safe pro
-          Projekt/Config verwaltet. Direkte UDP-Queries liefern A/AAAA,
+          Projekt/Config sowie gemeinsam für in-addr.arpa verwaltet. VM- und
+          Container-Namen liefern FQDN-, Wildcard-A-, Kurzname- und PTR-Records;
+          svc ist reserviert. Direkte UDP-Queries liefern A/AAAA/PTR,
           RCODE/Answers und CLI-v1-Exitcodes ohne /etc/resolver. Guest-NoCloud
           setzt Bridge-.0 als einzigen DNS und die Projekt-Search-Domain.
         </Callout>
@@ -479,7 +481,8 @@ export default function VzHypervisorImplementationsplan() {
             <CardBody>
               <Text size="small" tone="secondary">
                 Listener <Code>127.0.0.1:15353</Code> +{" "}
-                <Code>/etc/resolver/{"{project}"}.vz.test</Code> via{" "}
+                <Code>/etc/resolver/{"{project}"}.vz.test</Code> sowie{" "}
+                <Code>/etc/resolver/in-addr.arpa</Code> via{" "}
                 <Code>dns install-resolver|uninstall-resolver</Code>.{" "}
                 <Code>vzctl dns query</Code> spricht DNS direkt (dig umgeht oft
                 Resolver).
@@ -490,10 +493,12 @@ export default function VzHypervisorImplementationsplan() {
             <CardHeader>Guest</CardHeader>
             <CardBody>
               <Text size="small" tone="secondary">
-                Listener auf Host-Bridge-<Code>.0:53/UDP</Code> (gemessen;
-                Dev-Port 15353). Split-Horizon liefert je Listener nur die
-                lokale Host-/Ingress-<Code>.1</Code>; ein PF-Anchor erlaubt dort
-                ausschließlich konfigurierte Ingress-Ports. NoCloud setzt{" "}
+                Public Endpoint auf Host-Bridge-<Code>.0:53/UDP</Code>; PF
+                leitet auf den exklusiven <Code>.0:15054</Code>-Backend-Port um
+                (Dev-Port 15353 ohne Redirect). Split-Horizon liefert je
+                Listener nur die lokale Host-/Ingress-<Code>.1</Code>; der
+                PF-Anchor erlaubt dort ausschließlich konfigurierte
+                Ingress-Ports. NoCloud setzt{" "}
                 <Code>via .0 on-link</Code>, <Code>nameservers: [.0]</Code> und{" "}
                 <Code>{"search: [{project}.vz.test]"}</Code>.
                 Host parallel <Code>127.0.0.1</Code> +{" "}

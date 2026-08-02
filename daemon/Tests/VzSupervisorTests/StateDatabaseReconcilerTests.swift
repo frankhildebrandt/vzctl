@@ -14,14 +14,24 @@ import VzDaemonKit
     try database.setEdgeIngress(
         project: "alpha", value: .object(["project": .string("alpha")])
     )
+    try database.setEdgeDNSRecords(
+        project: "alpha",
+        records: .array([.object([
+            "name": .string("api"),
+            "network": .string("containers"),
+            "ip": .string("10.95.0.10"),
+        ])])
+    )
     try database.setEdgeOIDC(
         project: "beta", value: .object(["project": .string("beta")])
     )
     let records = try database.edgeProjects()
     #expect(records.map(\.project) == ["alpha", "beta"])
     #expect(records[0].ingress != nil)
+    #expect(records[0].dnsRecords != .array([]))
     #expect(records[0].oidc == nil)
     #expect(records[1].ingress == nil)
+    #expect(records[1].dnsRecords == .array([]))
     #expect(records[1].oidc != nil)
     #expect(try database.nextEdgeGeneration() == 1)
     #expect(try database.nextEdgeGeneration() == 2)

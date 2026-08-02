@@ -180,8 +180,11 @@ NoCloud); it does **not** hold `CAP_SYS_ADMIN` itself. See
 Capability `ca_inject` installs the Local CA PEM into the guest system store
 (see [certs-v1.md](certs-v1.md)): write
 `/usr/local/share/ca-certificates/{name}.crt` (default name `vzctl-local`) and
-run `update-ca-certificates` via `sudo -n`. `fingerprint` is the sha256 hex of
-the PEM/DER the host expects; mismatch after install is an error.
+run the restricted `/usr/local/lib/vzctl/ca-inject` helper via `sudo -n`. The
+helper independently validates the DER sha256 fingerprint, performs an atomic
+install, runs `update-ca-certificates` and verifies the result against the
+system CA bundle. `fingerprint` is the sha256 hex of the DER the host expects;
+mismatch before or after install is an error.
 
 All time values are integer milliseconds. A caller may choose a shorter
 deadline. Values above the maximum return `proto`; zero and negative values are

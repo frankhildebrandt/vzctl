@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"strings"
 )
 
 const (
-	caCertDir      = "/usr/local/share/ca-certificates"
-	caFingerprintF = "/var/lib/vzctl/ca.fingerprint"
-	updateCABin    = "/usr/sbin/update-ca-certificates"
+	caInjectBin = "/usr/local/lib/vzctl/ca-inject"
 )
+
+var runCAInstaller = executeCAInstaller
 
 type caInjectParams struct {
 	PEM         string `json:"pem"`
@@ -51,29 +50,8 @@ func handleCAInject(req request) response {
 		})
 	}
 
-	dest := path.Join(caCertDir, name+".crt")
-	tmp := dest + ".tmp"
-	if err := os.MkdirAll(caCertDir, 0o755); err != nil {
-		return errorResponse(req.ID, "internal", err.Error(), nil)
-	}
-	if err := os.WriteFile(tmp, []byte(params.PEM), 0o644); err != nil {
-		return errorResponse(req.ID, "internal", err.Error(), nil)
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return errorResponse(req.ID, "internal", err.Error(), nil)
-	}
-	if err := os.MkdirAll("/var/lib/vzctl", 0o755); err != nil {
-		return errorResponse(req.ID, "internal", err.Error(), nil)
-	}
-	if err := os.WriteFile(caFingerprintF, []byte(want+"\n"), 0o644); err != nil {
-		return errorResponse(req.ID, "internal", err.Error(), nil)
-	}
-
-	cmd := exec.Command("sudo", "-n", updateCABin)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return errorResponse(req.ID, "internal", fmt.Sprintf("update-ca-certificates: %v: %s", err, strings.TrimSpace(string(out))), map[string]any{
+	if err := runCAInstaller(params.PEM, name, want); err != nil {
+		return errorResponse(req.ID, "internal", err.Error(), map[string]any{
 			"name": name,
 		})
 	}
@@ -81,8 +59,26 @@ func handleCAInject(req request) response {
 		"installed":   true,
 		"fingerprint": got,
 		"name":        name,
-		"path":        dest,
+		"path":        "/usr/local/share/ca-certificates/" + name + ".crt",
 	})
+}
+
+func executeCAInstaller(pem, name, fingerprint string) error {
+	binary := caInjectBin
+	if override := strings.TrimSpace(os.Getenv("VZCTL_CA_INJECT")); override != "" {
+		binary = override
+	}
+	cmd := exec.Command("sudo", "-n", binary, name, fingerprint)
+	cmd.Stdin = strings.NewReader(pem)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("ca-inject failed: %s", detail)
 }
 
 func fingerprintPEM(pem string) string {

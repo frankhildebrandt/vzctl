@@ -166,8 +166,15 @@ oidc:
   Quellnetz hängen (sowie an jedem `allow.to`-Netz außer `internet`). Bei
   mehreren Routern am Quellnetz ohne `via` schlägt Apply mit Ambiguity fehl.
 - `composeFiles` / `containers` nur auf VMs mit `roles` inkl. `docker`.
-  Compose-Pfade müssen relativ zur Config existieren. Container-Namen:
-  1–63 `[A-Za-z0-9][A-Za-z0-9_.-]*`; `image` Pflicht.
+  Compose-Pfade müssen relativ zur Config existieren. DNS-sichtbare VM-, Netz-
+  und Container-Namen sind kleingeschriebene DNS-Labels (1–63 Zeichen,
+  `[a-z0-9-]`, alphanumerischer Anfang/Ende) und niemals `svc`; `image` ist
+  Pflicht. Compose-/Container-VMs müssen an genau dem deklarierten
+  `backend: docker` hängen, dessen Name im Container-FQDN verwendet wird.
+
+DNS verwendet `spec.project` als Stack-Label:
+`{vm/container}.{network}.{project}.vz.test`, inklusive Wildcard-A und
+IPv4-PTR. Innerhalb des owning Netzes reicht der einzelne Host-/Containername.
 
 Die Validierung verändert weder Runtime-State noch Journal/Lease. Reconcile
 und Apply folgen separat in [#37](https://github.com/frankhildebrandt/vzctl/issues/37).

@@ -523,7 +523,8 @@ enum VzDnsBindMain {
         }
         try saveAliasState([])
         if FileManager.default.fileExists(atPath: pfTokenPath) {
-            _ = try runProcess(path: "/sbin/pfctl", arguments: ["-a", pfAnchor, "-F", "rules"])
+            // The anchor owns filter and translation (rdr) rules.
+            _ = try runProcess(path: "/sbin/pfctl", arguments: ["-a", pfAnchor, "-F", "all"])
             let token = (try? String(contentsOfFile: pfTokenPath, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let token, !token.isEmpty {

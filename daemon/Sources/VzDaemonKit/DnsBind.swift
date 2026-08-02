@@ -1,19 +1,24 @@
 import Darwin
 import Foundation
 
-/// Privileged bind helper protocol (SCM_RIGHTS over UDS).
-/// Binds UDP (guest DNS :53) or TCP (ingress gateway :80/:443) on privileged ports.
+/// Privileged networking helper protocol (SCM_RIGHTS over UDS).
+/// Owns aliases/PF and binds privileged UDP/TCP sockets when requested.
 public enum DnsBind {
     public static let defaultSocketPath = "/var/run/vzctl/dns-bind.sock"
     public static let label = "com.vzctl.dns-bind"
     public static let libexecBinary = "/usr/local/libexec/vzctl/vz-dns-bind"
     public static let launchDaemonPlist = "/Library/LaunchDaemons/com.vzctl.dns-bind.plist"
     public static let privilegedPortLimit: UInt16 = 1024
+    public static let defaultGuestDNSPort: UInt16 = 53
+    /// Exclusive unprivileged backend used behind PF redirection. Binding the
+    /// public UDP/53 directly races with mDNSResponder's wildcard listener.
+    public static let defaultGuestDNSBackendPort: UInt16 = 15_054
     public static let protoUDP = "udp"
     public static let protoTCP = "tcp"
     public static let opAliasEnsure = "alias.ensure"
     public static let opAliasRemove = "alias.remove"
     public static let opFirewallReconcile = "firewall.reconcile"
+    public static let opFirewallReconcileV2 = "firewall.reconcile.v2"
     public static let opCleanup = "cleanup"
 
     public static func socketPath(
@@ -80,17 +85,29 @@ public enum DnsBind {
         public var cidr: String
         public var allowedSources: [String]
         public var tcpPorts: [UInt16]
+        public var dnsPort: UInt16?
+        public var dnsBackendPort: UInt16?
 
-        public init(cidr: String, allowedSources: [String], tcpPorts: [UInt16]) {
+        public init(
+            cidr: String,
+            allowedSources: [String],
+            tcpPorts: [UInt16],
+            dnsPort: UInt16? = nil,
+            dnsBackendPort: UInt16? = nil
+        ) {
             self.cidr = cidr
             self.allowedSources = allowedSources
             self.tcpPorts = tcpPorts
+            self.dnsPort = dnsPort
+            self.dnsBackendPort = dnsBackendPort
         }
 
         enum CodingKeys: String, CodingKey {
             case cidr
             case allowedSources = "allowed_sources"
             case tcpPorts = "tcp_ports"
+            case dnsPort = "dns_port"
+            case dnsBackendPort = "dns_backend_port"
         }
     }
 
@@ -99,7 +116,8 @@ public enum DnsBind {
         public var bindings: [FirewallBinding]
 
         public init(bindings: [FirewallBinding]) {
-            op = DnsBind.opFirewallReconcile
+            op = bindings.contains { $0.dnsPort != nil || $0.dnsBackendPort != nil }
+                ? DnsBind.opFirewallReconcileV2 : DnsBind.opFirewallReconcile
             self.bindings = bindings
         }
     }
@@ -169,7 +187,7 @@ public enum DnsBind {
             }
             try validate(request)
             return .alias(request)
-        case opFirewallReconcile:
+        case opFirewallReconcile, opFirewallReconcileV2:
             guard let request = try? JSONDecoder().decode(FirewallRequest.self, from: trimmed) else {
                 throw ValidationError.invalidJSON
             }
@@ -224,7 +242,7 @@ public enum DnsBind {
     }
 
     public static func validate(_ request: FirewallRequest) throws {
-        guard request.op == opFirewallReconcile else {
+        guard request.op == opFirewallReconcile || request.op == opFirewallReconcileV2 else {
             throw ValidationError.unsupportedOp(request.op)
         }
         var seen = Set<String>()
@@ -237,6 +255,21 @@ public enum DnsBind {
             }
             guard !binding.tcpPorts.contains(0) else {
                 throw ValidationError.invalidFirewall("TCP port must be greater than zero")
+            }
+            switch (binding.dnsPort, binding.dnsBackendPort) {
+            case (nil, nil):
+                break
+            case let (dnsPort?, backendPort?) where dnsPort > 0 && backendPort > 0:
+                guard request.op == opFirewallReconcileV2 else {
+                    throw ValidationError.invalidFirewall(
+                        "DNS redirect requires firewall.reconcile.v2"
+                    )
+                }
+                break
+            default:
+                throw ValidationError.invalidFirewall(
+                    "DNS public and backend ports must both be greater than zero"
+                )
             }
             for source in binding.allowedSources {
                 guard (try? IPv4CIDR(source))?.canonical == source else {
@@ -251,7 +284,8 @@ public enum DnsBind {
         interfaceByCIDR: [String: String]
     ) throws -> String {
         try validate(FirewallRequest(bindings: bindings))
-        var rules: [String] = []
+        var translations: [String] = []
+        var filters: [String] = []
         for binding in bindings.sorted(by: { $0.cidr < $1.cidr }) {
             guard let interface = interfaceByCIDR[binding.cidr],
                   !interface.isEmpty,
@@ -264,13 +298,32 @@ public enum DnsBind {
             let hostService = IPv4CIDR.hostService(for: binding.cidr)
             let sources = Array(Set(binding.allowedSources)).sorted()
             let ports = Array(Set(binding.tcpPorts)).sorted()
+            if !sources.isEmpty {
+                filters.append(
+                    "pass in quick on \(interface) inet proto udp from { \(sources.joined(separator: ", ")) } to 224.0.0.251 port 5353 keep state"
+                )
+            }
+            if let dnsPort = binding.dnsPort,
+               let backendPort = binding.dnsBackendPort,
+               dnsPort != backendPort,
+               !sources.isEmpty
+            {
+                let gateway = IPv4CIDR.gateway(for: binding.cidr)
+                translations.append(
+                    "rdr pass on \(interface) inet proto udp from { \(sources.joined(separator: ", ")) } to \(gateway) port \(dnsPort) -> \(gateway) port \(backendPort)"
+                )
+                filters.append(
+                    "block in quick on \(interface) inet proto udp from any to \(gateway) port \(dnsPort)"
+                )
+            }
             if !sources.isEmpty, !ports.isEmpty {
-                rules.append(
+                filters.append(
                     "pass in quick on \(interface) inet proto tcp from { \(sources.joined(separator: ", ")) } to \(hostService) port { \(ports.map(String.init).joined(separator: ", ")) } flags S/SA keep state"
                 )
             }
-            rules.append("block in quick on \(interface) inet from any to \(hostService)")
+            filters.append("block in quick on \(interface) inet from any to \(hostService)")
         }
+        let rules = translations + filters
         return rules.isEmpty ? "" : rules.joined(separator: "\n") + "\n"
     }
 }

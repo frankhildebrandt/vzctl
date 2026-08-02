@@ -32,8 +32,9 @@ standardmäßig unter `~/Library/Application Support/vzctl/`;
 benutzerlokal nach `~/.local/bin`. Der Supervisor wird als
 `~/Library/LaunchAgents/com.vzctl.supervisor.plist` registriert und sofort
 gestartet. Bei einer bestehenden Installation werden die geprüften Binaries
-atomar ersetzt und der Supervisor neu gestartet. Laufende VM-Helper werden
-nicht beendet; neue Helper-Prozesse verwenden sofort die aktualisierte Binary.
+atomar ersetzt und die LaunchAgents neu gestartet. Weil ein Neustart von
+`vz-net` bestehende vmnet-Attachments ungültig macht, werden laufende VMs davor
+graceful gestoppt. Ein anschließendes `vzctl up -C <stack>` startet sie wieder.
 Liegen Caddy/Dex unter `daemon/Vendor/` (`make vendor`), kopiert `install`
 sie zusätzlich nach `~/Library/Application Support/vzctl/bin/` für Ingress/OIDC.
 Falls `~/.local/bin` noch nicht im `PATH` liegt:

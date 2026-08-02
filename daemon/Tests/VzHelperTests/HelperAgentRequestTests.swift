@@ -62,6 +62,26 @@ import VzDaemonKit
     #expect(HelperAgentProxy.methods.contains("agent.version"))
     #expect(HelperAgentProxy.methods.contains("agent.report_ip"))
     #expect(HelperAgentProxy.methods.contains("agent.ping"))
+    #expect(HelperAgentProxy.methods.contains("agent.ca_inject"))
+}
+
+@Test func agentCAInjectParsesRequiredParamsAndDefaultName() throws {
+    let parsed = try HelperAgentRequest.parseCAInject(
+        .object([
+            "pem": .string("-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n"),
+            "fingerprint": .string(String(repeating: "a", count: 64)),
+        ])
+    )
+    #expect(parsed.name == "vzctl-local")
+    #expect(parsed.fingerprint == String(repeating: "a", count: 64))
+}
+
+@Test func agentCAInjectRejectsMissingPEM() {
+    #expect(throws: RouteApplyError.self) {
+        try HelperAgentRequest.parseCAInject(
+            .object(["fingerprint": .string(String(repeating: "a", count: 64))])
+        )
+    }
 }
 
 @Test func agentExecTTYParsesColsRows() throws {

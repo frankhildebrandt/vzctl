@@ -25,6 +25,8 @@ edge_plist_path="$launch_agents_dir/$edge_label.plist"
 supervisor_plist_path="$launch_agents_dir/$supervisor_label.plist"
 domain="gui/$(id -u)"
 action=installed
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+stop_helpers="$script_dir/stop-vz-helpers.sh"
 
 case "$activate" in
   0|1) ;;
@@ -172,6 +174,13 @@ wait_sock() {
 # Stop dependents before replacing binaries. vz-net must exit via SIGTERM
 # (launchctl bootout) so vmnet refs release cleanly — never SIGKILL/-k.
 if [ "$(uname -s)" = Darwin ]; then
+  if [ ! -x "$stop_helpers" ]; then
+    echo "missing executable: $stop_helpers" >&2
+    exit 3
+  fi
+  # Helper-side refs become unusable when vz-net recreates the network. Stop
+  # every VM first; refuse the install if graceful shutdown does not finish.
+  "$stop_helpers" "$(id -u)"
   if agent_loaded "$supervisor_label" || agent_loaded "$edge_label" || agent_loaded "$net_label"; then
     printf 'stopping running agents before install…\n'
   fi

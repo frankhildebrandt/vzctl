@@ -35,6 +35,8 @@ Entscheidungen aus [Fable-Review](02-fable-review.md) und [GPT-SOL-Review](05-gp
 | 25 | Image Customize Backend | **Builder-VM** mit gepinnter Appliance auf macOS; lokales `virt-customize` wenn vorhanden (CI/Linux). Seal und Bake teilen das Backend, bleiben getrennte Contracts. |
 | 26 | Docker-Netz | **`backend: docker`** als first-class Hypernetwork (Bridge/bip = CIDR, Firewall via Router-Rolle) |
 | 27 | Ingress Split-Horizon | Host → `127.0.0.1`; Guest → nur lokale `.1`; fremdes Projekt `NXDOMAIN`; PF erlaubt auf `.1` nur Ingress. Docker nutzt Primary-vmnet der owning VM. |
+| 28 | Guest-DNS Port-Isolation | `.0:53` bleibt der Guest-Contract; PF leitet auf `.0:15054` um, damit `mDNSResponder` nicht den Host-Horizont ausliefert. |
+| 29 | Stack-Maschinen-DNS | VM/Container: `{name}.{network}.{project}.vz.test` + Wildcard-A + IPv4-PTR; Kurzname nur im owning Netz; `svc` reserviert. macOS-PTR über gemeinsamen `in-addr.arpa`-Resolver; mDNS bleibt link-lokal. |
 | 22 | MVP Label | v0.1 = **Alpha**; virtiofs + Docker-Polish → **v0.1.x** |
 | 23 | Guest-DNS-IP | Host-Bridge **`.0`** (UDP gemessen); Host-Listener parallel `127.0.0.1` |
 | 24 | G0 Verdict | **Go**; ADR 0002+0003 accepted |

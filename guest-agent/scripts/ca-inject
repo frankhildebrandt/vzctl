@@ -1,0 +1,58 @@
+#!/bin/sh
+# Privileged CA installer for vzctl-agent (invoked via sudo -n).
+# Usage: ca-inject <name> <sha256-fingerprint>; PEM is read from stdin.
+set -eu
+
+name=${1:-}
+fingerprint=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')
+ca_dir=${VZCTL_CA_CERT_DIR:-/usr/local/share/ca-certificates}
+fingerprint_file=${VZCTL_CA_FINGERPRINT_FILE:-/var/lib/vzctl/ca.fingerprint}
+trust_bundle=${VZCTL_CA_TRUST_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}
+update_ca=${VZCTL_UPDATE_CA_BIN:-/usr/sbin/update-ca-certificates}
+openssl_bin=${VZCTL_OPENSSL_BIN:-openssl}
+
+case "$name" in
+  ''|*[!A-Za-z0-9_-]*)
+    echo 'invalid CA name' >&2
+    exit 2
+    ;;
+esac
+[ "${#name}" -le 64 ] || {
+  echo 'invalid CA name' >&2
+  exit 2
+}
+case "$fingerprint" in
+  *[!0-9a-f]*|'')
+    echo 'invalid CA fingerprint' >&2
+    exit 2
+    ;;
+esac
+[ "${#fingerprint}" -eq 64 ] || {
+  echo 'invalid CA fingerprint' >&2
+  exit 2
+}
+
+umask 077
+install -d -m 0755 "$ca_dir" "$(dirname "$fingerprint_file")"
+pem_tmp=$(mktemp "$ca_dir/.${name}.crt.XXXXXX")
+der_tmp=$(mktemp)
+fingerprint_tmp=$(mktemp "$(dirname "$fingerprint_file")/.ca.fingerprint.XXXXXX")
+trap 'rm -f "$pem_tmp" "$der_tmp" "$fingerprint_tmp"' EXIT
+cat >"$pem_tmp"
+
+"$openssl_bin" x509 -in "$pem_tmp" -outform DER >"$der_tmp"
+actual=$("$openssl_bin" dgst -sha256 -r "$der_tmp" | awk '{print $1}')
+[ "$actual" = "$fingerprint" ] || {
+  echo "CA fingerprint mismatch: expected $fingerprint, got $actual" >&2
+  exit 1
+}
+
+chmod 0644 "$pem_tmp"
+mv -f "$pem_tmp" "$ca_dir/$name.crt"
+"$update_ca"
+"$openssl_bin" verify -CAfile "$trust_bundle" "$ca_dir/$name.crt" >/dev/null
+printf '%s\n' "$fingerprint" >"$fingerprint_tmp"
+chmod 0644 "$fingerprint_tmp"
+mv -f "$fingerprint_tmp" "$fingerprint_file"
+
+printf 'installed=%s fingerprint=%s\n' "$name" "$fingerprint"

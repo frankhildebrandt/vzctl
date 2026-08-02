@@ -44,6 +44,7 @@ forwards, ingress-listener count, supervised child status and `last_error`.
   "desired": {
     "network_snapshot": {"networks": [], "attachments": []},
     "host_services": [],
+    "dns_records": [{"name":"api","network":"containers","listener_network":"dmz","stack":"edge-dmz","project":"edge-dmz","ip":"10.95.0.10"}],
     "port_forwards": [],
     "ingress": [],
     "oidc": []
@@ -52,6 +53,11 @@ forwards, ingress-listener count, supervised child status and `last_error`.
 ```
 
 - The snapshot is global and replaces the prior runtime generation.
+- `dns_records` contains running stack-owned containers discovered after the
+  Docker ensure step. VM records continue to come from `network_snapshot`.
+- VM/container A, wildcard-A and IPv4-PTR records use
+  `{name}.{network}.{project}.vz.test`; the single-label form is available only
+  on the owning Guest listener. `spec.project` is the canonical DNS stack name.
 - Same generation + digest is idempotent.
 - Same generation + another digest or an older generation returns `-32042`.
 - Parse, identity and Caddy config validation happen before replacement.

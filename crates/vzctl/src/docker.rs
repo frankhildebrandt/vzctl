@@ -2,9 +2,10 @@ use crate::config::ContainerConfig;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -501,6 +502,12 @@ const LABEL_MANAGED: &str = "vzctl.dev/managed";
 const LABEL_VM: &str = "vzctl.dev/vm";
 const LABEL_HASH: &str = "vzctl.dev/hash";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContainerDNSAddress {
+    pub(crate) name: String,
+    pub(crate) ip: Ipv4Addr,
+}
+
 /// Ensure compose files + declarative containers for one docker-role VM (ensure-only).
 pub(crate) fn ensure_vm_containers(
     project: &str,
@@ -521,6 +528,201 @@ pub(crate) fn ensure_vm_containers(
         ensure_one_container(&context, &ssh_command, config_dir, vm_key, name, container)?;
     }
     Ok(())
+}
+
+/// Discover running containers owned by the declarative VM config or one of
+/// its generated Compose projects and return their actual Docker-CIDR address.
+pub(crate) fn collect_vm_container_dns(
+    project: &str,
+    state_dir: &Path,
+    vm_key: &str,
+    compose_files: &[String],
+    docker_cidr: ipnet::Ipv4Net,
+) -> Result<Vec<ContainerDNSAddress>, String> {
+    let (context, ssh_command) = docker_session(project, state_dir)?;
+    let (code, stdout, stderr) =
+        docker_output(&context, &ssh_command, &["ps".into(), "-q".into()])?;
+    if code != 0 {
+        return Err(format!("docker ps for DNS failed: {}", stderr.trim()));
+    }
+    let ids = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["inspect".to_string()];
+    args.extend(ids);
+    let (code, stdout, stderr) = docker_output(&context, &ssh_command, &args)?;
+    if code != 0 {
+        return Err(format!("docker inspect for DNS failed: {}", stderr.trim()));
+    }
+    let mut inspected: JsonValue = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("docker inspect DNS parse failed: {error}"))?;
+    let compose_projects = compose_files
+        .iter()
+        .map(|path| compose_project_name(vm_key, path))
+        .collect::<BTreeSet<_>>();
+    validate_container_dns_names(&inspected, vm_key, &compose_projects)?;
+    let missing =
+        containers_missing_dns_bridge(&inspected, vm_key, &compose_projects, docker_cidr)?;
+    for id in &missing {
+        let (code, _, stderr) = docker_output(
+            &context,
+            &ssh_command,
+            &[
+                "network".into(),
+                "connect".into(),
+                "bridge".into(),
+                id.clone(),
+            ],
+        )?;
+        if code != 0 && !stderr.to_ascii_lowercase().contains("already exists") {
+            return Err(format!(
+                "attach container {id} to managed Docker bridge for DNS failed: {}",
+                stderr.trim()
+            ));
+        }
+    }
+    if !missing.is_empty() {
+        let (code, stdout, stderr) = docker_output(&context, &ssh_command, &args)?;
+        if code != 0 {
+            return Err(format!(
+                "docker re-inspect for DNS failed: {}",
+                stderr.trim()
+            ));
+        }
+        inspected = serde_json::from_str(stdout.trim())
+            .map_err(|error| format!("docker re-inspect DNS parse failed: {error}"))?;
+    }
+    container_dns_from_inspect(&inspected, vm_key, &compose_projects, docker_cidr)
+}
+
+fn containers_missing_dns_bridge(
+    inspected: &JsonValue,
+    vm_key: &str,
+    compose_projects: &BTreeSet<String>,
+    docker_cidr: ipnet::Ipv4Net,
+) -> Result<Vec<String>, String> {
+    let values = inspected
+        .as_array()
+        .ok_or_else(|| "docker inspect DNS response must be an array".to_string())?;
+    values
+        .iter()
+        .filter(|item| owned_running_container(item, vm_key, compose_projects))
+        .filter(|item| docker_cidr_ip(item, docker_cidr).is_none())
+        .map(|item| {
+            item.get("Id")
+                .and_then(JsonValue::as_str)
+                .or_else(|| item.get("Name").and_then(JsonValue::as_str))
+                .map(|value| value.trim_start_matches('/').to_string())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "stack container without Id or Name cannot get DNS bridge".to_string()
+                })
+        })
+        .collect()
+}
+
+fn validate_container_dns_names(
+    inspected: &JsonValue,
+    vm_key: &str,
+    compose_projects: &BTreeSet<String>,
+) -> Result<(), String> {
+    let values = inspected
+        .as_array()
+        .ok_or_else(|| "docker inspect DNS response must be an array".to_string())?;
+    for item in values
+        .iter()
+        .filter(|item| owned_running_container(item, vm_key, compose_projects))
+    {
+        let _ = stack_container_dns_name(item)?;
+    }
+    Ok(())
+}
+
+fn owned_running_container(
+    item: &JsonValue,
+    vm_key: &str,
+    compose_projects: &BTreeSet<String>,
+) -> bool {
+    let labels = item
+        .pointer("/Config/Labels")
+        .and_then(JsonValue::as_object);
+    let declarative = labels
+        .and_then(|labels| labels.get(LABEL_VM))
+        .and_then(JsonValue::as_str)
+        == Some(vm_key);
+    let compose = labels
+        .and_then(|labels| labels.get("com.docker.compose.project"))
+        .and_then(JsonValue::as_str)
+        .is_some_and(|project| compose_projects.contains(project));
+    (declarative || compose)
+        && item.pointer("/State/Running").and_then(JsonValue::as_bool) == Some(true)
+}
+
+fn docker_cidr_ip(item: &JsonValue, docker_cidr: ipnet::Ipv4Net) -> Option<Ipv4Addr> {
+    item.pointer("/NetworkSettings/Networks")
+        .and_then(JsonValue::as_object)
+        .into_iter()
+        .flat_map(|networks| networks.values())
+        .filter_map(|network| network.get("IPAddress").and_then(JsonValue::as_str))
+        .filter_map(|ip| ip.parse::<Ipv4Addr>().ok())
+        .find(|ip| docker_cidr.contains(ip))
+}
+
+fn stack_container_dns_name(item: &JsonValue) -> Result<String, String> {
+    let name = item
+        .get("Name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .to_ascii_lowercase();
+    if !dns_host_label(&name) || name == "svc" {
+        return Err(format!(
+            "container {name:?} cannot be published in DNS; use a DNS label and never svc"
+        ));
+    }
+    Ok(name)
+}
+
+fn container_dns_from_inspect(
+    inspected: &JsonValue,
+    vm_key: &str,
+    compose_projects: &BTreeSet<String>,
+    docker_cidr: ipnet::Ipv4Net,
+) -> Result<Vec<ContainerDNSAddress>, String> {
+    let values = inspected
+        .as_array()
+        .ok_or_else(|| "docker inspect DNS response must be an array".to_string())?;
+    let mut records = Vec::new();
+    for item in values {
+        if !owned_running_container(item, vm_key, compose_projects) {
+            continue;
+        }
+        let name = stack_container_dns_name(item)?;
+        let ip = docker_cidr_ip(item, docker_cidr).ok_or_else(|| {
+            format!("container {name:?} has no address in managed Docker CIDR {docker_cidr}")
+        })?;
+        records.push(ContainerDNSAddress { name, ip });
+    }
+    records.sort_by(|left, right| left.name.cmp(&right.name).then(left.ip.cmp(&right.ip)));
+    records.dedup();
+    Ok(records)
+}
+
+fn dns_host_label(value: &str) -> bool {
+    (1..=63).contains(&value.len())
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'-')
+        })
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 fn docker_session(project: &str, state_dir: &Path) -> Result<(String, String), String> {
@@ -1633,6 +1835,108 @@ fn envelope(command: &str, status: &str, exit_code: u8, summary: JsonValue) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_dns_uses_owned_running_containers_inside_docker_cidr() {
+        let inspected = json!([
+            {
+                "Name": "/api",
+                "Config": {"Labels": {"vzctl.dev/vm": "docker"}},
+                "State": {"Running": true},
+                "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "10.95.0.10"}}}
+            },
+            {
+                "Name": "/docker-app-web-1",
+                "Config": {"Labels": {"com.docker.compose.project": "docker-app"}},
+                "State": {"Running": true},
+                "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "10.95.0.11"}}}
+            },
+            {
+                "Name": "/manual",
+                "Config": {"Labels": {}},
+                "State": {"Running": true},
+                "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "10.95.0.12"}}}
+            },
+            {
+                "Name": "/stopped",
+                "Config": {"Labels": {"vzctl.dev/vm": "docker"}},
+                "State": {"Running": false},
+                "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "10.95.0.13"}}}
+            }
+        ]);
+        let records = container_dns_from_inspect(
+            &inspected,
+            "docker",
+            &["docker-app".to_string()].into_iter().collect(),
+            "10.95.0.0/24".parse().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            records,
+            [
+                ContainerDNSAddress {
+                    name: "api".into(),
+                    ip: "10.95.0.10".parse().unwrap()
+                },
+                ContainerDNSAddress {
+                    name: "docker-app-web-1".into(),
+                    ip: "10.95.0.11".parse().unwrap(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn container_dns_rejects_reserved_svc_name() {
+        let inspected = json!([{
+            "Name": "/svc",
+            "Config": {"Labels": {"vzctl.dev/vm": "docker"}},
+            "State": {"Running": true},
+            "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "10.95.0.10"}}}
+        }]);
+
+        let error = container_dns_from_inspect(
+            &inspected,
+            "docker",
+            &BTreeSet::new(),
+            "10.95.0.0/24".parse().unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("never svc"));
+    }
+
+    #[test]
+    fn compose_container_without_managed_bridge_is_selected_for_attachment() {
+        let inspected = json!([{
+            "Id": "abc123",
+            "Name": "/docker-app-web-1",
+            "Config": {"Labels": {"com.docker.compose.project": "docker-app"}},
+            "State": {"Running": true},
+            "NetworkSettings": {"Networks": {"docker-app_default": {"IPAddress": "172.30.0.2"}}}
+        }]);
+        let projects = ["docker-app".to_string()].into_iter().collect();
+
+        assert_eq!(
+            containers_missing_dns_bridge(
+                &inspected,
+                "docker",
+                &projects,
+                "10.95.0.0/24".parse().unwrap()
+            )
+            .unwrap(),
+            ["abc123"]
+        );
+        let error = container_dns_from_inspect(
+            &inspected,
+            "docker",
+            &projects,
+            "10.95.0.0/24".parse().unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("no address in managed Docker CIDR"));
+    }
 
     #[test]
     fn context_and_host_names() {

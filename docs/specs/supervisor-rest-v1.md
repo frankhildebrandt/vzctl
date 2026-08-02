@@ -155,3 +155,11 @@ Clients müssen unbekannte JSON-Felder ignorieren.
 Stack-/Image-/Doctor-/Docker-Ops werden in v1 über einen Supervisor-internen
 `vzctl`-Worker ausgeführt (JSON-Envelope). Runtime-Ops (`vm`/`net`/`dns`/`port`)
 gehen direkt an die bestehenden Supervisor-Handler.
+
+### Interne JSON-RPC-Agent-Route
+
+`vm.agent.ca_inject` ist eine additive lokale JSON-RPC-Route für Apply. Params:
+`{vm_id,pem,fingerprint,name?}`. Der Supervisor verlangt einen laufenden Helper
+und leitet als `agent.ca_inject` weiter; Erfolg liefert mindestens
+`{installed:true,fingerprint,name}`. Helper-, Agent-, Installations- und
+Verifikationsfehler werden als Fehler an den Aufrufer zurückgegeben.
