@@ -33,6 +33,7 @@ import {
   IconSave,
   IconUndo,
 } from "@/components/IconButton";
+import { Alert } from "@/components/ui";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -296,9 +297,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
     <div className="topology-editor">
       {toolbarHost ? createPortal(toolbar, toolbarHost) : null}
       {lastError ? (
-        <div className="card error-card topology-banner" role="alert">
-          {lastError}
-        </div>
+        <Alert className="topology-banner">{lastError}</Alert>
       ) : null}
       {connectionHint ? (
         <div className="topology-banner warn" role="status">
