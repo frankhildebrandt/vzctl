@@ -1,30 +1,42 @@
-/* Map brand tokens onto Starlight (light-first, no default blue). */
+/* Starlight light-mode tokens are inverted: white = ink, black = surface. */
 :root,
-::backdrop {
+::backdrop,
+:root[data-theme='dark'],
+html[data-theme='dark'],
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  color-scheme: light;
+
   --sl-font: var(--vz-font);
   --sl-font-mono: var(--vz-font-mono);
 
-  --sl-color-accent-low: #cfe9e2;
-  --sl-color-accent: var(--vz-accent);
+  /* Accent: high = dark (text), low = pale (surfaces) */
   --sl-color-accent-high: #08453b;
+  --sl-color-accent: var(--vz-accent);
+  --sl-color-accent-low: #cfe9e2;
 
-  --sl-color-white: #ffffff;
-  --sl-color-gray-1: #f7f3ea;
-  --sl-color-gray-2: #ebe4d6;
-  --sl-color-gray-3: #cfc5b3;
+  /* Inverted gray ramp (light theme) */
+  --sl-color-white: var(--vz-ink);
+  --sl-color-gray-1: #2c2924;
+  --sl-color-gray-2: #3f3a33;
+  --sl-color-gray-3: #5b564c;
   --sl-color-gray-4: #8a8274;
-  --sl-color-gray-5: #5b564c;
-  --sl-color-gray-6: #2c2924;
-  --sl-color-black: var(--vz-ink);
+  --sl-color-gray-5: #cfc5b3;
+  --sl-color-gray-6: #ebe4d6;
+  --sl-color-gray-7: #f7f3ea;
+  --sl-color-black: #ffffff;
 
   --sl-color-text: var(--vz-ink);
   --sl-color-text-accent: var(--vz-accent);
+  --sl-color-text-invert: #ffffff;
   --sl-color-bg: var(--vz-bg);
   --sl-color-bg-nav: var(--vz-panel);
   --sl-color-bg-sidebar: var(--vz-sidebar);
   --sl-color-bg-inline-code: #ebe4d6;
+  --sl-color-bg-accent: var(--vz-accent);
   --sl-color-hairline: var(--vz-line);
   --sl-color-hairline-light: var(--vz-line);
+  --sl-color-hairline-shade: var(--vz-line);
 
   --sl-color-banner-bg: var(--vz-accent);
   --sl-color-banner-text: #fff;
@@ -32,39 +44,18 @@
   --sl-nav-height: var(--vz-header-h);
 }
 
-/* Force light appearance even if OS prefers dark. */
-:root[data-theme='dark'],
-html[data-theme='dark'] {
-  color-scheme: light;
-  --sl-color-accent-low: #cfe9e2;
-  --sl-color-accent: var(--vz-accent);
-  --sl-color-accent-high: #08453b;
-  --sl-color-white: #ffffff;
-  --sl-color-gray-1: #f7f3ea;
-  --sl-color-gray-2: #ebe4d6;
-  --sl-color-gray-3: #cfc5b3;
-  --sl-color-gray-4: #8a8274;
-  --sl-color-gray-5: #5b564c;
-  --sl-color-gray-6: #2c2924;
-  --sl-color-black: var(--vz-ink);
-  --sl-color-text: var(--vz-ink);
-  --sl-color-text-accent: var(--vz-accent);
-  --sl-color-bg: var(--vz-bg);
-  --sl-color-bg-nav: var(--vz-panel);
-  --sl-color-bg-sidebar: var(--vz-sidebar);
-  --sl-color-bg-inline-code: #ebe4d6;
-  --sl-color-hairline: var(--vz-line);
-}
-
-/* Dark sidebar with light content (brand match). */
+/* Dark left nav — local tokens only, do not leak into main content. */
 .sidebar-pane,
 nav.sidebar {
   --sl-color-text: var(--vz-sidebar-text);
-  --sl-color-text-accent: #7dcfbc;
-  --sl-color-gray-1: var(--vz-sidebar-text);
-  --sl-color-gray-2: var(--vz-sidebar-muted);
-  --sl-color-gray-3: #6f8f84;
-  --sl-color-hairline-light: rgba(215, 232, 226, 0.12);
+  --sl-color-text-accent: #9fd9cb;
+  --sl-color-white: #f3faf7;
+  --sl-color-gray-1: #e4f0eb;
+  --sl-color-gray-2: var(--vz-sidebar-text);
+  --sl-color-gray-3: var(--vz-sidebar-muted);
+  --sl-color-gray-4: #6f8f84;
+  --sl-color-gray-5: #3a4f48;
+  --sl-color-hairline-light: rgba(215, 232, 226, 0.14);
   background: var(--vz-sidebar);
   color: var(--vz-sidebar-text);
 }
@@ -73,10 +64,14 @@ nav.sidebar {
   color: var(--vz-sidebar-text);
 }
 
+.sidebar-content a:hover {
+  color: #fff;
+}
+
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover {
   color: #fff;
-  background: rgba(15, 106, 90, 0.45);
+  background: rgba(15, 106, 90, 0.55);
 }
 
 .sidebar-content .group-label .large {
@@ -86,28 +81,56 @@ nav.sidebar {
   font-size: 0.72rem;
 }
 
-/* Content surface */
+/* Content + right TOC: explicit ink for contrast */
 .main-pane,
 .sl-container {
   font-family: var(--vz-font);
+  color: var(--vz-ink);
+}
+
+.main-pane :is(h1, h2, h3, h4, h5),
+.sl-markdown-content :is(h1, h2, h3, h4, h5),
+.content-panel h1 {
+  color: var(--vz-ink) !important;
+}
+
+.right-sidebar,
+.right-sidebar-panel {
+  color: var(--vz-muted);
+}
+
+.right-sidebar a,
+.right-sidebar-panel a,
+starlight-toc a {
+  color: var(--vz-muted);
+}
+
+.right-sidebar a:hover,
+.right-sidebar-panel a:hover,
+starlight-toc a:hover,
+starlight-toc a[aria-current='true'] {
+  color: var(--vz-accent);
+}
+
+#starlight__on-this-page {
+  color: var(--vz-ink);
 }
 
 .sl-markdown-content code:not(:where(.expressive-code *)) {
   font-family: var(--vz-font-mono);
+  color: var(--vz-ink);
 }
 
 .site-title {
   display: none;
 }
 
-/* Hide leftover theme toggle chrome if any */
 starlight-theme-select,
 .theme-toggle,
 .social-icons {
   display: none !important;
 }
 
-/* Page frame: our header already sticky */
 header.header {
   padding: 0 !important;
   border-bottom: 1px solid var(--vz-line);
@@ -125,4 +148,10 @@ header.header {
 
 .sl-markdown-content a:not(.sl-link-button):hover {
   color: var(--vz-accent-hover);
+}
+
+/* Mobile TOC summary */
+#starlight__mobile-toc summary,
+#starlight__mobile-toc .display-current {
+  color: var(--vz-ink);
 }

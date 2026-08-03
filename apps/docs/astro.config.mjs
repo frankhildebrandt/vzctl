@@ -30,6 +30,7 @@ export default defineConfig({
       components: {
         Header: './src/components/StarlightHeader.astro',
         Footer: './src/components/StarlightFooter.astro',
+        Head: './src/components/StarlightHead.astro',
         ThemeSelect: './src/components/Empty.astro',
       },
       sidebar: [
