@@ -1,12 +1,22 @@
 import { useEffect, useState, type FormEvent } from "react";
+import {
+  Card,
+  FieldError,
+  FormActions,
+  FormCheck,
+  FormField,
+  FormGrid,
+  LoadingState,
+  Muted,
+  SectionTitle,
+  SelectableCard,
+} from "@/components/ui";
 import { getT, useT, LOCALE_OPTIONS, type MessageKey } from "@/lib/i18n";
 import {
   THEME_OPTION_IDS,
   THEME_LABEL_KEYS,
   THEME_DESCRIPTION_KEYS,
-  type ThemeId,
 } from "@/lib/settings";
-import type { LocaleId } from "@/lib/i18n";
 import { useSettingsStore } from "@/store/settingsStore";
 import {
   loadHostOidcUplink,
@@ -36,119 +46,70 @@ export function SettingsPage() {
 
   return (
     <section>
-      <h2 className="section-title">{t("settings.title")}</h2>
-      <p className="muted">{t("settings.subtitle")}</p>
+      <SectionTitle>{t("settings.title")}</SectionTitle>
+      <Muted>{t("settings.subtitle")}</Muted>
 
-      <div className="card settings-section">
-        <h2>{t("settings.appearance")}</h2>
-        <p className="muted settings-section-hint">{t("settings.themeHint")}</p>
+      <Card
+        className="settings-section"
+        title={t("settings.appearance")}
+        subtitle={<span className="settings-section-hint">{t("settings.themeHint")}</span>}
+      >
         <div
           className="theme-grid"
           role="radiogroup"
           aria-label={t("settings.themeAria")}
         >
           {THEME_OPTION_IDS.map((id) => (
-            <ThemeCard
+            <SelectableCard
               key={id}
-              id={id}
               label={t(THEME_LABEL_KEYS[id])}
               description={t(THEME_DESCRIPTION_KEYS[id])}
               selected={theme === id}
-              onSelect={setTheme}
+              previewKey={id}
+              preview={<ThemePreview />}
+              onClick={() => setTheme(id)}
             />
           ))}
         </div>
-      </div>
+      </Card>
 
-      <div className="card settings-section">
-        <h2>{t("settings.locale")}</h2>
-        <p className="muted settings-section-hint">{t("settings.localeHint")}</p>
+      <Card
+        className="settings-section"
+        title={t("settings.locale")}
+        subtitle={<span className="settings-section-hint">{t("settings.localeHint")}</span>}
+      >
         <div
           className="theme-grid"
           role="radiogroup"
           aria-label={t("settings.localeAria")}
         >
           {LOCALE_OPTIONS.map((option) => (
-            <LocaleCard
+            <SelectableCard
               key={option.id}
-              id={option.id}
+              appearance="locale"
               label={option.label}
               description={option.description}
               selected={locale === option.id}
-              onSelect={setLocale}
+              onClick={() => setLocale(option.id)}
             />
           ))}
         </div>
-      </div>
+      </Card>
 
       <HostOidcUplinkSection />
     </section>
   );
 }
 
-function ThemeCard({
-  id,
-  label,
-  description,
-  selected,
-  onSelect,
-}: {
-  id: ThemeId;
-  label: string;
-  description: string;
-  selected: boolean;
-  onSelect: (theme: ThemeId) => void;
-}) {
+function ThemePreview() {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      className={`theme-card${selected ? " selected" : ""}`}
-      data-preview={id}
-      onClick={() => onSelect(id)}
-    >
-      <span className="theme-preview" aria-hidden>
-        <span className="theme-preview-sidebar" />
-        <span className="theme-preview-main">
-          <span className="theme-preview-bar" />
-          <span className="theme-preview-card" />
-        </span>
+    <span className="theme-preview" aria-hidden>
+      <span className="theme-preview-sidebar" />
+      <span className="theme-preview-main">
+        <span className="theme-preview-bar" />
+        <span className="theme-preview-card" />
       </span>
-      <span className="theme-card-meta">
-        <span className="theme-card-label">{label}</span>
-        <span className="theme-card-desc muted">{description}</span>
-      </span>
-    </button>
-  );
-}
-
-function LocaleCard({
-  id,
-  label,
-  description,
-  selected,
-  onSelect,
-}: {
-  id: LocaleId;
-  label: string;
-  description: string;
-  selected: boolean;
-  onSelect: (locale: LocaleId) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      className={`theme-card locale-card${selected ? " selected" : ""}`}
-      onClick={() => onSelect(id)}
-    >
-      <span className="theme-card-meta">
-        <span className="theme-card-label">{label}</span>
-        <span className="theme-card-desc muted">{description}</span>
-      </span>
-    </button>
+    </span>
   );
 }
 
@@ -244,36 +205,33 @@ function HostOidcUplinkSection() {
   }
 
   return (
-    <div className="card settings-section">
-      <h2>{t("settings.oidcHostTitle")}</h2>
-      <p className="muted settings-section-hint">{t("settings.oidcHostHint")}</p>
+    <Card
+      className="settings-section"
+      title={t("settings.oidcHostTitle")}
+      subtitle={<span className="settings-section-hint">{t("settings.oidcHostHint")}</span>}
+    >
       {loading ? (
-        <p className="muted">{t("common.loading")}</p>
+        <LoadingState message={t("common.loading")} />
       ) : (
-        <form className="form-grid" onSubmit={onSave}>
+        <form onSubmit={onSave}>
+          <FormGrid>
           <div className="form-span-2">
-            <p
-              className="muted settings-section-hint"
-              style={{ marginBottom: "0.5rem" }}
-            >
+            <Muted className="settings-section-hint" style={{ marginBottom: "0.5rem" }}>
               {t("settings.oidcPresetHint")}
-            </p>
+            </Muted>
             <div
               className="provider-preset-row"
               role="radiogroup"
               aria-label={t("settings.providerAria")}
             >
               {PROVIDER_PRESETS.map((p) => (
-                <button
+                <SelectableCard
                   key={p.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={type === p.id}
-                  className={`provider-preset${type === p.id ? " selected" : ""}`}
+                  appearance="preset"
+                  selected={type === p.id}
+                  label={t(`oidc.preset.${p.id}` as MessageKey)}
                   onClick={() => applyPreset(p.id)}
-                >
-                  {t(`oidc.preset.${p.id}` as MessageKey)}
-                </button>
+                />
               ))}
             </div>
           </div>
@@ -298,8 +256,7 @@ function HostOidcUplinkSection() {
           </div>
 
           {preset.showIssuer ? (
-            <label>
-              {t("settings.field.issuer")}
+            <FormField label={t("settings.field.issuer")}>
               <input
                 type="url"
                 value={issuer}
@@ -307,11 +264,10 @@ function HostOidcUplinkSection() {
                 placeholder={t("settings.placeholder.issuer")}
                 autoComplete="off"
               />
-            </label>
+            </FormField>
           ) : null}
           {preset.showTenant ? (
-            <label>
-              {t("settings.field.tenant")}
+            <FormField label={t("settings.field.tenant")}>
               <input
                 type="text"
                 value={tenant}
@@ -319,12 +275,12 @@ function HostOidcUplinkSection() {
                 placeholder={t("settings.placeholder.tenant")}
                 autoComplete="off"
               />
-            </label>
+            </FormField>
           ) : null}
-          <label
-            className={preset.showIssuer || preset.showTenant ? "" : "form-span-2"}
+          <FormField
+            label={t("settings.field.clientId")}
+            span={preset.showIssuer || preset.showTenant ? undefined : 2}
           >
-            {t("settings.field.clientId")}
             <input
               type="text"
               value={clientID}
@@ -332,9 +288,8 @@ function HostOidcUplinkSection() {
               placeholder={t("settings.placeholder.clientId")}
               autoComplete="off"
             />
-          </label>
-          <label className="form-span-2">
-            {t("settings.field.clientSecret")}
+          </FormField>
+          <FormField label={t("settings.field.clientSecret")} span={2}>
             <input
               type="password"
               value={clientSecret}
@@ -346,9 +301,8 @@ function HostOidcUplinkSection() {
               }
               autoComplete="new-password"
             />
-          </label>
-          <label className="form-span-2">
-            {t("settings.field.scopes")}
+          </FormField>
+          <FormField label={t("settings.field.scopes")} span={2}>
             <input
               type="text"
               value={scopes}
@@ -356,31 +310,33 @@ function HostOidcUplinkSection() {
               placeholder={preset.scopes}
               autoComplete="off"
             />
-          </label>
+          </FormField>
           {preset.showGetUserInfo ? (
-            <label className="form-check">
+            <FormCheck>
               <input
                 type="checkbox"
                 checked={getUserInfo}
                 onChange={(e) => setGetUserInfo(e.target.checked)}
               />
               {t("settings.field.getUserInfo")}
-            </label>
+            </FormCheck>
           ) : null}
-          <div className="form-span-2 settings-form-actions">
-            <button type="submit" disabled={saving}>
-              {saving ? t("common.saving") : t("settings.saveUplink")}
-            </button>
+          <FormActions
+            className="form-span-2"
+            busy={saving}
+            submitLabel={saving ? t("common.saving") : t("settings.saveUplink")}
+          >
             {secretPresent ? (
-              <span className="muted">{t("settings.secretPresent")}</span>
+              <Muted as="span">{t("settings.secretPresent")}</Muted>
             ) : (
-              <span className="muted">{t("settings.secretMissing")}</span>
+              <Muted as="span">{t("settings.secretMissing")}</Muted>
             )}
-          </div>
-          {error ? <p className="form-error form-span-2">{error}</p> : null}
-          {status ? <p className="muted form-span-2">{status}</p> : null}
+          </FormActions>
+          <FieldError className="form-span-2" message={error} />
+          {status ? <Muted className="form-span-2">{status}</Muted> : null}
+          </FormGrid>
         </form>
       )}
-    </div>
+    </Card>
   );
 }

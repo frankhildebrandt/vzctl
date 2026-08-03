@@ -1,4 +1,5 @@
 import type { ReactNode, SVGProps } from "react";
+import { cx } from "@/components/ui/cx";
 
 type IconProps = SVGProps<SVGSVGElement>;
 
@@ -170,7 +171,7 @@ export function IconButton({
   return (
     <button
       type="button"
-      className={`icon-btn tone-${tone}${showLabel ? " with-label" : ""}`}
+      className={cx("icon-btn", `tone-${tone}`, showLabel && "with-label")}
       disabled={disabled}
       onClick={onClick}
       title={label}

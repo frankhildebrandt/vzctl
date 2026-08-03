@@ -4,6 +4,7 @@ import { useT } from "@/lib/i18n";
 import { listImages, imageKeys } from "@/lib/images";
 import { formatOpenedAt, listProjects, projectKeys } from "@/lib/projects";
 import { listVms, vmKeys } from "@/lib/vms";
+import { Card, EmptyState, Muted, SectionTitle } from "@/components/ui";
 
 export function DashboardPage() {
   const t = useT();
@@ -29,48 +30,48 @@ export function DashboardPage() {
 
   return (
     <section>
-      <h2 className="section-title">{t("dashboard.title")}</h2>
-      <p className="muted">{t("dashboard.subtitle")}</p>
+      <SectionTitle>{t("dashboard.title")}</SectionTitle>
+      <Muted>{t("dashboard.subtitle")}</Muted>
 
       <div className="dash-grid">
-        <div className="card">
-          <h2>{t("dashboard.stacks")}</h2>
+        <Card title={t("dashboard.stacks")}>
           <p className="dash-stat">{projects.length}</p>
           <Link to="/projects">{t("dashboard.allStacks")}</Link>
-        </div>
-        <div className="card">
-          <h2>{t("dashboard.vms")}</h2>
+        </Card>
+        <Card title={t("dashboard.vms")}>
           <p className="dash-stat">
             {vmsQuery.isError ? t("common.emDash") : vms.length}
             {!vmsQuery.isError && vms.length > 0 ? (
-              <span className="muted" style={{ fontSize: "0.9rem", marginLeft: "0.4rem" }}>
+              <Muted as="span" style={{ fontSize: "0.9rem", marginLeft: "0.4rem" }}>
                 {t("dashboard.runningCount", { n: running })}
-              </span>
+              </Muted>
             ) : null}
           </p>
           <Link to="/vms">{t("dashboard.toVms")}</Link>
-        </div>
-        <div className="card">
-          <h2>{t("dashboard.networks")}</h2>
-          <p className="muted">{t("dashboard.networksHint")}</p>
+        </Card>
+        <Card title={t("dashboard.networks")}>
+          <Muted>{t("dashboard.networksHint")}</Muted>
           <Link to="/networks">{t("dashboard.toNetworks")}</Link>
-        </div>
-        <div className="card">
-          <h2>{t("dashboard.images")}</h2>
+        </Card>
+        <Card title={t("dashboard.images")}>
           <p className="dash-stat">
             {imagesQuery.isError ? t("common.emDash") : images.length}
           </p>
           <Link to="/images">{t("dashboard.toImages")}</Link>
-        </div>
+        </Card>
       </div>
 
-      <div className="card">
-        <h2>{t("dashboard.recent")}</h2>
+      <Card title={t("dashboard.recent")}>
         {recent.length === 0 ? (
-          <p className="muted">
-            {t("dashboard.noStacks")}{" "}
-            <Link to="/projects">{t("dashboard.addStack")}</Link>
-          </p>
+          <EmptyState
+            card={false}
+            message={
+              <>
+                {t("dashboard.noStacks")}{" "}
+                <Link to="/projects">{t("dashboard.addStack")}</Link>
+              </>
+            }
+          />
         ) : (
           <ul className="project-list">
             {recent.map((project) => (
@@ -82,15 +83,15 @@ export function DashboardPage() {
                 >
                   <span className="project-name">{project.name}</span>
                   <span className="path">{project.path}</span>
-                  <span className="muted project-meta">
+                  <Muted as="span" className="project-meta">
                     {formatOpenedAt(project.openedAt)}
-                  </span>
+                  </Muted>
                 </Link>
               </li>
             ))}
           </ul>
         )}
-      </div>
+      </Card>
     </section>
   );
 }
@@ -104,10 +105,10 @@ export function PlaceholderPage({
 }) {
   return (
     <section>
-      <h2 className="section-title">{title}</h2>
-      <div className="card">
-        <p className="muted">{hint}</p>
-      </div>
+      <SectionTitle>{title}</SectionTitle>
+      <Card>
+        <Muted>{hint}</Muted>
+      </Card>
     </section>
   );
 }

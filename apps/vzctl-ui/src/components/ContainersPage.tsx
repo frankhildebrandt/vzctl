@@ -3,6 +3,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  ActionRow,
+  Alert,
+  Button,
+  Card,
+  DataTable,
+  EmptyState,
+  FormActions,
+  FormField,
+  FormGrid,
+  LoadingState,
+  PageHeader,
+  StatusPill,
+  TableCard,
+  Toolbar,
+} from "@/components/ui";
 import { getT, useT } from "@/lib/i18n";
 import {
   dockerKeys,
@@ -222,55 +238,54 @@ export function ContainersPage({
   if (project == null) {
     return (
       <section>
-        <Breadcrumbs items={crumbs} />
-        <h2 className="section-title">{t("containers.title")}</h2>
-        <div className="card error-card">{t("containers.noProject")}</div>
+        <PageHeader
+          layout="detail"
+          breadcrumbs={<Breadcrumbs items={crumbs} />}
+          title={t("containers.title")}
+        />
+        <Alert title={t("common.error")}>{t("containers.noProject")}</Alert>
       </section>
     );
   }
 
   return (
     <section>
-      <div className="row" style={{ justifyContent: "space-between", gap: "1rem" }}>
-        <div>
-          <Breadcrumbs items={crumbs} />
-          <h2 className="section-title">{t("containers.title")}</h2>
-          <p className="muted">
+      <PageHeader
+        breadcrumbs={<Breadcrumbs items={crumbs} />}
+        title={t("containers.title")}
+        subtitle={
+          <>
             {vmId}
             {running ? null : t("containers.vmNotRunning")}
-          </p>
-        </div>
-        <div className="toolbar">
-          <button
-            type="button"
+          </>
+        }
+        actions={
+          <Toolbar>
+          <Button
             disabled={!running || busyId != null}
             onClick={() => setShowRun((v) => !v)}
           >
             {t("containers.run")}
-          </button>
-        </div>
-      </div>
+          </Button>
+          </Toolbar>
+        }
+      />
 
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
-        <div className="card error-card">
-          <h3>{t("common.error")}</h3>
-          <p>{error}</p>
-        </div>
+        <Alert title={t("common.error")}>{error}</Alert>
       ) : null}
 
       {showRun ? (
-        <div className="card">
-          <h3>{t("containers.runTitle")}</h3>
+        <Card title={t("containers.runTitle")} titleAs="h3">
           <form
-            className="form-grid"
             onSubmit={(event) => {
               event.preventDefault();
               runMutation.mutate();
             }}
           >
-            <label>
-              {t("containers.image")}
+            <FormGrid>
+            <FormField label={t("containers.image")}>
               <input
                 value={image}
                 onChange={(e) => setImage(e.target.value)}
@@ -278,66 +293,56 @@ export function ContainersPage({
                 required
                 autoFocus
               />
-            </label>
-            <label>
-              {t("containers.name")}
+            </FormField>
+            <FormField label={t("containers.name")}>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t("containers.namePlaceholder")}
               />
-            </label>
-            <label>
-              {t("containers.ports")}
+            </FormField>
+            <FormField label={t("containers.ports")}>
               <input
                 value={ports}
                 onChange={(e) => setPorts(e.target.value)}
                 placeholder={t("containers.portsPlaceholder")}
               />
-            </label>
-            <label className="form-span-2">
-              {t("containers.env")}
+            </FormField>
+            <FormField label={t("containers.env")} span={2}>
               <textarea
                 value={envText}
                 onChange={(e) => setEnvText(e.target.value)}
                 rows={3}
                 placeholder={"FOO=bar\nBAZ=qux"}
               />
-            </label>
-            <label className="form-span-2">
-              {t("containers.command")}
+            </FormField>
+            <FormField label={t("containers.command")} span={2}>
               <input
                 value={cmd}
                 onChange={(e) => setCmd(e.target.value)}
                 placeholder={t("containers.namePlaceholder")}
               />
-            </label>
-            <div className="row" style={{ gap: "0.5rem" }}>
-              <button type="submit" disabled={busyId != null}>
-                {busyId === "run" ? t("containers.startBusy") : t("containers.start")}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busyId != null}
-                onClick={() => setShowRun(false)}
-              >
-                {t("common.cancel")}
-              </button>
-            </div>
+            </FormField>
+            <FormActions
+              busy={busyId != null}
+              submitLabel={busyId === "run" ? t("containers.startBusy") : t("containers.start")}
+              cancelLabel={t("common.cancel")}
+              onCancel={() => setShowRun(false)}
+            />
+            </FormGrid>
           </form>
-        </div>
+        </Card>
       ) : null}
 
-      <div className="card">
-        {containersQuery.isLoading ? (
-          <p className="muted">{t("common.loading")}</p>
-        ) : containersQuery.isError ? (
-          <p className="muted">{String(containersQuery.error)}</p>
-        ) : containers.length === 0 ? (
-          <p className="muted">{t("containers.empty")}</p>
-        ) : (
-          <table className="vm-table">
+      {containersQuery.isLoading ? (
+        <LoadingState message={t("common.loading")} />
+      ) : containersQuery.isError ? (
+        <Alert title={t("common.error")}>{String(containersQuery.error)}</Alert>
+      ) : containers.length === 0 ? (
+        <EmptyState message={t("containers.empty")} />
+      ) : (
+        <TableCard>
+          <DataTable>
             <thead>
               <tr>
                 <th>{t("containers.col.id")}</th>
@@ -370,56 +375,51 @@ export function ContainersPage({
                     <td>{c.names || t("common.emDash")}</td>
                     <td className="mono">{c.image || t("common.emDash")}</td>
                     <td>
-                      <span
-                        className={`vm-state ${up ? "state-running" : "state-stopped"}`}
-                      >
+                      <StatusPill state={up ? "running" : "stopped"}>
                         {c.status || c.state || t("common.emDash")}
-                      </span>
+                      </StatusPill>
                     </td>
                     <td className="mono">{c.ip || t("common.emDash")}</td>
                     <td className="mono">{c.ports || t("common.emDash")}</td>
                     <td>
-                      <div className="row" style={{ gap: "0.35rem", justifyContent: "flex-end" }}>
+                      <ActionRow align="end" gap="sm">
                         {up ? (
                           <>
-                            <button
-                              type="button"
-                              className="secondary"
+                            <Button
+                              tone="secondary"
                               disabled={busyId != null || !running}
                               onClick={() => setPending({ kind: "stop", container: c })}
                             >
                               {busyId === `stop:${c.id}` ? t("common.ellipsis") : t("containers.stop")}
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary"
+                            </Button>
+                            <Button
+                              tone="secondary"
                               disabled={busyId != null || !running}
                               onClick={() => setPending({ kind: "restart", container: c })}
                             >
                               {busyId === `restart:${c.id}` ? t("common.ellipsis") : t("containers.restart")}
-                            </button>
+                            </Button>
                           </>
                         ) : (
-                          <button
-                            type="button"
-                            className="secondary"
+                          <Button
+                            tone="secondary"
                             disabled={busyId != null || !running}
                             onClick={() =>
                               lifecycle.mutate({ action: "start", id: c.id })
                             }
                           >
                             {busyId === `start:${c.id}` ? t("common.ellipsis") : t("containers.start")}
-                          </button>
+                          </Button>
                         )}
-                      </div>
+                      </ActionRow>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
-          </table>
-        )}
-      </div>
+          </DataTable>
+        </TableCard>
+      )}
 
       <ConfirmDialog
         open={pending != null}

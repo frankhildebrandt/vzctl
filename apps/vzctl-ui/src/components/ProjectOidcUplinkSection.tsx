@@ -1,4 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
+import {
+  Card,
+  FieldError,
+  FormActions,
+  FormCheck,
+  FormField,
+  FormGrid,
+  LoadingState,
+  Muted,
+} from "@/components/ui";
 import { getT, useT } from "@/lib/i18n";
 import {
   OidcMessageError,
@@ -141,27 +151,31 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
   }
 
   return (
-    <div className="card settings-section">
-      <h2>{t("projectOidc.title")}</h2>
-      <p className="muted settings-section-hint">
-        <ProjectOidcHint />
-      </p>
+    <Card
+      className="settings-section"
+      title={t("projectOidc.title")}
+      subtitle={
+        <span className="settings-section-hint">
+          <ProjectOidcHint />
+        </span>
+      }
+    >
       {loading ? (
-        <p className="muted">{t("common.loading")}</p>
+        <LoadingState message={t("common.loading")} />
       ) : (
-        <form className="form-grid" onSubmit={onSave}>
-          <label className="form-check form-span-2">
+        <form onSubmit={onSave}>
+          <FormGrid>
+          <FormCheck className="form-span-2">
             <input
               type="checkbox"
               checked={clearOverride}
               onChange={(e) => setClearOverride(e.target.checked)}
             />
             {t("projectOidc.clearOverride")}
-          </label>
+          </FormCheck>
           {!clearOverride ? (
             <>
-              <label>
-                {t("projectOidc.issuerOptional")}
+              <FormField label={t("projectOidc.issuerOptional")}>
                 <input
                   type="url"
                   value={issuer}
@@ -170,9 +184,8 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
-              </label>
-              <label>
-                {t("projectOidc.clientIdOptional")}
+              </FormField>
+              <FormField label={t("projectOidc.clientIdOptional")}>
                 <input
                   type="text"
                   value={clientID}
@@ -181,9 +194,8 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
-              </label>
-              <label className="form-span-2">
-                {t("projectOidc.scopesOptional")}
+              </FormField>
+              <FormField label={t("projectOidc.scopesOptional")} span={2}>
                 <input
                   type="text"
                   value={scopes}
@@ -192,8 +204,8 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   autoComplete="off"
                   disabled={!env?.spec.oidc}
                 />
-              </label>
-              <label className="form-check">
+              </FormField>
+              <FormCheck>
                 <input
                   type="checkbox"
                   checked={getUserInfo}
@@ -201,8 +213,8 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   disabled={!env?.spec.oidc}
                 />
                 {t("settings.field.getUserInfo")}
-              </label>
-              <label className="form-check">
+              </FormCheck>
+              <FormCheck>
                 <input
                   type="checkbox"
                   checked={useHostSecret}
@@ -210,10 +222,9 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                   disabled={!env?.spec.oidc}
                 />
                 {t("projectOidc.useHostSecret")}
-              </label>
+              </FormCheck>
               {!useHostSecret ? (
-                <label className="form-span-2">
-                  {t("projectOidc.stackSecret")}
+                <FormField label={t("projectOidc.stackSecret")} span={2}>
                   <input
                     type="password"
                     value={projectSecret}
@@ -222,22 +233,25 @@ export function ProjectOidcUplinkSection({ projectPath }: { projectPath: string 
                     autoComplete="new-password"
                     disabled={!env?.spec.oidc}
                   />
-                </label>
+                </FormField>
               ) : null}
             </>
           ) : null}
-          <div className="form-span-2 settings-form-actions">
-            <button type="submit" disabled={saving || !env?.spec.oidc}>
-              {saving ? t("common.saving") : t("projectOidc.save")}
-            </button>
+          <FormActions
+            className="form-span-2"
+            busy={saving}
+            submitLabel={saving ? t("common.saving") : t("projectOidc.save")}
+            submitDisabled={!env?.spec.oidc}
+          >
             {!env?.spec.oidc ? (
-              <span className="muted">{t("projectOidc.noSpecOidc")}</span>
+              <Muted as="span">{t("projectOidc.noSpecOidc")}</Muted>
             ) : null}
-          </div>
-          {error ? <p className="form-error form-span-2">{error}</p> : null}
-          {status ? <p className="muted form-span-2">{status}</p> : null}
+          </FormActions>
+          <FieldError className="form-span-2" message={error} />
+          {status ? <Muted className="form-span-2">{status}</Muted> : null}
+          </FormGrid>
         </form>
       )}
-    </div>
+    </Card>
   );
 }

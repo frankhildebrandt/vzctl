@@ -2,6 +2,13 @@ import { useForm, useFieldArray } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo } from "react";
+import {
+  ActionRow,
+  Button,
+  FieldError,
+  FormField,
+  Muted,
+} from "@/components/ui";
 import type { AllowRule, Protocol } from "@/domain/hypernetwork/schema";
 import { useT } from "@/lib/i18n";
 
@@ -109,11 +116,10 @@ export function PolicyRuleEditor({
 
   return (
     <div className="policy-editor">
-      <div className="row" style={{ justifyContent: "space-between" }}>
+      <ActionRow align="between">
         <h4>{t("firewall.policyTitle", { name: policyName })}</h4>
-        <button
-          type="button"
-          className="secondary"
+        <Button
+          tone="secondary"
           onClick={() =>
             append({
               to:
@@ -125,11 +131,11 @@ export function PolicyRuleEditor({
           }
         >
           {t("firewall.addRule")}
-        </button>
-      </div>
-      <p className="muted">
+        </Button>
+      </ActionRow>
+      <Muted>
         {t("firewall.networkForward", { name: networkName })}
-      </p>
+      </Muted>
       <form onSubmit={submit} className="policy-form">
         {fields.length === 0 ? (
           <p className="muted">{t("firewall.noRules")}</p>
@@ -139,28 +145,25 @@ export function PolicyRuleEditor({
               <li key={field.id} className="policy-rule">
                 <div className="policy-rule-head">
                   <span>{t("firewall.ruleN", { n: index + 1 })}</span>
-                  <div className="row" style={{ gap: "0.35rem" }}>
-                    <button
-                      type="button"
-                      className="secondary"
+                  <ActionRow gap="sm">
+                    <Button
+                      tone="secondary"
                       disabled={index === 0}
                       aria-label={t("firewall.moveUp")}
                       onClick={() => move(index, index - 1)}
                     >
                       ↑
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
+                    </Button>
+                    <Button
+                      tone="secondary"
                       disabled={index === fields.length - 1}
                       aria-label={t("firewall.moveDown")}
                       onClick={() => move(index, index + 1)}
                     >
                       ↓
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
+                    </Button>
+                    <Button
+                      tone="secondary"
                       aria-label={t("firewall.duplicate")}
                       onClick={() => {
                         const current = form.getValues(`rules.${index}`);
@@ -168,19 +171,17 @@ export function PolicyRuleEditor({
                       }}
                     >
                       {t("firewall.duplicate")}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
+                    </Button>
+                    <Button
+                      tone="secondary"
                       aria-label={t("common.delete")}
                       onClick={() => remove(index)}
                     >
                       {t("common.delete")}
-                    </button>
-                  </div>
+                    </Button>
+                  </ActionRow>
                 </div>
-                <label className="topology-field">
-                  <span>{t("firewall.target")}</span>
+                <FormField label={t("firewall.target")} variant="compact">
                   <select {...form.register(`rules.${index}.to`)}>
                     <option value="internet">{t("firewall.targetInternet")}</option>
                     {networks
@@ -194,17 +195,15 @@ export function PolicyRuleEditor({
                       {t("firewall.targetSelf", { name: networkName })}
                     </option>
                   </select>
-                </label>
-                <label className="topology-field">
-                  <span>{t("firewall.proto")}</span>
+                </FormField>
+                <FormField label={t("firewall.proto")} variant="compact">
                   <select {...form.register(`rules.${index}.proto`)}>
                     <option value="tcp">tcp</option>
                     <option value="udp">udp</option>
                     <option value="icmp">icmp</option>
                   </select>
-                </label>
-                <label className="topology-field">
-                  <span>{t("firewall.ports")}</span>
+                </FormField>
+                <FormField label={t("firewall.ports")} variant="compact">
                   <input
                     {...form.register(`rules.${index}.portsText`)}
                     placeholder={t("firewall.portsPlaceholder")}
@@ -212,22 +211,20 @@ export function PolicyRuleEditor({
                       Boolean(form.formState.errors.rules?.[index]?.portsText)
                     }
                   />
-                </label>
-                {form.formState.errors.rules?.[index]?.portsText ? (
-                  <p className="field-error" role="alert">
-                    {form.formState.errors.rules[index]?.portsText?.message}
-                  </p>
-                ) : null}
-                {form.formState.errors.rules?.[index]?.to ? (
-                  <p className="field-error" role="alert">
-                    {form.formState.errors.rules[index]?.to?.message}
-                  </p>
-                ) : null}
+                </FormField>
+                <FieldError
+                  className="field-error"
+                  message={form.formState.errors.rules?.[index]?.portsText?.message}
+                />
+                <FieldError
+                  className="field-error"
+                  message={form.formState.errors.rules?.[index]?.to?.message}
+                />
               </li>
             ))}
           </ol>
         )}
-        <button type="submit">{t("firewall.applyRules")}</button>
+        <Button type="submit">{t("firewall.applyRules")}</Button>
       </form>
     </div>
   );

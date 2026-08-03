@@ -1,11 +1,28 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
 import { VmForm } from "@/components/VmForm";
 import { VmMountForm } from "@/components/VmMountForm";
+import {
+  ActionRow,
+  Alert,
+  Button,
+  Card,
+  DataTable,
+  DescriptionList,
+  EmptyState,
+  FormActions,
+  FormField,
+  FormGrid,
+  LoadingState,
+  Mono,
+  PageHeader,
+  StatusPill,
+  Toolbar,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import { getProject } from "@/lib/projects";
 import {
@@ -138,7 +155,7 @@ export function VmDetailPage({
   const running = isRunning(vm?.state);
   const mounts = mountsQuery.data ?? [];
 
-  async function submitModify(event: React.FormEvent) {
+  async function submitModify(event: FormEvent) {
     event.preventDefault();
     setBusy("modify");
     setError(null);
@@ -237,75 +254,69 @@ export function VmDetailPage({
 
   return (
     <section>
-      <div className="row" style={{ justifyContent: "space-between", gap: "1rem" }}>
-        <div>
-          <Breadcrumbs items={crumbs} />
-          <h2 className="section-title">{vmId}</h2>
-          {vm ? (
-            <p className="muted">
-              <span className={`vm-state state-${vm.state}`}>{vm.state}</span>
+      <PageHeader
+        breadcrumbs={<Breadcrumbs items={crumbs} />}
+        title={vmId}
+        subtitle={
+          vm ? (
+            <>
+              <StatusPill state={vm.state} />
               {vm.pid != null ? ` · pid ${vm.pid}` : null}
               {inspect?.resources
                 ? ` · ${inspect.resources.cpus} CPU / ${inspect.resources.memory_mib} MiB`
                 : null}
-            </p>
-          ) : null}
-        </div>
-        <div className="toolbar">
+            </>
+          ) : null
+        }
+        actions={
+          <Toolbar>
           {running ? (
-            <button
-              type="button"
-              className="secondary"
+            <Button
+              tone="secondary"
               disabled={busy != null}
               onClick={() => stopMutation.mutate()}
             >
               {busy === "stop" ? t("vmDetail.stopBusy") : t("vmDetail.stop")}
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
+            <Button
               disabled={busy != null}
               onClick={() => startMutation.mutate()}
             >
               {busy === "start" ? t("vmDetail.startBusy") : t("vmDetail.start")}
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            tone="secondary"
             disabled={busy != null}
             onClick={() => setPanel(panel === "modify" ? null : "modify")}
           >
             {t("vmDetail.modify")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+          </Button>
+          <Button
+            tone="secondary"
             disabled={busy != null}
             onClick={() => setPanel(panel === "mount" ? null : "mount")}
           >
             {t("vmDetail.mount")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+          </Button>
+          <Button
+            tone="secondary"
             disabled={!running || busy != null}
             onClick={() => setPanel(panel === "console" ? null : "console")}
           >
             {t("vmDetail.attach")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+          </Button>
+          <Button
+            tone="secondary"
             disabled={!running || busy != null}
             onClick={() => setPanel(panel === "shell" ? null : "shell")}
           >
             {t("vmDetail.shell")}
-          </button>
+          </Button>
           {vm?.roles?.includes("docker") ? (
-            <button
-              type="button"
-              className="secondary"
+            <Button
+              tone="secondary"
               disabled={!running || busy != null}
               onClick={() =>
                 void navigate({
@@ -316,48 +327,45 @@ export function VmDetailPage({
               }
             >
               {t("vmDetail.containers")}
-            </button>
+            </Button>
           ) : null}
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            tone="secondary"
             disabled={busy != null}
             onClick={() => setPanel(panel === "replace" ? null : "replace")}
           >
             {t("vmDetail.replace")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+          </Button>
+          <Button
+            tone="secondary"
             disabled={busy != null}
             onClick={() => setPending({ kind: "delete" })}
           >
             {t("vmDetail.delete")}
-          </button>
-        </div>
-      </div>
+          </Button>
+          </Toolbar>
+        }
+      />
 
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
-        <div className="card error-card">
-          <h3>{t("common.error")}</h3>
-          <p>{error}</p>
-        </div>
+        <Alert title={t("common.error")}>{error}</Alert>
       ) : null}
       {detailQuery.isError ? (
-        <div className="card error-card">
-          <h3>{t("vmDetail.inspectFailed")}</h3>
-          <p>{String(detailQuery.error)}</p>
-        </div>
+        <Alert title={t("vmDetail.inspectFailed")}>{String(detailQuery.error)}</Alert>
       ) : null}
 
       {panel === "modify" ? (
-        <form className="card vm-form" onSubmit={(e) => void submitModify(e)}>
-          <h3>{t("vmDetail.modifyTitle")}</h3>
-          <p className="muted">{t("vmDetail.modifyHint")}</p>
-          <div className="form-grid">
-            <label>
-              {t("vmForm.cpus")}
+        <Card
+          as="form"
+          className="vm-form"
+          title={t("vmDetail.modifyTitle")}
+          titleAs="h3"
+          subtitle={t("vmDetail.modifyHint")}
+          onSubmit={(e) => void submitModify(e)}
+        >
+          <FormGrid>
+            <FormField label={t("vmForm.cpus")}>
               <input
                 type="number"
                 min={1}
@@ -365,29 +373,22 @@ export function VmDetailPage({
                 disabled={busy != null}
                 onChange={(e) => setCpus(Number(e.target.value))}
               />
-            </label>
-            <label>
-              {t("vmDetail.memory")}
+            </FormField>
+            <FormField label={t("vmDetail.memory")}>
               <input
                 value={memory}
                 disabled={busy != null}
                 onChange={(e) => setMemory(e.target.value)}
               />
-            </label>
-          </div>
-          <div className="row" style={{ gap: "0.5rem" }}>
-            <button type="submit" disabled={busy != null}>
-              {busy === "modify" ? t("common.saveBusy") : t("common.save")}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setPanel(null)}
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        </form>
+            </FormField>
+          </FormGrid>
+          <FormActions
+            busy={busy != null}
+            submitLabel={busy === "modify" ? t("common.saveBusy") : t("common.save")}
+            cancelLabel={t("common.cancel")}
+            onCancel={() => setPanel(null)}
+          />
+        </Card>
       ) : null}
 
       {panel === "mount" ? (
@@ -424,112 +425,127 @@ export function VmDetailPage({
       ) : null}
 
       {panel === "console" ? (
-        <div className="card terminal-card">
-          <div className="row" style={{ justifyContent: "space-between" }}>
+        <Card className="terminal-card">
+          <ActionRow align="between">
             <h3>{t("vmDetail.consoleTitle")}</h3>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setPanel(null)}
-            >
+            <Button tone="secondary" onClick={() => setPanel(null)}>
               {t("common.close")}
-            </button>
-          </div>
+            </Button>
+          </ActionRow>
           <Terminal mode="attach" vmId={vmId} />
-        </div>
+        </Card>
       ) : null}
 
       {panel === "shell" ? (
-        <div className="card terminal-card">
-          <div className="row" style={{ justifyContent: "space-between" }}>
+        <Card className="terminal-card">
+          <ActionRow align="between">
             <h3>{t("vmDetail.shellTitle")}</h3>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setPanel(null)}
-            >
+            <Button tone="secondary" onClick={() => setPanel(null)}>
               {t("common.close")}
-            </button>
-          </div>
+            </Button>
+          </ActionRow>
           <Terminal mode="exec" vmId={vmId} cmd={["/bin/bash"]} />
-        </div>
+        </Card>
       ) : null}
 
       <div className="dash-grid">
-        <div className="card">
-          <h3>{t("vmDetail.overview")}</h3>
+        <Card title={t("vmDetail.overview")} titleAs="h3">
           {detailQuery.isLoading ? (
-            <p className="muted">{t("common.loading")}</p>
+            <LoadingState message={t("common.loading")} />
           ) : (
-            <dl className="kv">
-              <dt>{t("vmDetail.bundle")}</dt>
-              <dd className="mono">{vm?.bundle ?? t("common.emDash")}</dd>
-              <dt>{t("vmDetail.managedBy")}</dt>
-              <dd>{vm?.["managed-by"] ?? t("common.emDash")}</dd>
-              <dt>{t("vmDetail.roles")}</dt>
-              <dd>{vm?.roles?.join(", ") || t("common.emDash")}</dd>
-              <dt>{t("vmDetail.ips")}</dt>
-              <dd className="mono">
-                {(inspect?.networks ?? [])
-                  .map((n) => (n.name ? `${n.name}:${n.ip ?? "?"}` : n.ip))
-                  .filter(Boolean)
-                  .join(", ") || t("common.emDash")}
-              </dd>
-              <dt>{t("vmDetail.serialLog")}</dt>
-              <dd className="mono">{inspect?.logs?.serial ?? t("common.emDash")}</dd>
-              <dt>{t("vmDetail.agent")}</dt>
-              <dd>
-                {typeof inspect?.agent?.state === "string"
-                  ? inspect.agent.state
-                  : t("common.emDash")}
-              </dd>
-            </dl>
+            <DescriptionList
+              items={[
+                {
+                  label: t("vmDetail.bundle"),
+                  value: <Mono>{vm?.bundle ?? t("common.emDash")}</Mono>,
+                },
+                {
+                  label: t("vmDetail.managedBy"),
+                  value: vm?.["managed-by"] ?? t("common.emDash"),
+                },
+                {
+                  label: t("vmDetail.roles"),
+                  value: vm?.roles?.join(", ") || t("common.emDash"),
+                },
+                {
+                  label: t("vmDetail.ips"),
+                  value: (
+                    <Mono>
+                      {(inspect?.networks ?? [])
+                        .map((n) => (n.name ? `${n.name}:${n.ip ?? "?"}` : n.ip))
+                        .filter(Boolean)
+                        .join(", ") || t("common.emDash")}
+                    </Mono>
+                  ),
+                },
+                {
+                  label: t("vmDetail.serialLog"),
+                  value: <Mono>{inspect?.logs?.serial ?? t("common.emDash")}</Mono>,
+                },
+                {
+                  label: t("vmDetail.agent"),
+                  value:
+                    typeof inspect?.agent?.state === "string"
+                      ? inspect.agent.state
+                      : t("common.emDash"),
+                },
+              ]}
+            />
           )}
-        </div>
+        </Card>
 
-        <div className="card">
-          <h3>{t("vmDetail.mounts")}</h3>
+        <Card title={t("vmDetail.mounts")} titleAs="h3">
           {mountsQuery.isLoading ? (
-            <p className="muted">{t("common.loading")}</p>
+            <LoadingState message={t("common.loading")} />
           ) : mounts.length === 0 ? (
-            <p className="muted">{t("vmDetail.noMounts")}</p>
+            <EmptyState card={false} message={t("vmDetail.noMounts")} />
           ) : (
-            <ul className="mount-list">
-              {mounts.map((mount) => (
-                <li key={`${mount.name}:${mount.target}`}>
-                  <div>
-                    <strong>{mount.name}</strong>{" "}
-                    <span className="muted">
-                      {mount.read_only ? "ro" : "rw"}
-                    </span>
-                    <div className="mono path">
-                      {mount.target} ← {mount.source}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={busy != null}
-                    onClick={() => setPending({ kind: "unmount", mount })}
-                  >
-                    {t("vmDetail.unmount")}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <DataTable>
+              <thead>
+                <tr>
+                  <th>{t("mount.tag")}</th>
+                  <th>{t("mount.target")}</th>
+                  <th>{t("mount.source")}</th>
+                  <th>{t("mount.readOnly")}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {mounts.map((mount) => (
+                  <tr key={`${mount.name}:${mount.target}`}>
+                    <td>
+                      <strong>{mount.name}</strong>
+                    </td>
+                    <td className="mono">{mount.target}</td>
+                    <td className="mono">{mount.source}</td>
+                    <td>{mount.read_only ? "ro" : "rw"}</td>
+                    <td>
+                      <ActionRow align="end" gap="sm">
+                        <Button
+                          tone="secondary"
+                          disabled={busy != null}
+                          onClick={() => setPending({ kind: "unmount", mount })}
+                        >
+                          {t("vmDetail.unmount")}
+                        </Button>
+                      </ActionRow>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
           )}
-        </div>
+        </Card>
       </div>
 
       {inspect?.warnings?.length ? (
-        <div className="card">
-          <h3>{t("vmDetail.warnings")}</h3>
+        <Card title={t("vmDetail.warnings")} titleAs="h3">
           <ul>
             {inspect.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>
-        </div>
+        </Card>
       ) : null}
 
       <ConfirmDialog

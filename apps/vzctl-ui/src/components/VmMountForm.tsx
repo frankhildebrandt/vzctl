@@ -1,4 +1,14 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import {
+  ActionRow,
+  Button,
+  Card,
+  FieldError,
+  FormActions,
+  FormCheck,
+  FormField,
+  FormGrid,
+} from "@/components/ui";
 import { pickDirectory } from "@/lib/dialogs";
 import { useT } from "@/lib/i18n";
 import { mountVm } from "@/lib/vms";
@@ -25,7 +35,7 @@ export function VmMountForm({
     if (path) setSource(path);
   }
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
@@ -46,13 +56,17 @@ export function VmMountForm({
   }
 
   return (
-    <form className="card vm-form" onSubmit={(e) => void submit(e)}>
-      <h3>{t("mount.title")}</h3>
-      <p className="muted">{t("mount.subtitle")}</p>
-      <div className="form-grid">
-        <label className="form-span-2">
-          {t("mount.source")}
-          <div className="row" style={{ gap: "0.5rem" }}>
+    <Card
+      as="form"
+      className="vm-form"
+      title={t("mount.title")}
+      titleAs="h3"
+      subtitle={t("mount.subtitle")}
+      onSubmit={(e) => void submit(e)}
+    >
+      <FormGrid>
+        <FormField label={t("mount.source")} span={2}>
+          <ActionRow gap="md">
             <input
               required
               value={source}
@@ -61,18 +75,16 @@ export function VmMountForm({
               placeholder={t("mount.sourcePlaceholder")}
               style={{ flex: 1 }}
             />
-            <button
-              type="button"
-              className="secondary"
+            <Button
+              tone="secondary"
               disabled={busy}
               onClick={() => void chooseSource()}
             >
               {t("mount.pick")}
-            </button>
-          </div>
-        </label>
-        <label>
-          {t("mount.target")}
+            </Button>
+          </ActionRow>
+        </FormField>
+        <FormField label={t("mount.target")}>
           <input
             required
             value={target}
@@ -80,17 +92,16 @@ export function VmMountForm({
             onChange={(e) => setTarget(e.target.value)}
             placeholder={t("mount.targetPlaceholder")}
           />
-        </label>
-        <label>
-          {t("mount.tag")}
+        </FormField>
+        <FormField label={t("mount.tag")}>
           <input
             value={tag}
             disabled={busy}
             onChange={(e) => setTag(e.target.value)}
             placeholder="app"
           />
-        </label>
-        <label className="form-check">
+        </FormField>
+        <FormCheck>
           <input
             type="checkbox"
             checked={readOnly}
@@ -98,22 +109,15 @@ export function VmMountForm({
             onChange={(e) => setReadOnly(e.target.checked)}
           />
           {t("mount.readOnly")}
-        </label>
-      </div>
-      {error ? <p className="form-error">{error}</p> : null}
-      <div className="row" style={{ gap: "0.5rem" }}>
-        <button type="submit" disabled={busy}>
-          {busy ? t("mount.submitBusy") : t("mount.submit")}
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={onCancel}
-        >
-          {t("common.cancel")}
-        </button>
-      </div>
-    </form>
+        </FormCheck>
+      </FormGrid>
+      <FieldError message={error} />
+      <FormActions
+        busy={busy}
+        submitLabel={busy ? t("mount.submitBusy") : t("mount.submit")}
+        cancelLabel={t("common.cancel")}
+        onCancel={onCancel}
+      />
+    </Card>
   );
 }

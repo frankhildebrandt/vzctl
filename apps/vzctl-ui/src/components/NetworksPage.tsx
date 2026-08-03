@@ -1,6 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  Alert,
+  Badge,
+  Button,
+  DataTable,
+  EmptyState,
+  FieldError,
+  LoadingState,
+  Mono,
+  PageHeader,
+  TableCard,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import { deleteNet, getDefaultNet, listNets, netKeys, type NetRecord } from "@/lib/nets";
 
@@ -41,11 +53,11 @@ export function NetworksPage() {
   }, [attachments]);
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h1>{t("networks.title")}</h1>
-          <p className="muted">
+    <section>
+      <PageHeader
+        title={t("networks.title")}
+        subtitle={
+          <>
             {t("networks.subtitle")}
             {defaultQuery.data
               ? t("networks.default", {
@@ -53,57 +65,55 @@ export function NetworksPage() {
                   cidr: defaultQuery.data.cidr ?? "",
                 })
               : ""}
-          </p>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       {netsQuery.isError && (
-        <p className="error">{String(netsQuery.error)}</p>
+        <Alert title={t("common.error")}>{String(netsQuery.error)}</Alert>
       )}
-      {netsQuery.isLoading && <p className="muted">{t("networks.loading")}</p>}
+      {netsQuery.isLoading && <LoadingState message={t("networks.loading")} />}
 
       {!netsQuery.isLoading && networks.length === 0 && (
-        <p className="muted">{t("networks.empty")}</p>
+        <EmptyState message={t("networks.empty")} />
       )}
 
       {networks.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>{t("networks.col.name")}</th>
-              <th>{t("networks.col.cidr")}</th>
-              <th>{t("networks.col.backend")}</th>
-              <th>{t("networks.col.state")}</th>
-              <th>{t("networks.col.attachments")}</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {networks.map((net) => (
-              <tr key={net.name}>
-                <td>
-                  <code>{net.name}</code>
-                  {defaultQuery.data?.name === net.name ? (
-                    <span className="badge">{t("networks.badgeDefault")}</span>
-                  ) : null}
-                </td>
-                <td>{net.cidr ?? t("common.emDash")}</td>
-                <td>{net.backend ?? "vmnet"}</td>
-                <td>{net.runtime_state ?? t("common.emDash")}</td>
-                <td>{attachmentCount.get(net.name) ?? 0}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="btn danger"
-                    onClick={() => setPendingDelete(net)}
-                  >
-                    {t("networks.delete")}
-                  </button>
-                </td>
+        <TableCard>
+          <DataTable>
+            <thead>
+              <tr>
+                <th>{t("networks.col.name")}</th>
+                <th>{t("networks.col.cidr")}</th>
+                <th>{t("networks.col.backend")}</th>
+                <th>{t("networks.col.state")}</th>
+                <th>{t("networks.col.attachments")}</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {networks.map((net) => (
+                <tr key={net.name}>
+                  <td>
+                    <Mono>{net.name}</Mono>
+                    {defaultQuery.data?.name === net.name ? (
+                      <Badge>{t("networks.badgeDefault")}</Badge>
+                    ) : null}
+                  </td>
+                  <td>{net.cidr ?? t("common.emDash")}</td>
+                  <td>{net.backend ?? "vmnet"}</td>
+                  <td>{net.runtime_state ?? t("common.emDash")}</td>
+                  <td>{attachmentCount.get(net.name) ?? 0}</td>
+                  <td>
+                    <Button tone="danger" onClick={() => setPendingDelete(net)}>
+                      {t("networks.delete")}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        </TableCard>
       )}
 
       <ConfirmDialog
@@ -120,7 +130,7 @@ export function NetworksPage() {
           if (pendingDelete) remove.mutate(pendingDelete.name);
         }}
       />
-      {remove.isError && <p className="error">{String(remove.error)}</p>}
-    </div>
+      <FieldError message={remove.isError ? String(remove.error) : null} />
+    </section>
   );
 }

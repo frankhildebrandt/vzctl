@@ -1,3 +1,4 @@
+import { Card, LoadingState, Muted } from "@/components/ui";
 import { openExternalUrl, type IngressInfo } from "@/lib/ingress";
 import { useT } from "@/lib/i18n";
 
@@ -12,10 +13,10 @@ export function IngressLinksCard({
 
   if (loading && !ingress) {
     return (
-      <div className="card ingress-card">
+      <Card className="ingress-card">
         <p className="stack-status-kicker">{t("ingress.kicker")}</p>
-        <p className="muted">{t("ingress.loading")}</p>
-      </div>
+        <LoadingState message={t("ingress.loading")} />
+      </Card>
     );
   }
 
@@ -24,15 +25,15 @@ export function IngressLinksCard({
   }
 
   return (
-    <div className="card ingress-card">
+    <Card className="ingress-card">
       <div className="ingress-head">
         <div>
           <p className="stack-status-kicker">{t("ingress.kicker")}</p>
           <h2 className="ingress-title">{t("ingress.title")}</h2>
         </div>
-        <span className="muted">
+        <Muted as="span">
           {t("ingress.urlCount", { n: ingress.routes.length })}
-        </span>
+        </Muted>
       </div>
 
       <ul className="ingress-list">
@@ -68,6 +69,6 @@ export function IngressLinksCard({
           </li>
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }

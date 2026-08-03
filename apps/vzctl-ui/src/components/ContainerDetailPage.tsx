@@ -4,6 +4,19 @@ import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
+import {
+  ActionRow,
+  Alert,
+  Button,
+  Card,
+  DescriptionList,
+  JsonBlock,
+  LoadingState,
+  Mono,
+  PageHeader,
+  StatusPill,
+  Toolbar,
+} from "@/components/ui";
 import { getT, useT } from "@/lib/i18n";
 import {
   dockerKeys,
@@ -203,130 +216,126 @@ export function ContainerDetailPage({
   if (project == null) {
     return (
       <section>
-        <Breadcrumbs items={crumbs} />
-        <h2 className="section-title">{displayName}</h2>
-        <div className="card error-card">{t("containers.noProject")}</div>
+        <PageHeader
+          layout="detail"
+          breadcrumbs={<Breadcrumbs items={crumbs} />}
+          title={displayName}
+        />
+        <Alert title={t("common.error")}>{t("containers.noProject")}</Alert>
       </section>
     );
   }
 
   return (
     <section>
-      <div className="row" style={{ justifyContent: "space-between", gap: "1rem" }}>
-        <div>
-          <Breadcrumbs items={crumbs} />
-          <h2 className="section-title">{displayName}</h2>
-          <p className="muted">
-            <span className={`vm-state ${up ? "state-running" : "state-stopped"}`}>
+      <PageHeader
+        breadcrumbs={<Breadcrumbs items={crumbs} />}
+        title={displayName}
+        subtitle={
+          <>
+            <StatusPill state={up ? "running" : "stopped"}>
               {listed?.status || state || t("common.emDash")}
-            </span>
+            </StatusPill>
             {" · "}
-            <span className="mono">{shortContainerId(containerId)}</span>
-          </p>
-        </div>
-        <div className="toolbar">
+            <Mono>{shortContainerId(containerId)}</Mono>
+          </>
+        }
+        actions={
+          <Toolbar>
           {up ? (
             <>
-              <button
-                type="button"
-                className="secondary"
+              <Button
+                tone="secondary"
                 disabled={busy != null || !running}
                 onClick={() => setPending("stop")}
               >
                 {busy === "stop" ? `${t("containers.stop")}…` : t("containers.stop")}
-              </button>
-              <button
-                type="button"
-                className="secondary"
+              </Button>
+              <Button
+                tone="secondary"
                 disabled={busy != null || !running}
                 onClick={() => setPending("restart")}
               >
                 {busy === "restart" ? `${t("containers.restart")}…` : t("containers.restart")}
-              </button>
+              </Button>
             </>
           ) : (
-            <button
-              type="button"
+            <Button
               disabled={busy != null || !running}
               onClick={() => lifecycle.mutate("start")}
             >
               {busy === "start" ? t("containers.startBusy") : t("containers.start")}
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            tone="secondary"
             disabled={!running || !up || busy != null}
             onClick={() => setShowShell((v) => !v)}
           >
             {t("vmDetail.shell")}
-          </button>
-        </div>
-      </div>
+          </Button>
+          </Toolbar>
+        }
+      />
 
       {message ? <p className="ok-banner">{message}</p> : null}
       {error ? (
-        <div className="card error-card">
-          <h3>{t("common.error")}</h3>
-          <p>{error}</p>
-        </div>
+        <Alert title={t("common.error")}>{error}</Alert>
       ) : null}
 
       {showShell ? (
-        <div className="card terminal-card">
-          <div className="row" style={{ justifyContent: "space-between" }}>
+        <Card className="terminal-card">
+          <ActionRow align="between">
             <h3>{t("containerDetail.shellTitle")}</h3>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setShowShell(false)}
-            >
+            <Button tone="secondary" onClick={() => setShowShell(false)}>
               {t("common.close")}
-            </button>
-          </div>
+            </Button>
+          </ActionRow>
           <Terminal
             mode="exec"
             vmId={vmId}
             cmd={["docker", "exec", "-it", containerId, "/bin/sh"]}
           />
-        </div>
+        </Card>
       ) : null}
 
       <div className="dash-grid">
-        <div className="card">
-          <h3>{t("containerDetail.overview")}</h3>
-          <dl className="kv">
-            <dt>{t("containerDetail.id")}</dt>
-            <dd className="mono">{containerId}</dd>
-            <dt>{t("containerDetail.name")}</dt>
-            <dd>{displayName}</dd>
-            <dt>{t("containerDetail.image")}</dt>
-            <dd className="mono">
-              {listed?.image ||
-                (typeof inspectQuery.data?.Config === "object" &&
-                inspectQuery.data.Config &&
-                typeof (inspectQuery.data.Config as Record<string, unknown>).Image ===
-                  "string"
-                  ? String((inspectQuery.data.Config as Record<string, unknown>).Image)
-                  : t("common.emDash"))}
-            </dd>
-            <dt>{t("containerDetail.ports")}</dt>
-            <dd className="mono">{listed?.ports || t("common.emDash")}</dd>
-          </dl>
-        </div>
+        <Card title={t("containerDetail.overview")} titleAs="h3">
+          <DescriptionList
+            items={[
+              { label: t("containerDetail.id"), value: <Mono>{containerId}</Mono> },
+              { label: t("containerDetail.name"), value: displayName },
+              {
+                label: t("containerDetail.image"),
+                value: (
+                  <Mono>
+                    {listed?.image ||
+                      (typeof inspectQuery.data?.Config === "object" &&
+                      inspectQuery.data.Config &&
+                      typeof (inspectQuery.data.Config as Record<string, unknown>).Image ===
+                        "string"
+                        ? String((inspectQuery.data.Config as Record<string, unknown>).Image)
+                        : t("common.emDash"))}
+                  </Mono>
+                ),
+              },
+              {
+                label: t("containerDetail.ports"),
+                value: <Mono>{listed?.ports || t("common.emDash")}</Mono>,
+              },
+            ]}
+          />
+        </Card>
 
-        <div className="card">
-          <h3>{t("containerDetail.inspect")}</h3>
+        <Card title={t("containerDetail.inspect")} titleAs="h3">
           {inspectQuery.isLoading ? (
-            <p className="muted">{t("common.loading")}</p>
+            <LoadingState message={t("common.loading")} />
           ) : inspectQuery.isError ? (
-            <p className="muted">{String(inspectQuery.error)}</p>
+            <Alert title={t("common.error")}>{String(inspectQuery.error)}</Alert>
           ) : (
-            <pre className="mono inspect-json">
-              {JSON.stringify(inspectQuery.data ?? {}, null, 2)}
-            </pre>
+            <JsonBlock value={inspectQuery.data ?? {}} />
           )}
-        </div>
+        </Card>
       </div>
 
       <ConfirmDialog

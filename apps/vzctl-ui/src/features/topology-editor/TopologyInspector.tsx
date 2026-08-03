@@ -4,6 +4,7 @@ import { PolicyRuleEditor } from "@/features/firewall-rules/PolicyRuleEditor";
 import { NameField } from "@/features/topology-editor/NameField";
 import { formatValidationIssue } from "@/application/validation/formatIssue";
 import type { ValidationIssue } from "@/application/validation/topology";
+import { ActionRow, Button } from "@/components/ui";
 import { useT } from "@/lib/i18n";
 
 export function TopologyInspector() {
@@ -120,14 +121,13 @@ export function TopologyInspector() {
                 value={nic.ip}
                 onChange={(e) => updateNicIp(name, nic.name, e.target.value)}
               />
-              <button
-                type="button"
-                className="secondary"
+              <Button
+                tone="secondary"
                 disabled={vm.networks.length <= 1}
                 onClick={() => detachNic(name, nic.name)}
               >
                 {t("topo.detach")}
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -362,17 +362,15 @@ function RouteSection({
       ) : (
         <ul>
           {routes.map((r) => (
-            <li key={r.name} className="row" style={{ gap: "0.5rem" }}>
-              <code>
-                {r.name}: {r.from}→{r.to} via {r.via}
-              </code>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => onDelete(r.name)}
-              >
-                {t("topo.routeDelete")}
-              </button>
+            <li key={r.name}>
+              <ActionRow gap="md">
+                <code>
+                  {r.name}: {r.from}→{r.to} via {r.via}
+                </code>
+                <Button tone="secondary" onClick={() => onDelete(r.name)}>
+                  {t("topo.routeDelete")}
+                </Button>
+              </ActionRow>
             </li>
           ))}
         </ul>

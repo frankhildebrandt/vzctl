@@ -1,4 +1,11 @@
 import { useState } from "react";
+import {
+  Card,
+  FieldError,
+  FormActions,
+  FormField,
+  FormGrid,
+} from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import {
   createVm,
@@ -69,19 +76,22 @@ export function VmForm({
   }
 
   return (
-    <form className="card vm-form" onSubmit={(e) => void submit(e)}>
-      <h3>{mode === "replace" ? t("vmForm.replaceTitle") : t("vmForm.createTitle")}</h3>
-      <p className="muted">
-        {mode === "replace"
+    <Card
+      as="form"
+      className="vm-form"
+      title={mode === "replace" ? t("vmForm.replaceTitle") : t("vmForm.createTitle")}
+      titleAs="h3"
+      subtitle={
+        mode === "replace"
           ? t("vmForm.replaceHint")
           : t("vmForm.createHint", {
               aliases: IMAGE_ALIAS_HINTS.slice(0, 4).join(", "),
-            })}
-      </p>
-
-      <div className="form-grid">
-        <label>
-          {t("vmForm.id")}
+            })
+      }
+      onSubmit={(e: React.FormEvent<HTMLFormElement>) => void submit(e)}
+    >
+      <FormGrid>
+        <FormField label={t("vmForm.id")}>
           <input
             required
             value={id}
@@ -89,9 +99,8 @@ export function VmForm({
             onChange={(e) => setId(e.target.value)}
             placeholder="web"
           />
-        </label>
-        <label>
-          {t("vmForm.from")}
+        </FormField>
+        <FormField label={t("vmForm.from")}>
           <input
             required
             value={from}
@@ -105,9 +114,8 @@ export function VmForm({
               <option key={alias} value={alias} />
             ))}
           </datalist>
-        </label>
-        <label>
-          {t("vmForm.dataDisk")}
+        </FormField>
+        <FormField label={t("vmForm.dataDisk")}>
           <input
             type="number"
             min={1}
@@ -116,9 +124,8 @@ export function VmForm({
             disabled={busy}
             onChange={(e) => setDataDiskGib(Number(e.target.value))}
           />
-        </label>
-        <label>
-          {t("vmForm.cpus")}
+        </FormField>
+        <FormField label={t("vmForm.cpus")}>
           <input
             type="number"
             min={1}
@@ -126,47 +133,42 @@ export function VmForm({
             disabled={busy}
             onChange={(e) => setCpus(Number(e.target.value))}
           />
-        </label>
-        <label>
-          {t("vmForm.memory")}
+        </FormField>
+        <FormField label={t("vmForm.memory")}>
           <input
             value={memory}
             disabled={busy}
             onChange={(e) => setMemory(e.target.value)}
           />
-        </label>
-        <label>
-          {t("vmForm.network")}
+        </FormField>
+        <FormField label={t("vmForm.network")}>
           <input
             value={network}
             disabled={busy}
             onChange={(e) => setNetwork(e.target.value)}
             placeholder="default"
           />
-        </label>
-        <label>
-          {t("vmForm.roles")}
+        </FormField>
+        <FormField label={t("vmForm.roles")}>
           <input
             value={roles}
             disabled={busy}
             onChange={(e) => setRoles(e.target.value)}
             placeholder="docker"
           />
-        </label>
-        <label>
-          {t("vmForm.project")}
+        </FormField>
+        <FormField
+          label={t("vmForm.project")}
+          hint={t("vmForm.projectHint", { project: "{project}", id: "{id}" })}
+        >
           <input
             value={project}
             disabled={busy}
             onChange={(e) => setProject(e.target.value)}
             placeholder="edge-dmz"
           />
-          <span className="muted">
-            {t("vmForm.projectHint", { project: "{project}", id: "{id}" })}
-          </span>
-        </label>
-        <label>
-          {t("vmForm.rootPassword")}
+        </FormField>
+        <FormField label={t("vmForm.rootPassword")}>
           <input
             type="password"
             value={rootPassword}
@@ -174,30 +176,25 @@ export function VmForm({
             onChange={(e) => setRootPassword(e.target.value)}
             autoComplete="new-password"
           />
-        </label>
-      </div>
+        </FormField>
+      </FormGrid>
 
-      {error ? <p className="form-error">{error}</p> : null}
+      <FieldError message={error} />
 
-      <div className="row" style={{ gap: "0.5rem" }}>
-        <button type="submit" disabled={busy}>
-          {busy
+      <FormActions
+        busy={busy}
+        submitLabel={
+          busy
             ? mode === "replace"
               ? t("vmForm.replaceBusy")
               : t("vmForm.createBusy")
             : mode === "replace"
               ? t("vmForm.replace")
-              : t("vmForm.create")}
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={onCancel}
-        >
-          {t("common.cancel")}
-        </button>
-      </div>
-    </form>
+              : t("vmForm.create")
+        }
+        cancelLabel={t("common.cancel")}
+        onCancel={onCancel}
+      />
+    </Card>
   );
 }
