@@ -25,6 +25,17 @@ const links = [
   { label: 'Docs', path: '/docs/' },
   { label: 'Quickstart', path: '/docs/guides/quickstart/' },
 ];
+
+const externalLinks = [
+  {
+    label: 'Release',
+    href: 'https://github.com/frankhildebrandt/vzctl/releases/latest',
+  },
+  {
+    label: 'GitHub',
+    href: 'https://github.com/frankhildebrandt/vzctl',
+  },
+];
 ---
 
 <div class="site-header" role="banner">
@@ -56,14 +67,18 @@ const links = [
           </a>
         ))
       }
-      <a
-        class="site-header__link site-header__link--ext"
-        href="https://github.com/frankhildebrandt/vzctl"
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        GitHub
-      </a>
+      {
+        externalLinks.map((link) => (
+          <a
+            class="site-header__link site-header__link--ext"
+            href={link.href}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {link.label}
+          </a>
+        ))
+      }
     </nav>
   </div>
 </div>

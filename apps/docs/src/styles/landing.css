@@ -284,8 +284,27 @@ body.landing {
   color: #d7e8e2;
 }
 
-.quickstart .btn--primary {
+.quickstart .hero__ctas {
+  justify-content: flex-start;
   margin-top: 1.25rem;
+}
+
+.quickstart .btn--ghost {
+  border-color: rgba(215, 232, 226, 0.35);
+  color: var(--vz-sidebar-text);
+}
+
+.quickstart .btn--ghost:hover {
+  border-color: #7dcfbc;
+  color: #fff;
+}
+
+.quickstart a:not(.btn) {
+  color: #7dcfbc;
+}
+
+.quickstart a:not(.btn):hover {
+  color: #fff;
 }
 
 /* Network SVG motion */

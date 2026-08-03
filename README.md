@@ -74,7 +74,8 @@ make ui-install && make ui-dev
 ## Website / Docs
 
 Produktseite und Anleitung: [https://frankhildebrandt.github.io/vzctl/](https://frankhildebrandt.github.io/vzctl/)  
-Quelle: [`apps/docs/`](apps/docs/) (Astro + Starlight, GitHub Pages).
+Quelle: [`apps/docs/`](apps/docs/) (Astro + Starlight, GitHub Pages).  
+Aktueller Release: [Latest Release](https://github.com/frankhildebrandt/vzctl/releases/latest).
 
 ## Docs (Repo)
 

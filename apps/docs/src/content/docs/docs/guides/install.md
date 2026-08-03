@@ -12,7 +12,10 @@ description: vzctl und Supervisor lokal auf macOS 26+ installieren.
 
 ## Release-Install
 
-Vom Repository-Root:
+Aktuelle Builds: [Latest Release](https://github.com/frankhildebrandt/vzctl/releases/latest)
+(immer der neueste Tag, z. B. `.pkg` / `.dmg` / `.tar.gz`).
+
+Vom Repository-Root (aus dem Checkout bauen):
 
 ```bash
 make install

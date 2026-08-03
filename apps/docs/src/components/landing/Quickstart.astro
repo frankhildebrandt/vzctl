@@ -11,12 +11,24 @@ function href(path: string) {
     <p class="section__eyebrow">Quickstart</p>
     <h2 class="section__title">In Minuten lokal</h2>
     <p class="section__lead">
-      macOS 26+, dann installieren, Image pullen und den Referenz-Stack validieren.
+      macOS 26+, dann den
+      <a href="https://github.com/frankhildebrandt/vzctl/releases/latest" rel="noopener noreferrer" target="_blank"
+        >aktuellen Release</a
+      >
+      holen oder aus dem Repo installieren, Image pullen und den Referenz-Stack validieren.
     </p>
     <pre><code>make install
 export PATH="$HOME/.local/bin:$PATH"
 vzctl doctor
 vzctl validate -C ./examples/edge-dmz</code></pre>
-    <a class="btn btn--primary" href={href('/docs/guides/quickstart/')}>Zur Anleitung</a>
+    <div class="hero__ctas">
+      <a class="btn btn--primary" href={href('/docs/guides/quickstart/')}>Zur Anleitung</a>
+      <a
+        class="btn btn--ghost"
+        href="https://github.com/frankhildebrandt/vzctl/releases/latest"
+        rel="noopener noreferrer"
+        target="_blank">Latest Release</a
+      >
+    </div>
   </div>
 </section>
