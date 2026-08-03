@@ -1,0 +1,189 @@
+---
+interface Props {
+  pathname?: string;
+}
+
+const base = import.meta.env.BASE_URL;
+const pathname = Astro.props.pathname ?? Astro.url.pathname;
+
+function href(path: string) {
+  const clean = path.replace(/^\//, '');
+  return `${base}${clean}`;
+}
+
+function isActive(path: string) {
+  const target = href(path).replace(/\/$/, '') || '/';
+  const current = pathname.replace(/\/$/, '') || '/';
+  if (path === '/' || path === '') {
+    return current === base.replace(/\/$/, '') || current === '' || current.endsWith('/vzctl');
+  }
+  return current === target.replace(/\/$/, '') || current.startsWith(`${target.replace(/\/$/, '')}/`);
+}
+
+const links = [
+  { label: 'Produkt', path: '/' },
+  { label: 'Docs', path: '/docs/' },
+  { label: 'Quickstart', path: '/docs/guides/quickstart/' },
+];
+---
+
+<div class="site-header" role="banner">
+  <div class="site-header__inner">
+    <a class="site-header__brand" href={href('/')}>
+      <img src={`${base}icon.png`} alt="" width="28" height="28" />
+      <span>vzctl</span>
+    </a>
+
+    <button
+      class="site-header__toggle"
+      type="button"
+      aria-expanded="false"
+      aria-controls="site-nav"
+      data-nav-toggle
+    >
+      Menü
+    </button>
+
+    <nav class="site-header__nav" id="site-nav" data-nav>
+      {
+        links.map((link) => (
+          <a
+            href={href(link.path)}
+            class:list={['site-header__link', { 'is-active': isActive(link.path) }]}
+            aria-current={isActive(link.path) ? 'page' : undefined}
+          >
+            {link.label}
+          </a>
+        ))
+      }
+      <a
+        class="site-header__link site-header__link--ext"
+        href="https://github.com/frankhildebrandt/vzctl"
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        GitHub
+      </a>
+    </nav>
+  </div>
+</div>
+
+<style>
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    height: var(--vz-header-h);
+    border-bottom: 1px solid var(--vz-line);
+    background: color-mix(in srgb, var(--vz-panel) 92%, transparent);
+    backdrop-filter: blur(10px);
+    font-family: var(--vz-font);
+  }
+
+  .site-header__inner {
+    height: 100%;
+    width: min(100%, var(--vz-max));
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .site-header__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--vz-ink);
+    text-decoration: none;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    font-size: 1.15rem;
+  }
+
+  .site-header__brand img {
+    border-radius: 18%;
+  }
+
+  .site-header__toggle {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--vz-line);
+    border-radius: var(--vz-radius);
+    background: transparent;
+    color: var(--vz-ink);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+
+  .site-header__nav {
+    display: none;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .site-header__nav.is-open {
+    display: flex;
+    position: absolute;
+    top: var(--vz-header-h);
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0.5rem;
+    background: var(--vz-panel);
+    border-bottom: 1px solid var(--vz-line);
+  }
+
+  .site-header__link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--vz-radius);
+    color: var(--vz-muted);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+  }
+
+  .site-header__link:hover,
+  .site-header__link.is-active {
+    color: var(--vz-accent);
+    background: color-mix(in srgb, var(--vz-accent) 10%, transparent);
+  }
+
+  .site-header__link--ext {
+    color: var(--vz-ink);
+  }
+
+  @media (min-width: 48rem) {
+    .site-header__toggle {
+      display: none;
+    }
+
+    .site-header__nav,
+    .site-header__nav.is-open {
+      display: flex;
+      position: static;
+      flex-direction: row;
+      padding: 0;
+      background: transparent;
+      border: 0;
+    }
+  }
+</style>
+
+<script>
+  const toggle = document.querySelector('[data-nav-toggle]');
+  const nav = document.querySelector('[data-nav]');
+  toggle?.addEventListener('click', () => {
+    const open = nav?.classList.toggle('is-open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+</script>

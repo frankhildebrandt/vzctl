@@ -1,0 +1,22 @@
+---
+const base = import.meta.env.BASE_URL;
+
+function href(path: string) {
+  return `${base}${path.replace(/^\//, '')}`;
+}
+---
+
+<section class="section quickstart" id="quickstart">
+  <div class="section__inner">
+    <p class="section__eyebrow">Quickstart</p>
+    <h2 class="section__title">In Minuten lokal</h2>
+    <p class="section__lead">
+      macOS 26+, dann installieren, Image pullen und den Referenz-Stack validieren.
+    </p>
+    <pre><code>make install
+export PATH="$HOME/.local/bin:$PATH"
+vzctl doctor
+vzctl validate -C ./examples/edge-dmz</code></pre>
+    <a class="btn btn--primary" href={href('/docs/guides/quickstart/')}>Zur Anleitung</a>
+  </div>
+</section>

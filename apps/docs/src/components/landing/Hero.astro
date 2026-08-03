@@ -1,0 +1,55 @@
+---
+const base = import.meta.env.BASE_URL;
+
+function href(path: string) {
+  return `${base}${path.replace(/^\//, '')}`;
+}
+---
+
+<section class="hero" aria-label="vzctl">
+  <svg class="hero__canvas" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g class="edges">
+      <path class="edge" d="M180 160 C 320 120, 380 220, 520 200"></path>
+      <path class="edge" d="M520 200 C 640 180, 700 260, 820 240"></path>
+      <path class="edge" d="M520 200 C 480 320, 560 380, 640 460"></path>
+      <path class="edge" d="M820 240 C 900 300, 860 400, 980 450"></path>
+      <path class="edge" d="M240 420 C 360 360, 420 480, 560 520"></path>
+      <path class="edge" d="M640 460 C 740 500, 820 430, 920 540"></path>
+      <path class="edge" d="M180 160 C 220 280, 160 340, 240 420"></path>
+      <path class="edge" d="M980 450 C 1040 360, 1000 280, 1080 200"></path>
+    </g>
+    <g class="nodes">
+      <circle class="node" cx="180" cy="160" r="5"></circle>
+      <circle class="node" cx="520" cy="200" r="5"></circle>
+      <circle class="node" cx="820" cy="240" r="5"></circle>
+      <circle class="node" cx="640" cy="460" r="5"></circle>
+      <circle class="node" cx="240" cy="420" r="5"></circle>
+      <circle class="node" cx="560" cy="520" r="5"></circle>
+      <circle class="node" cx="980" cy="450" r="5"></circle>
+      <circle class="node" cx="920" cy="540" r="5"></circle>
+      <circle class="node" cx="1080" cy="200" r="5"></circle>
+    </g>
+  </svg>
+
+  <div class="hero__inner">
+    <div class="hero__brand">
+      <img src={`${base}icon.png`} alt="" width="56" height="56" />
+      <span>vzctl</span>
+    </div>
+    <h1 class="hero__title">Hypernetwork für macOS-VMs</h1>
+    <p class="hero__lead">
+      Environments as Code mit Apple Virtualization.framework — deklarative Stacks,
+      Linked Clones, Hypervisor-DNS und Docker-Context.
+    </p>
+    <div class="hero__ctas">
+      <a class="btn btn--primary" href={href('/docs/')}>Dokumentation</a>
+      <a class="btn btn--ghost" href={href('/docs/guides/quickstart/')}>Quickstart</a>
+      <a
+        class="btn btn--ghost"
+        href="https://github.com/frankhildebrandt/vzctl"
+        rel="noopener noreferrer"
+        target="_blank">GitHub</a
+      >
+    </div>
+  </div>
+</section>

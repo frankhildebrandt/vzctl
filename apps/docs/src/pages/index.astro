@@ -1,0 +1,40 @@
+---
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import Hero from '../components/landing/Hero.astro';
+import Idea from '../components/landing/Idea.astro';
+import Architecture from '../components/landing/Architecture.astro';
+import Features from '../components/landing/Features.astro';
+import Quickstart from '../components/landing/Quickstart.astro';
+import '../styles/landing.css';
+
+const base = import.meta.env.BASE_URL;
+const title = 'vzctl — Hypernetwork für macOS-VMs';
+const description =
+  'Environments as Code mit Apple Virtualization.framework: deklarative Stacks, Linked Clones, DNS und Docker.';
+---
+
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href={`${base}favicon.png`} type="image/png" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+  </head>
+  <body class="landing">
+    <SiteHeader pathname={Astro.url.pathname} />
+    <main>
+      <Hero />
+      <Idea />
+      <Architecture />
+      <Features />
+      <Quickstart />
+    </main>
+    <SiteFooter />
+  </body>
+</html>

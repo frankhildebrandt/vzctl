@@ -1,0 +1,32 @@
+---
+import SiteHeader from './SiteHeader.astro';
+import Search from '@astrojs/starlight/components/Search.astro';
+---
+
+<div class="sl-site-header">
+  <SiteHeader pathname={Astro.url.pathname} />
+  <div class="sl-site-header__search">
+    <Search />
+  </div>
+</div>
+
+<style>
+  .sl-site-header {
+    width: 100%;
+    position: relative;
+  }
+
+  .sl-site-header__search {
+    position: absolute;
+    right: 1.25rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+  }
+
+  @media (min-width: 64rem) {
+    .sl-site-header__search {
+      display: block;
+    }
+  }
+</style>

@@ -1,0 +1,83 @@
+---
+const base = import.meta.env.BASE_URL;
+
+function href(path: string) {
+  return `${base}${path.replace(/^\//, '')}`;
+}
+---
+
+<footer class="site-footer">
+  <div class="site-footer__inner">
+    <p class="site-footer__brand">vzctl</p>
+    <p class="site-footer__copy">
+      Environments as Code für macOS — Hypernetwork, Linked Clones, DNS und Docker.
+    </p>
+    <nav class="site-footer__nav" aria-label="Footer">
+      <a href={href('/docs/')}>Docs</a>
+      <a href={href('/docs/guides/quickstart/')}>Quickstart</a>
+      <a href="https://github.com/frankhildebrandt/vzctl" rel="noopener noreferrer" target="_blank"
+        >GitHub</a
+      >
+      <a
+        href="https://github.com/frankhildebrandt/vzctl/blob/main/LICENSE"
+        rel="noopener noreferrer"
+        target="_blank">Lizenz</a
+      >
+    </nav>
+    <p class="site-footer__license">
+      vzctl Public License v1 — source-available, Affero-Copyleft, kein Verkauf / OEM.
+    </p>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--vz-line);
+    background: var(--vz-panel);
+    font-family: var(--vz-font);
+    color: var(--vz-ink);
+  }
+
+  .site-footer__inner {
+    width: min(100%, var(--vz-max));
+    margin-inline: auto;
+    padding: 2.5rem 1.25rem 3rem;
+  }
+
+  .site-footer__brand {
+    margin: 0 0 0.4rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    font-size: 1.1rem;
+  }
+
+  .site-footer__copy {
+    margin: 0 0 1.25rem;
+    max-width: 36rem;
+    color: var(--vz-muted);
+    line-height: 1.5;
+  }
+
+  .site-footer__nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .site-footer__nav a {
+    color: var(--vz-accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .site-footer__nav a:hover {
+    color: var(--vz-accent-hover);
+  }
+
+  .site-footer__license {
+    margin: 0;
+    color: var(--vz-muted);
+    font-size: 0.85rem;
+  }
+</style>

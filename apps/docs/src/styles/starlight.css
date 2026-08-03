@@ -1,0 +1,128 @@
+/* Map brand tokens onto Starlight (light-first, no default blue). */
+:root,
+::backdrop {
+  --sl-font: var(--vz-font);
+  --sl-font-mono: var(--vz-font-mono);
+
+  --sl-color-accent-low: #cfe9e2;
+  --sl-color-accent: var(--vz-accent);
+  --sl-color-accent-high: #08453b;
+
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #f7f3ea;
+  --sl-color-gray-2: #ebe4d6;
+  --sl-color-gray-3: #cfc5b3;
+  --sl-color-gray-4: #8a8274;
+  --sl-color-gray-5: #5b564c;
+  --sl-color-gray-6: #2c2924;
+  --sl-color-black: var(--vz-ink);
+
+  --sl-color-text: var(--vz-ink);
+  --sl-color-text-accent: var(--vz-accent);
+  --sl-color-bg: var(--vz-bg);
+  --sl-color-bg-nav: var(--vz-panel);
+  --sl-color-bg-sidebar: var(--vz-sidebar);
+  --sl-color-bg-inline-code: #ebe4d6;
+  --sl-color-hairline: var(--vz-line);
+  --sl-color-hairline-light: var(--vz-line);
+
+  --sl-color-banner-bg: var(--vz-accent);
+  --sl-color-banner-text: #fff;
+
+  --sl-nav-height: var(--vz-header-h);
+}
+
+/* Force light appearance even if OS prefers dark. */
+:root[data-theme='dark'],
+html[data-theme='dark'] {
+  color-scheme: light;
+  --sl-color-accent-low: #cfe9e2;
+  --sl-color-accent: var(--vz-accent);
+  --sl-color-accent-high: #08453b;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #f7f3ea;
+  --sl-color-gray-2: #ebe4d6;
+  --sl-color-gray-3: #cfc5b3;
+  --sl-color-gray-4: #8a8274;
+  --sl-color-gray-5: #5b564c;
+  --sl-color-gray-6: #2c2924;
+  --sl-color-black: var(--vz-ink);
+  --sl-color-text: var(--vz-ink);
+  --sl-color-text-accent: var(--vz-accent);
+  --sl-color-bg: var(--vz-bg);
+  --sl-color-bg-nav: var(--vz-panel);
+  --sl-color-bg-sidebar: var(--vz-sidebar);
+  --sl-color-bg-inline-code: #ebe4d6;
+  --sl-color-hairline: var(--vz-line);
+}
+
+/* Dark sidebar with light content (brand match). */
+.sidebar-pane,
+nav.sidebar {
+  --sl-color-text: var(--vz-sidebar-text);
+  --sl-color-text-accent: #7dcfbc;
+  --sl-color-gray-1: var(--vz-sidebar-text);
+  --sl-color-gray-2: var(--vz-sidebar-muted);
+  --sl-color-gray-3: #6f8f84;
+  --sl-color-hairline-light: rgba(215, 232, 226, 0.12);
+  background: var(--vz-sidebar);
+  color: var(--vz-sidebar-text);
+}
+
+.sidebar-content a {
+  color: var(--vz-sidebar-text);
+}
+
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+  color: #fff;
+  background: rgba(15, 106, 90, 0.45);
+}
+
+.sidebar-content .group-label .large {
+  color: var(--vz-sidebar-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+/* Content surface */
+.main-pane,
+.sl-container {
+  font-family: var(--vz-font);
+}
+
+.sl-markdown-content code:not(:where(.expressive-code *)) {
+  font-family: var(--vz-font-mono);
+}
+
+.site-title {
+  display: none;
+}
+
+/* Hide leftover theme toggle chrome if any */
+starlight-theme-select,
+.theme-toggle,
+.social-icons {
+  display: none !important;
+}
+
+/* Page frame: our header already sticky */
+header.header {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--vz-line);
+  background: color-mix(in srgb, var(--vz-panel) 92%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.content-panel {
+  border-top-color: var(--vz-line);
+}
+
+.sl-markdown-content a:not(.sl-link-button) {
+  color: var(--vz-accent);
+}
+
+.sl-markdown-content a:not(.sl-link-button):hover {
+  color: var(--vz-accent-hover);
+}

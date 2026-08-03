@@ -1,0 +1,38 @@
+<section class="section" id="features">
+  <div class="section__inner">
+    <p class="section__eyebrow">Fähigkeiten</p>
+    <h2 class="section__title">Was der Stack mitbringt</h2>
+    <p class="section__lead">
+      CLI-first, optional mit Tauri-UI — derselbe Desired State für Terminal und Topology-Editor.
+    </p>
+    <ul class="feature-list">
+      <li>
+        <strong>Linked Clones</strong>
+        <p>Sealed Base-Image, pro VM eine Identity und dataDisk — Base bleibt read-only.</p>
+      </li>
+      <li>
+        <strong>Hypervisor-DNS</strong>
+        <p>
+          Zone <code>&#123;vm&#125;.&#123;net&#125;.&#123;project&#125;.vz.test</code> über vz-edge und
+          <code>/etc/resolver</code>.
+        </p>
+      </li>
+      <li>
+        <strong>Docker-Role</strong>
+        <p>SSH-Context <code>vzctl-&#123;project&#125;</code>, deklarative Compose- und Container-Specs.</p>
+      </li>
+      <li>
+        <strong>Ingress &amp; OIDC</strong>
+        <p>Caddy, Dex oder oidc-simple für <code>*.svc.&#123;project&#125;.vz.test</code>.</p>
+      </li>
+      <li>
+        <strong>Topology-UI</strong>
+        <p>Stacks und Netze visuell editieren — schreibt immer <code>hypernetwork.config.yaml</code>.</p>
+      </li>
+      <li>
+        <strong>virtiofs-Mounts</strong>
+        <p>Deklarativ im Spec oder live mit <code>vm mount</code> und Guest-Agent.</p>
+      </li>
+    </ul>
+  </div>
+</section>

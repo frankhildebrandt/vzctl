@@ -1,0 +1,29 @@
+---
+title: Dokumentation
+description: Guides und Reference für vzctl — Hypernetwork, Install, DNS, Docker und CLI.
+---
+
+**vzctl** ist ein CLI-first DevStack-Supervisor auf Apple Virtualization.framework.
+Stacks werden deklarativ über `hypernetwork.config.yaml` gesteuert.
+
+## Einstieg
+
+1. [Installation](/vzctl/docs/guides/install/)
+2. [Quickstart](/vzctl/docs/guides/quickstart/) mit dem Beispiel `edge-dmz`
+3. [Hypernetwork](/vzctl/docs/guides/hypernetwork/) — Desired State verstehen
+
+## Themen
+
+| Guide | Inhalt |
+| --- | --- |
+| [Netze & DNS](/vzctl/docs/guides/networks-dns/) | vmnet, Resolver, Zone `*.vz.test` |
+| [Docker](/vzctl/docs/guides/docker/) | Role, Context, Compose |
+| [Images](/vzctl/docs/guides/images/) | pull → bake → seal |
+| [CLI](/vzctl/docs/guides/cli/) | Befehle und Exitcodes |
+
+## Reference
+
+- [Architektur](/vzctl/docs/reference/architecture/) — Prozesse und Ownership
+- [Beispiel edge-dmz](/vzctl/docs/reference/example-edge-dmz/) — Referenz-Stack
+
+Tiefe Specs und ADRs liegen im Repository unter `docs/specs/` und `docs/adr/`.

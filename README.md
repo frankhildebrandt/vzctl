@@ -71,7 +71,12 @@ make ui-install && make ui-dev
 | `docs/spikes/g0-network.md` | G0 network/DNS/crash spike |
 | `spikes/g0/` | Measurement harness |
 
-## Docs
+## Website / Docs
+
+Produktseite und Anleitung: [https://frankhildebrandt.github.io/vzctl/](https://frankhildebrandt.github.io/vzctl/)  
+Quelle: [`apps/docs/`](apps/docs/) (Astro + Starlight, GitHub Pages).
+
+## Docs (Repo)
 
 | Document | Description |
 |---|---|

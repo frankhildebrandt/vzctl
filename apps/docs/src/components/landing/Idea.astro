@@ -1,0 +1,25 @@
+<section class="section" id="idea">
+  <div class="section__inner">
+    <p class="section__eyebrow">Hypernetwork</p>
+    <h2 class="section__title">Ein Desired State für den ganzen Stack</h2>
+    <p class="section__lead">
+      <code>hypernetwork.config.yaml</code> beschreibt Netze, VMs, Images, Routes und Policies.
+      <code>validate</code>, <code>plan</code>, <code>up</code> und <code>apply</code> bringen den
+      Actual State dahin — Git-native, wiederholbar.
+    </p>
+    <pre class="idea-code"><code><span class="k">apiVersion</span>: hypernetwork/v1
+<span class="k">kind</span>: Environment
+<span class="k">metadata</span>:
+  <span class="k">name</span>: edge-dmz
+<span class="k">spec</span>:
+  <span class="k">project</span>: edge-dmz
+  <span class="k">domain</span>: edge-dmz.vz.test
+  <span class="k">networks</span>:
+    dmz: &#123; <span class="k">cidr</span>: 10.80.0.0/24, <span class="k">mode</span>: shared &#125;
+  <span class="k">vms</span>:
+    web:
+      <span class="k">from</span>: ubuntu
+      <span class="k">networks</span>: [&#123; <span class="k">name</span>: dmz, <span class="k">ip</span>: 10.80.0.10 &#125;]
+<span class="c"># …</span></code></pre>
+  </div>
+</section>

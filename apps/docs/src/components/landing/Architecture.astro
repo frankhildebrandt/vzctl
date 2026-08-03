@@ -1,0 +1,28 @@
+<section class="section" id="architecture">
+  <div class="section__inner">
+    <p class="section__eyebrow">Architektur</p>
+    <h2 class="section__title">Control Plane und Dataplane auf dem Host</h2>
+    <p class="section__lead">
+      Startreihenfolge <code>vz-net</code> → <code>vz-edge</code> → <code>vz-supervisor</code>.
+      Pro VM läuft ein Helper, der die VirtualMachine besitzt.
+    </p>
+    <div class="pipeline">
+      <div class="pipeline__step">
+        <p class="pipeline__name">vz-net</p>
+        <p class="pipeline__desc">vmnet-Refs, Host-Bridges und Attachment-Handles.</p>
+      </div>
+      <div class="pipeline__step">
+        <p class="pipeline__name">vz-edge</p>
+        <p class="pipeline__desc">DNS, Ports, Ingress, OIDC und Host-Dataplane.</p>
+      </div>
+      <div class="pipeline__step">
+        <p class="pipeline__name">vz-supervisor</p>
+        <p class="pipeline__desc">Desired State, SQLite, Apply-Pipeline und REST-API.</p>
+      </div>
+      <div class="pipeline__step">
+        <p class="pipeline__name">vz-helper</p>
+        <p class="pipeline__desc">Eine Instanz pro VM — besitzt VZVirtualMachine.</p>
+      </div>
+    </div>
+  </div>
+</section>
