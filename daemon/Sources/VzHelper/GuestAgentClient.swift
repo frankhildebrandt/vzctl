@@ -46,6 +46,15 @@ struct AgentInterface {
     let addresses: [String]
 }
 
+struct AgentNetworkProbe: Equatable, Sendable {
+    let classification: String
+    let phase: String
+    let statusCode: Int?
+    let latencyMS: Int64
+    let redirected: Bool
+    let errorCode: String?
+}
+
 enum AgentTimeHintReason: String, Sendable {
     case handshake, wake, manual
 }
@@ -306,6 +315,33 @@ final class GuestAgentClient: @unchecked Sendable {
         if let name { params["name"] = name }
         if let target { params["target"] = target }
         _ = try request(method: "fs.unmount", params: params, timeout: timeout)
+    }
+
+    func networkProbe(
+        url: String,
+        timeoutMilliseconds: Int = 5_000,
+        timeout: TimeInterval = 35
+    ) throws -> AgentNetworkProbe {
+        let result = try request(
+            method: "network_probe",
+            params: ["url": url, "timeout_ms": timeoutMilliseconds],
+            timeout: timeout
+        )
+        guard let classification = result["classification"] as? String,
+              let phase = result["phase"] as? String,
+              let latency = (result["latency_ms"] as? NSNumber)?.int64Value,
+              let redirected = result["redirected"] as? Bool
+        else {
+            throw GuestAgentError.protocolViolation("invalid network_probe result")
+        }
+        return AgentNetworkProbe(
+            classification: classification,
+            phase: phase,
+            statusCode: (result["status_code"] as? NSNumber)?.intValue,
+            latencyMS: latency,
+            redirected: redirected,
+            errorCode: result["error_code"] as? String
+        )
     }
 
     @discardableResult

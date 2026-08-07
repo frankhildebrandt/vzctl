@@ -245,7 +245,7 @@ final class RestRouter: @unchecked Sendable {
             if case let .object(o) = value { return o }
             return nil
         } ?? [:]
-        var args = [kind, "-C", path, "--format", "json"]
+        var args = [kind, "-C", path, "--format", "json", "--progress", "plain"]
         if kind == "down" {
             if optionalBool(obj["purge"]) == true { args.append("--purge") }
         } else {

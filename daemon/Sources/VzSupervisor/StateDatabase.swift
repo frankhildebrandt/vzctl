@@ -116,6 +116,14 @@ final class StateDatabase {
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     generation INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS network_resilience_policies (
+                    project TEXT PRIMARY KEY,
+                    stack TEXT NOT NULL,
+                    probe_enabled INTEGER NOT NULL DEFAULT 1,
+                    probe_url TEXT NOT NULL,
+                    restart_vms INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
                 INSERT OR IGNORE INTO edge_meta (singleton, generation) VALUES (1, 0);
                 """
             )
@@ -534,6 +542,67 @@ final class StateDatabase {
                 try? execute("ROLLBACK;")
                 throw error
             }
+        }
+    }
+
+    func setNetworkResiliencePolicy(
+        project: String,
+        stack: String,
+        probeEnabled: Bool,
+        probeURL: String,
+        restartVMs: Bool
+    ) throws {
+        try withStatement(
+            """
+            INSERT INTO network_resilience_policies
+                (project, stack, probe_enabled, probe_url, restart_vms, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project) DO UPDATE SET
+                stack = excluded.stack,
+                probe_enabled = excluded.probe_enabled,
+                probe_url = excluded.probe_url,
+                restart_vms = excluded.restart_vms,
+                updated_at = excluded.updated_at;
+            """
+        ) { statement in
+            try bind(project, at: 1, to: statement)
+            try bind(stack, at: 2, to: statement)
+            sqlite3_bind_int(statement, 3, probeEnabled ? 1 : 0)
+            try bind(probeURL, at: 4, to: statement)
+            sqlite3_bind_int(statement, 5, restartVMs ? 1 : 0)
+            try bind(timestamp(), at: 6, to: statement)
+            try stepDone(statement)
+        }
+    }
+
+    func networkResiliencePolicies() throws -> [NetworkResiliencePolicyRecord] {
+        try withStatement(
+            """
+            SELECT project, stack, probe_enabled, probe_url, restart_vms, updated_at
+            FROM network_resilience_policies ORDER BY project;
+            """
+        ) { statement in
+            var result: [NetworkResiliencePolicyRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(NetworkResiliencePolicyRecord(
+                    project: text(statement, 0),
+                    stack: text(statement, 1),
+                    probeEnabled: sqlite3_column_int(statement, 2) != 0,
+                    probeURL: text(statement, 3),
+                    restartVMs: sqlite3_column_int(statement, 4) != 0,
+                    updatedAt: text(statement, 5)
+                ))
+            }
+            return result
+        }
+    }
+
+    func removeNetworkResiliencePolicy(project: String) throws {
+        try withStatement(
+            "DELETE FROM network_resilience_policies WHERE project = ?;"
+        ) { statement in
+            try bind(project, at: 1, to: statement)
+            try stepDone(statement)
         }
     }
 
@@ -1060,6 +1129,15 @@ struct EdgeProjectRecord: Sendable {
     let dnsRecords: JSONValue
     let ingress: JSONValue?
     let oidc: JSONValue?
+    let updatedAt: String
+}
+
+struct NetworkResiliencePolicyRecord: Equatable, Sendable {
+    let project: String
+    let stack: String
+    let probeEnabled: Bool
+    let probeURL: String
+    let restartVMs: Bool
     let updatedAt: String
 }
 

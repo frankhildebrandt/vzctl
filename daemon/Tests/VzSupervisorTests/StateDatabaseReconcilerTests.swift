@@ -37,6 +37,26 @@ import VzDaemonKit
     #expect(try database.nextEdgeGeneration() == 2)
 }
 
+@Test func networkResiliencePolicyIsPersistedAndRemovedByProject() throws {
+    let database = try temporaryDatabase()
+    try database.setNetworkResiliencePolicy(
+        project: "edge-dmz",
+        stack: "edge-dmz",
+        probeEnabled: true,
+        probeURL: "https://captive.apple.com/",
+        restartVMs: false
+    )
+    var records = try database.networkResiliencePolicies()
+    #expect(records.count == 1)
+    #expect(records[0].project == "edge-dmz")
+    #expect(records[0].probeEnabled)
+    #expect(!records[0].restartVMs)
+
+    try database.removeNetworkResiliencePolicy(project: "edge-dmz")
+    records = try database.networkResiliencePolicies()
+    #expect(records.isEmpty)
+}
+
 @Test func applyJournalBlocksParallelHolderAndSupportsAbort() throws {
     let database = try temporaryDatabase()
     let holder = "test:\(ProcessInfo.processInfo.processIdentifier)"

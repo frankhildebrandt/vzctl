@@ -26,6 +26,22 @@ Fehler enthalten einen JSON-Pfad und eine Art:
 }
 ```
 
+## Stack bootstrap (CLI)
+
+Neue Stacks ohne UI scaffolden:
+
+```bash
+vzctl stack init ./my-lab --name my-lab
+vzctl stack vm add web --network lan
+vzctl stack volume add app ./share
+vzctl stack mount add web --source app --target /srv/app
+vzctl validate -C ./my-lab
+vzctl apply -C ./my-lab
+```
+
+`vzctl stack` mutiert nur `hypernetwork.config.yaml` (kein `.vzctl/diagram.json`).
+Details: [CLI Contract v1](cli-contract-v1.md#vzctl-stack-initvmnetvolumemount).
+
 ## Pflichtstruktur
 
 - `apiVersion: hypernetwork/v1`, `kind: Environment`
@@ -40,6 +56,23 @@ Fehler enthalten einen JSON-Pfad und eine Art:
 `memory` (MiB als bare Integer oder Size wie `2Gi`/`2048MiB`) sind optional und
 steuern Helper-Resources beim Create (Defaults: 2 vCPUs / 1024 MiB). `cloudInit`,
 `dependsOn`, `roles` sowie das v0.2-Vorbereitungsfeld `requires` sind optional.
+
+Netz-Recovery ist optional und standardmäßig vollständig nicht-destruktiv:
+
+```yaml
+resilience:
+  network:
+    egressProbe:
+      enabled: true
+      url: https://captive.apple.com/
+    restartVMsOnStuckEgress: false
+```
+
+Die Probe-URL muss `http` oder `https` verwenden und darf keine Zugangsdaten
+enthalten. `restartVMsOnStuckEgress` gilt nur für VMs dieses Stacks. Ein
+Runtime-Fallback ist ausschließlich erlaubt, wenn alle Attachments des
+betroffenen Netzes dieselbe Opt-in-Policy besitzen; manuelle/fremde VMs
+blockieren ihn. Die aufgelöste Policy wird beim Apply in SQLite persistiert.
 
 `roles` akzeptiert nur `router` und `docker`. `cloudInit` ist ein relativer Pfad
 zur Stack-Config und wird beim Create mit dem System-NoCloud-Seed gemerged
@@ -144,6 +177,8 @@ oidc:
 - Image-, Network-, Route-, Policy- und VM-Referenzen müssen existieren.
 - `route.via` muss eine Router-VM sein, die an Quell- und Zielnetz hängt.
 - Netz-CIDRs müssen gültige kanonische IPv4-Netze sein.
+- Überlappungen mit später auftauchenden Host-/VPN-Routen ändern die Config
+  nie automatisch; sie werden als Runtime-Konflikt diagnostiziert.
 - `networks.*.backend` (Default `vmnet`): `vmnet` erzeugt ein Custom-vmnet;
   `docker` ist ein logisches Subnetz auf einer Docker+Router-VM (`docker0`
   bip = `.2`, kein vmnet). Dann: `natEgress: false`, kein DHCP, genau eine

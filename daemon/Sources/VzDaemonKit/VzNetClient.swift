@@ -79,6 +79,39 @@ public struct VzNetNetworkInfo: Equatable, Sendable {
     }
 }
 
+public struct VzNetVerification: Equatable, Sendable {
+    public var name: String
+    public var cidr: String
+    public var refOK: Bool
+    public var serializationOK: Bool
+    public var bridgeOK: Bool
+    public var error: String?
+
+    public init(json: JSONValue) throws {
+        guard case let .object(values) = json,
+              case let .string(name)? = values["name"],
+              case let .string(cidr)? = values["cidr"],
+              case let .bool(refOK)? = values["ref_ok"],
+              case let .bool(serializationOK)? = values["serialization_ok"],
+              case let .bool(bridgeOK)? = values["bridge_ok"]
+        else {
+            throw VzNetClientError.invalidResponse("invalid verification object")
+        }
+        self.name = name
+        self.cidr = cidr
+        self.refOK = refOK
+        self.serializationOK = serializationOK
+        self.bridgeOK = bridgeOK
+        if case let .string(message)? = values["error"] {
+            error = message
+        } else {
+            error = nil
+        }
+    }
+
+    public var ok: Bool { refOK && serializationOK && bridgeOK }
+}
+
 public struct VzNetClient: Sendable {
     public let socketPath: String
     public let timeoutSeconds: Int
@@ -150,6 +183,16 @@ public struct VzNetClient: Sendable {
             throw VzNetClientError.invalidResponse("invalid serialize result")
         }
         return try VmnetSerialization.blob(fromBase64: base64)
+    }
+
+    public func verify() throws -> [VzNetVerification] {
+        let result = try call(method: "net.verify", params: .object([:]))
+        guard case let .object(values) = result,
+              case let .array(networks)? = values["networks"]
+        else {
+            throw VzNetClientError.invalidResponse("invalid verify result")
+        }
+        return try networks.map { try VzNetVerification(json: $0) }
     }
 
     private func call(method: String, params: JSONValue) throws -> JSONValue {

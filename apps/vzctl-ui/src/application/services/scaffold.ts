@@ -45,6 +45,12 @@ export function scaffoldEnvironment(options: ScaffoldOptions): Environment {
       policies: [],
       ports: [],
       volumes: {},
+      resilience: {
+        network: {
+          egressProbe: { enabled: true, url: "https://captive.apple.com/" },
+          restartVMsOnStuckEgress: false,
+        },
+      },
       vms: {},
     },
   };

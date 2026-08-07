@@ -52,7 +52,7 @@ describe("yaml round-trip", () => {
     );
     const env = parseEnvironmentYaml(raw);
     expect(env.metadata.name).toBe("edge-dmz");
-    expect(env.spec.networks.dmz?.cidr).toBe("10.80.0.0/24");
+    expect(env.spec.networks.dmz?.cidr).toBe("10.80.1.0/24");
     expect(env.spec.networks.containers?.backend).toBe("docker");
     expect(env.spec.vms.docker?.roles).toEqual(
       expect.arrayContaining(["docker", "router"]),
@@ -69,6 +69,16 @@ describe("yaml round-trip", () => {
     const again = parseEnvironmentYaml(yaml);
     expect(again.spec.project).toBe("lab");
     expect(again.spec.networks.lan).toBeTruthy();
+    expect(again.spec.resilience?.network.restartVMsOnStuckEgress).toBe(false);
+    expect(yaml).toContain("resilience:");
+  });
+
+  it("rejects unsafe egress probe URLs", () => {
+    const env = scaffoldEnvironment({ name: "lab" });
+    env.spec.resilience!.network.egressProbe.url = "https://secret@example.com/";
+    expect(() => parseEnvironmentYaml(serializeEnvironmentYaml(env))).toThrow(
+      "keine Zugangsdaten",
+    );
   });
 });
 

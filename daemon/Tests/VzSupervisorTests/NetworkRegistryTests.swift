@@ -125,6 +125,29 @@ import Testing
     #expect(backendState.releases == 2)
 }
 
+@Test func explicitRuntimeRecreateKeepsDesiredIdentityAndAttachments() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+    _ = try fixture.registry.create(
+        name: "dmz", cidr: "10.80.0.0/24", mode: "shared",
+        labels: [:], project: "demo", stack: "dev"
+    )
+    _ = try fixture.registry.attach(
+        vmID: "demo/web", networkName: "dmz", ip: "10.80.0.10",
+        labels: [:], project: "demo", stack: "dev", vmIsStopped: true
+    )
+    let before = try fixture.registry.snapshot()
+
+    try fixture.registry.recreateRuntime(name: "dmz")
+
+    let after = try fixture.registry.snapshot()
+    #expect(after.networks.map(\.name) == before.networks.map(\.name))
+    #expect(after.networks.map(\.cidr) == before.networks.map(\.cidr))
+    #expect(after.attachments == before.attachments)
+    #expect(fixture.backendState.reservations == 2)
+    #expect(fixture.backendState.releases == 1)
+}
+
 @Test func defaultNetworkIsIdempotentPersistentAndAllocatesGuestIPs() throws {
     let fixture = try RegistryFixture()
     defer { fixture.cleanup() }

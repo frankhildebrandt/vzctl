@@ -43,6 +43,9 @@ export function serializeEnvironmentYaml(env: Environment): string {
       ...(env.spec.certs !== undefined ? { certs: env.spec.certs } : {}),
       ...(env.spec.ingress !== undefined ? { ingress: env.spec.ingress } : {}),
       ...(env.spec.oidc !== undefined ? { oidc: env.spec.oidc } : {}),
+      ...(env.spec.resilience !== undefined
+        ? { resilience: env.spec.resilience }
+        : {}),
       vms: env.spec.vms,
     },
   };

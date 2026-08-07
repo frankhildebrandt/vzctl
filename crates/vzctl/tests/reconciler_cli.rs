@@ -57,6 +57,7 @@ fn plan_uses_cli_v1_envelope_and_is_read_only() {
     fs::remove_dir_all(&state).unwrap();
 
     assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["apiVersion"], "vzctl.dev/v1");
     assert_eq!(envelope["command"], "plan");

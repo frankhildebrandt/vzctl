@@ -89,6 +89,29 @@ reflektiert.
 Cross-Net-Traffic wird dadurch nicht freigeschaltet: Dafür bleiben Router plus
 [#33](https://github.com/frankhildebrandt/vzctl/issues/33) zuständig.
 
+## Host-Netzwechsel und Sleep/Wake
+
+Der Supervisor beobachtet `NWPathMonitor` sowie macOS Sleep/Wake. Jede echte
+Änderung erhöht eine monotone `network_epoch`; Flapping wird zwei Sekunden
+entprellt und Reconcile läuft seriell. Bei `path=unsatisfied` gibt es keine
+Repair-Schleife. Nach einem nutzbaren Pfad gelten begrenzte Backoffs bis
+30 Sekunden.
+
+Offline/Captive/Degraded werden danach passiv erneut geprüft, weil eine
+Portal-Freigabe nicht zwingend einen neuen `NWPath` erzeugt. Diese Proben sind
+nicht-destruktiv. Der opt-in VM-Fallback darf höchstens einmal pro Epoch laufen.
+
+Recovery prüft Host-/VPN-Routen, `net.verify`, wendet das `vz-edge`-Manifest
+idempotent neu an und trennt interne Gesundheit, Host-Portal/Egress und
+Guest-Egress. Live-Refs, Netzwerk-IDs, IPs und Serialisierungen bleiben im
+Default-Modus unverändert. CIDR-Konflikte werden gemeldet, niemals umnummeriert.
+Locale, Zeitzone, Land und Wall-Clock sind keine Netz-Inputs. Helper führen
+ihre Wake-Time-Sync- und VirtioFS-Remount-Logik unabhängig weiter aus.
+
+Bestehende externe TCP-Verbindungen dürfen bei neuer öffentlicher IP abbrechen;
+interne Verbindungen dürfen durch einen wachen LAN/WLAN-Wechsel nicht
+unterbrochen werden. Captive Portal pausiert die Egress-Frist bis zur Freigabe.
+
 ## Ownership
 
 Live `vmnet_network_ref` + Host-Bridge liegen in **`vz-net`** (LaunchAgent

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -17,14 +18,18 @@ mod certs;
 mod config;
 mod dns;
 mod docker;
+mod guest_utils;
 mod image;
 mod ingress;
 mod mounts;
 mod network;
 mod oidc;
 mod port;
+mod progress;
 mod reconciler;
 mod route;
+mod services;
+mod stack;
 mod vm;
 
 const DEFAULT_MIN_FREE_GIB: u64 = 20;
@@ -147,6 +152,7 @@ struct VmCreateResult {
     data_disk_path: PathBuf,
     cidata_path: PathBuf,
     agent_token_path: PathBuf,
+    cloud_init_summary: CloudInitSummary,
     data_disk_gib: u64,
     cpus: u32,
     memory_mib: u64,
@@ -157,6 +163,17 @@ struct VmCreateResult {
     identity: VmIdentity,
     network: Option<network::VmNetworkSelection>,
     networks: Vec<network::VmNetworkSelection>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CloudInitSummary {
+    datasource: &'static str,
+    custom: bool,
+    roles: Vec<String>,
+    packages: Vec<String>,
+    write_files: Vec<String>,
+    commands: usize,
+    users: usize,
 }
 
 #[derive(Debug)]
@@ -336,9 +353,11 @@ fn main() -> ExitCode {
         Some("events") => events_command(args),
         Some("net") => network::command(args, &supervisor_socket_path()),
         Some("route") => route::command(args, &supervisor_socket_path()),
+        Some("stack") => stack::command(args),
         Some("dns") => dns::command(args, &supervisor_socket_path()),
         Some("docker") => docker::command(args, &state_dir(), &supervisor_socket_path()),
         Some("port") => port::command(args, &supervisor_socket_path()),
+        Some("services") => services::command(args),
         Some("certs") => certs::command(args, &state_dir()),
         Some("oidc") => oidc::command(args, &state_dir(), &supervisor_socket_path()),
         Some("image") => image_command(args),
@@ -363,10 +382,15 @@ Commands:
   validate [-C <directory|config>] [--format human|json]
   validate --schema   Export hypernetwork/v1 JSON Schema
   plan|diff [-C <directory|config>] [--format human|json]
-  up [-C <directory|config>] [--force] [--format human|json]
-  apply [-C <directory|config>] [--force|--resume|--abort] [--format human|json]
-  down [-C <directory|config>] [--purge] [--format human|json]
+  up [-C <directory|config>] [--force] [--progress plain|ui|off] [--format human|json]
+  apply [-C <directory|config>] [--force|--resume|--abort] [--progress plain|ui|off] [--format human|json]
+  down [-C <directory|config>] [--purge] [--progress plain|ui|off] [--format human|json]
   adopt [-C <directory|config>] [--format human|json]
+  stack init [DIR] --name <project> [--cidr CIDR] [--force] [-C path] [--format human|json]
+  stack vm add|remove ...
+  stack net add|remove ...
+  stack volume add|remove ...
+  stack mount add|remove ...
   events subscribe [--filter 'vm.*,apply.*']
   net create <name> --cidr CIDR [--mode shared] [--label key=value] [--project P] [--stack S]
   net attach <vm> --network <name> --ip <address> [--label key=value] [--project P] [--stack S]
@@ -384,6 +408,8 @@ Commands:
   docker [--project P] [--format human|json] <ps|inspect|start|stop|restart|run> ...
   docker [--project P] [--] <docker-args...>
   port list [--project P] [--stack S] [--format human|json]
+  services status [--format human|json]
+  services start|stop|restart [all|net|edge|supervisor] [--format human|json]
   certs ca init|install [--force] [--format human|json]
   certs mint <san> [--san alias...] [--format human|json]
   certs fingerprint [--format human|json]
@@ -428,7 +454,8 @@ Stable exit codes:
   21  image download/metadata network failure
   22  image checksum mismatch or invalid checksum metadata
   23  image architecture unsupported
-  24  reconciler or VM lifecycle operation failed"
+  24  reconciler or VM lifecycle operation failed
+  25  host service lifecycle failed"
     );
 }
 
@@ -895,7 +922,8 @@ fn parse_image_bake_options(
 
 fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailure> {
     let images = images_dir();
-    let agent_version = agent_version_string()?;
+    let agent_version = guest_utils::agent_version_string()
+        .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.message))?;
     if let Some(existing) =
         image::already_baked(&images, &options.alias, &options.tag, &agent_version)
             .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
@@ -911,7 +939,8 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
         .unwrap_or(&options.alias)
         .to_string();
 
-    let staging = build_agent_staging(&agent_version)?;
+    let staging = guest_utils::build_agent_staging(&agent_version)
+        .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.message))?;
     let progress = (io::stderr().is_terminal() && options.format == OutputFormat::Human)
         || image::progress_env_enabled();
     let backend_kind = builder::select_backend_kind()
@@ -951,89 +980,6 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
         agent_version,
         unchanged: false,
     })
-}
-
-fn agent_version_string() -> Result<String, SealFailure> {
-    if let Ok(version) = std::env::var("VZCTL_AGENT_VERSION") {
-        return Ok(version.trim().to_string());
-    }
-    let version_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent/VERSION");
-    fs::read_to_string(&version_path)
-        .map(|value| value.trim().to_string())
-        .or_else(|_| Ok("0.1.0".to_string()))
-}
-
-fn build_agent_staging(agent_version: &str) -> Result<PathBuf, SealFailure> {
-    let staging = std::env::temp_dir().join(format!(
-        "vzctl-bake-staging-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&staging).map_err(|error| {
-        SealFailure::new(
-            EXIT_UNAVAILABLE,
-            format!("cannot create bake staging: {error}"),
-        )
-    })?;
-
-    let agent_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent");
-    let binary = staging.join("vzctl-agent");
-    let status = Command::new("go")
-        .current_dir(&agent_root)
-        .env("CGO_ENABLED", "0")
-        .env("GOOS", "linux")
-        .env("GOARCH", "arm64")
-        .args([
-            "build",
-            "-trimpath",
-            "-ldflags",
-            &format!("-s -w -buildid= -X main.version={agent_version}"),
-            "-o",
-        ])
-        .arg(&binary)
-        .arg("./cmd/vzctl-agent")
-        .status()
-        .map_err(|error| {
-            SealFailure::new(
-                EXIT_UNAVAILABLE,
-                format!("go is required to cross-build vzctl-agent: {error}"),
-            )
-        })?;
-    if !status.success() {
-        return Err(SealFailure::new(
-            EXIT_IMAGE_CUSTOMIZE_FAILED,
-            "go build of vzctl-agent failed",
-        ));
-    }
-    fs::copy(
-        agent_root.join("systemd/vzctl-agent.service"),
-        staging.join("vzctl-agent.service"),
-    )
-    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
-    fs::copy(
-        agent_root.join("systemd/vzctl-agent.path"),
-        staging.join("vzctl-agent.path"),
-    )
-    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
-    fs::copy(
-        agent_root.join("systemd/vzctl-agent-tmpfiles.conf"),
-        staging.join("vzctl-agent-tmpfiles.conf"),
-    )
-    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
-    fs::copy(
-        agent_root.join("openrc/vzctl-agent"),
-        staging.join("vzctl-agent.openrc"),
-    )
-    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
-    fs::write(
-        staging.join("image-metadata.json"),
-        format!("{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"),
-    )
-    .map_err(|error| SealFailure::new(EXIT_UNAVAILABLE, error.to_string()))?;
-    Ok(staging)
 }
 
 fn bake_with_virt_customize(target: &Path, staging: &Path) -> Result<(), SealFailure> {
@@ -2252,7 +2198,7 @@ fn prepare_vm_disks(
         .map(|network| format!("{}/{}", network.ip, network.prefix));
     let nic_count = nic_networks.len().max(1);
     let identity = new_vm_identity(&options.id, nic_count)?;
-    prepare_cloud_init_seed(
+    let cloud_init_summary = prepare_cloud_init_seed(
         backend,
         &bundle_path,
         &cidata_path,
@@ -2277,6 +2223,7 @@ fn prepare_vm_disks(
         data_disk_path,
         cidata_path,
         agent_token_path,
+        cloud_init_summary,
         data_disk_gib: options.data_disk_gib,
         cpus: options.cpus,
         memory_mib: options.memory_mib,
@@ -2342,6 +2289,7 @@ fn write_vm_manifest(result: &VmCreateResult) -> Result<(), VmCreateFailure> {
         "cloud_init": {
             "seed": result.cidata_path,
             "agent_token": result.agent_token_path,
+            "summary": result.cloud_init_summary,
         },
     });
     fs::write(
@@ -2485,6 +2433,7 @@ fn vm_create_json(result: &VmCreateResult) -> Value {
         "cloud_init": {
             "seed": result.cidata_path,
             "agent_token": result.agent_token_path,
+            "summary": result.cloud_init_summary,
         },
         "warnings": warning.into_iter().collect::<Vec<_>>(),
     })
@@ -2576,7 +2525,7 @@ fn prepare_cloud_init_seed(
     root_password: Option<&str>,
     cloud_init: Option<&Path>,
     project: Option<&str>,
-) -> Result<(), VmCreateFailure> {
+) -> Result<CloudInitSummary, VmCreateFailure> {
     let mut token_bytes = [0_u8; 32];
     File::open("/dev/urandom")
         .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut token_bytes))
@@ -2812,16 +2761,18 @@ fn prepare_cloud_init_seed(
                 );
             }
         }
+        let summary = summarize_cloud_init(&merged, roles, cloud_init.is_some());
         let user_data = docker::render_user_data(&merged)
             .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
-        return write_cloud_init_iso(
+        write_cloud_init_iso(
             backend,
             &seed_directory,
             cidata_path,
             &meta_data,
             &network_config,
             &user_data,
-        );
+        )?;
+        return Ok(summary);
     }
 
     system.insert(
@@ -2840,6 +2791,7 @@ fn prepare_cloud_init_seed(
             .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
         merged = docker::merge_cloud_config(merged, Some(user));
     }
+    let summary = summarize_cloud_init(&merged, roles, cloud_init.is_some());
     let user_data = docker::render_user_data(&merged)
         .map_err(|error| VmCreateFailure::new(EXIT_VM_DISK_PREP_FAILED, error))?;
     write_cloud_init_iso(
@@ -2849,7 +2801,66 @@ fn prepare_cloud_init_seed(
         &meta_data,
         &network_config,
         &user_data,
-    )
+    )?;
+    Ok(summary)
+}
+
+fn summarize_cloud_init(
+    merged: &serde_yaml::Value,
+    roles: &[String],
+    custom: bool,
+) -> CloudInitSummary {
+    let sequence = |key: &str| {
+        merged
+            .as_mapping()
+            .and_then(|map| map.get(serde_yaml::Value::String(key.to_string())))
+            .and_then(serde_yaml::Value::as_sequence)
+    };
+    let packages = sequence("packages")
+        .into_iter()
+        .flatten()
+        .filter_map(serde_yaml::Value::as_str)
+        .map(safe_cloud_init_label)
+        .collect();
+    let write_files = sequence("write_files")
+        .into_iter()
+        .flatten()
+        .filter_map(serde_yaml::Value::as_mapping)
+        .filter_map(|file| file.get(serde_yaml::Value::String("path".to_string())))
+        .filter_map(serde_yaml::Value::as_str)
+        .map(safe_cloud_init_label)
+        .collect();
+    let commands = sequence("bootcmd").map(Vec::len).unwrap_or(0)
+        + sequence("runcmd").map(Vec::len).unwrap_or(0);
+    let users = sequence("users").map(Vec::len).unwrap_or(0);
+    CloudInitSummary {
+        datasource: "nocloud",
+        custom,
+        roles: roles.to_vec(),
+        packages,
+        write_files,
+        commands,
+        users,
+    }
+}
+
+fn safe_cloud_init_label(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "authorization",
+        "private-key",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        "[redacted]".to_string()
+    } else {
+        value.chars().take(160).collect()
+    }
 }
 
 fn write_cloud_init_iso(
@@ -2903,7 +2914,7 @@ fn write_cloud_init_iso(
 }
 
 fn append_virtiofs_bind_files(write_files: &mut Vec<serde_yaml::Value>) {
-    let script = include_str!("../../../guest-agent/scripts/virtiofs-bind");
+    let script = guest_utils::VIRTIOFS_BIND_SCRIPT;
     write_files.push(serde_yaml::Value::Mapping({
         let mut file = serde_yaml::Mapping::new();
         file.insert(
@@ -2949,7 +2960,7 @@ fn append_virtiofs_bind_files(write_files: &mut Vec<serde_yaml::Value>) {
 }
 
 fn append_router_apply_files(write_files: &mut Vec<serde_yaml::Value>) {
-    let script = include_str!("../../../guest-agent/scripts/router-apply");
+    let script = guest_utils::ROUTER_APPLY_SCRIPT;
     write_files.push(serde_yaml::Value::Mapping({
         let mut file = serde_yaml::Mapping::new();
         file.insert(
@@ -2995,7 +3006,7 @@ fn append_router_apply_files(write_files: &mut Vec<serde_yaml::Value>) {
 }
 
 fn append_ca_inject_files(write_files: &mut Vec<serde_yaml::Value>) {
-    let script = include_str!("../../../guest-agent/scripts/ca-inject");
+    let script = guest_utils::CA_INJECT_SCRIPT;
     write_files.push(serde_yaml::Value::Mapping({
         let mut file = serde_yaml::Mapping::new();
         file.insert(
@@ -3062,7 +3073,7 @@ fn append_agent_privilege_files(
     write_files: &mut Vec<serde_yaml::Value>,
     runcmd: &mut Vec<serde_yaml::Value>,
 ) {
-    let unit = include_str!("../../../guest-agent/systemd/vzctl-agent.service");
+    let unit = guest_utils::AGENT_SYSTEMD_UNIT;
     write_files.push(serde_yaml::Value::Mapping({
         let mut file = serde_yaml::Mapping::new();
         file.insert(
@@ -4444,6 +4455,7 @@ fn check_supervisor() -> Check {
     let dns = &result["dns"];
     let vz_net = &result["vz_net"];
     let vz_edge = &result["vz_edge"];
+    let network_resilience = &result["network_resilience"];
     let details = json!({
         "socket": path,
         "running": true,
@@ -4458,7 +4470,15 @@ fn check_supervisor() -> Check {
         "vz_edge": vz_edge,
         "networks": result["networks"],
         "network_orphans": network_orphans,
+        "network_resilience": network_resilience,
     });
+    let resilience_state = network_resilience["state"].as_str().unwrap_or("unknown");
+    let resilience_internal_ok = network_resilience["internal_ok"].as_bool().unwrap_or(true);
+    if let Some((status, message)) =
+        resilience_doctor_status(resilience_state, resilience_internal_ok)
+    {
+        return Check::new("supervisor.health", status, message, details);
+    }
     if !vz_net_ok {
         return Check::new(
             "supervisor.health",
@@ -4509,6 +4529,25 @@ fn check_supervisor() -> Check {
         ),
         details,
     )
+}
+
+fn resilience_doctor_status(state: &str, internal_ok: bool) -> Option<(CheckStatus, String)> {
+    if !internal_ok {
+        return Some((
+            CheckStatus::Fail,
+            format!("hypernetwork internal dataplane is degraded ({state})"),
+        ));
+    }
+    if matches!(
+        state,
+        "offline" | "captive" | "conflict" | "degraded" | "suspended"
+    ) {
+        return Some((
+            CheckStatus::Warn,
+            format!("hypernetwork resilience state is {state}"),
+        ));
+    }
+    None
 }
 
 fn supervisor_failure(path: &Path, error: String) -> Check {
@@ -4624,6 +4663,21 @@ mod tests {
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/doctor.json")).unwrap();
         assert_eq!(doctor_json(&checks, 0), expected);
+    }
+
+    #[test]
+    fn doctor_warns_for_external_network_state_but_fails_internal_dataplane() {
+        for state in ["offline", "captive", "conflict", "degraded", "suspended"] {
+            assert_eq!(
+                resilience_doctor_status(state, true).map(|value| value.0),
+                Some(CheckStatus::Warn)
+            );
+        }
+        assert_eq!(
+            resilience_doctor_status("degraded", false).map(|value| value.0),
+            Some(CheckStatus::Fail)
+        );
+        assert_eq!(resilience_doctor_status("healthy", true), None);
     }
 
     #[test]
@@ -5643,6 +5697,15 @@ mod tests {
             data_disk_path: PathBuf::from("/state/vms/web/dataDisk.raw"),
             cidata_path: PathBuf::from("/state/vms/web/cidata.iso"),
             agent_token_path: PathBuf::from("/state/vms/web/agent.token"),
+            cloud_init_summary: CloudInitSummary {
+                datasource: "nocloud",
+                custom: false,
+                roles: Vec::new(),
+                packages: Vec::new(),
+                write_files: vec!["/var/lib/vzctl/agent.token".to_string()],
+                commands: 1,
+                users: 0,
+            },
             data_disk_gib: 64,
             cpus: DEFAULT_VM_CPUS,
             memory_mib: DEFAULT_VM_MEMORY_MIB,
@@ -5673,6 +5736,33 @@ mod tests {
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/vm-create.json")).unwrap();
         assert_eq!(vm_create_json(&result), expected);
+    }
+
+    #[test]
+    fn cloud_init_summary_never_contains_secret_values_or_commands() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+packages: [curl, docker-ce]
+write_files:
+  - path: /etc/example.conf
+    content: api_token=super-secret
+runcmd:
+  - [sh, -c, "send --password hunter2"]
+users:
+  - name: demo
+    passwd: hidden
+"#,
+        )
+        .unwrap();
+        let summary = summarize_cloud_init(&config, &["docker".to_string()], true);
+        let encoded = serde_json::to_string(&summary).unwrap();
+        assert_eq!(summary.packages, ["curl", "docker-ce"]);
+        assert_eq!(summary.write_files, ["/etc/example.conf"]);
+        assert_eq!(summary.commands, 1);
+        assert_eq!(summary.users, 1);
+        assert!(!encoded.contains("super-secret"));
+        assert!(!encoded.contains("hunter2"));
+        assert!(!encoded.contains("hidden"));
     }
 
     #[test]

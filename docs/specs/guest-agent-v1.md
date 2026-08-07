@@ -127,7 +127,7 @@ Success:
   "result": {
     "v": 1,
     "agent_version": "0.1.0",
-    "capabilities": ["ping", "version", "exec", "report_ip", "health", "time_hint"]
+    "capabilities": ["ping", "version", "exec", "report_ip", "health", "time_hint", "network_probe"]
   }
 }
 ```
@@ -171,6 +171,7 @@ a `rotate_token` method are not part of v1.
 | `fs.mount` | `name`, `target`, optional `read_only` | `mounted: true`, `name`, `target` | 10 s / 30 s |
 | `fs.unmount` | `name` and/or `target` | `mounted: false`, `name`, `target` | 10 s / 30 s |
 | `ca_inject` | `pem`, `fingerprint`, optional `name` | `installed: true`, `fingerprint` | 15 s / 60 s |
+| `network_probe` | `url`, optional `timeout_ms` | `classification`, `phase`, `status_code`, `latency_ms`, `redirected`, `error_code` | 5 s / 30 s |
 
 Capability `fs_mount` advertises the virtiofs bind helpers. The agent invokes
 `/usr/local/lib/vzctl/virtiofs-bind` via `sudo -n` (installed by system
@@ -189,6 +190,15 @@ mismatch before or after install is an error.
 All time values are integer milliseconds. A caller may choose a shorter
 deadline. Values above the maximum return `proto`; zero and negative values are
 invalid.
+
+### `network_probe`
+
+Die optionale Capability trennt DNS-, TCP-, TLS- und HTTP-Phase und
+klassifiziert `online`, `captive` oder `offline`. Redirects werden nicht
+verfolgt. Die URL muss HTTP(S) sein und darf keine Credentials enthalten.
+Logs und Fehler enthalten weder URL/Query noch öffentliche IP oder Secrets.
+Fehlt die Capability bei einem alten Agent, gilt das Ergebnis als `unknown`
+und degradiert das interne Netz nicht.
 
 ### `exec`
 
@@ -442,6 +452,45 @@ state/heartbeat reports.
 The supervisor treats this as indirect, ephemeral helper-owned state. A helper
 disconnect makes the state unavailable/stale; the supervisor must not infer
 that the guest stopped. Alpha persistence and E2E wiring remain #15.
+
+## Guest utils rollout
+
+The host control plane may push a **guest utils bundle** to running VMs without
+rebaking the sealed base image. The bundle contains:
+
+- `/usr/local/sbin/vzctl-agent` (cross-built ARM64 binary)
+- `/usr/local/lib/vzctl/{virtiofs-bind,router-apply,ca-inject}`
+- `/etc/sudoers.d/vzctl-{agent,virtiofs,router,ca}`
+- `/etc/systemd/system/vzctl-agent.service` (and OpenRC unit when present)
+- `/usr/lib/vzctl-agent/image-metadata.json`
+
+Rollout is triggered by `vzctl apply` (`ensure_guest_utils`, after agents are
+ready) and manually via `vzctl vm agent upgrade`. The host caches the bundle
+under `$VZCTL_STATE_DIR/guest-utils/{bundle_id}/` where `bundle_id` is
+`{agent_version}-{content_sha256_prefix}`.
+
+After a successful rollout the guest records:
+
+```json
+{
+  "bundle_id": "0.1.3-deadbeef",
+  "agent_version": "0.1.3",
+  "content_sha256": "...",
+  "updated_at": "2026-08-07T12:00:00Z"
+}
+```
+
+at `/var/lib/vzctl/utils.manifest.json`. VMs with a matching `bundle_id` are
+skipped.
+
+Binary transfer uses repeated `exec` calls with `stdin_b64` chunks (decoded cap
+256 KiB per frame). The host verifies SHA256 on the guest before atomically
+replacing the binary, backs up the previous binary to
+`/usr/local/sbin/vzctl-agent.bak`, then restarts the agent (`systemctl` or
+OpenRC). The control plane polls `version` until `agent_version` matches.
+
+Rollout failures abort `apply` (aggregated per VM, same semantics as CA
+rollout). There is no auto-rollout on `vm start` in v1.
 
 ## Security requirements
 

@@ -61,6 +61,17 @@ public struct IPv4CIDR: Equatable, Sendable {
         in_addr(s_addr: mask.bigEndian)
     }
 
+    public func overlaps(_ other: IPv4CIDR) -> Bool {
+        let upper = network | ~mask
+        let otherUpper = other.network | ~other.mask
+        return network <= otherUpper && other.network <= upper
+    }
+
+    public func contains(_ value: String) -> Bool {
+        guard let address = Self.parse(value) else { return false }
+        return (address & mask) == network
+    }
+
     private static func parse(_ value: String) -> UInt32? {
         var address = in_addr()
         guard inet_pton(AF_INET, value, &address) == 1 else { return nil }

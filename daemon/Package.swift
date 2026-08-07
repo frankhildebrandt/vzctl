@@ -26,6 +26,8 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("vmnet"),
                 .linkedFramework("Virtualization"),
+                .linkedFramework("AppKit"),
+                .linkedFramework("Network"),
             ]
         ),
         .executableTarget(

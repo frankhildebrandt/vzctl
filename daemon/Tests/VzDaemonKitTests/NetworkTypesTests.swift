@@ -15,3 +15,11 @@ import Testing
         try IPv4CIDR("10.80.0.1/24")
     }
 }
+
+@Test func cidrOverlapAndContainmentAreIndependentOfLocale() throws {
+    let hypernetwork = try IPv4CIDR("10.80.0.0/24")
+    #expect(hypernetwork.overlaps(try IPv4CIDR("10.80.0.128/25")))
+    #expect(!hypernetwork.overlaps(try IPv4CIDR("10.81.0.0/24")))
+    #expect(hypernetwork.contains("10.80.0.10"))
+    #expect(!hypernetwork.contains("10.81.0.10"))
+}

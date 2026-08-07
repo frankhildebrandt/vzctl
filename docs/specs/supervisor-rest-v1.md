@@ -51,6 +51,11 @@ Stabile Error-Codes: `bad_request`, `not_found`, `conflict`, `unauthorized`,
 | `GET` | `/v1/health` | Health (wie `daemon.health`) |
 | `GET` | `/v1/version` | Supervisor-Version |
 
+`/v1/health` und `daemon.health` enthalten additiv `network_resilience` mit
+`state`, monotoner `epoch`, `internal_ok`, Host-/Netz-Egress,
+`cidr_conflicts`, letztem Event/Fehler und Transition-Zeitpunkt. `vzctl doctor`
+meldet Offline/Captive/Konflikt als WARN und nur `internal_ok=false` als FAIL.
+
 ### Events
 
 | Method | Path | Beschreibung |
@@ -64,7 +69,10 @@ Stabile Error-Codes: `bad_request`, `not_found`, `conflict`, `unauthorized`,
 | `GET` | `/v1/jobs/{jobId}` | Job-Status (`queued`/`running`/`succeeded`/`failed`) plus `log[]` (bisherige Console-Zeilen) |
 | `GET` | `/v1/jobs/{jobId}/log` | SSE Log-Zeilen (Console); live während `running` |
 
-Job-Worker setzen `VZCTL_PROGRESS=1`, damit Image-Phasen (bake/seal/pull) auch bei `--format json` auf stderr landen und in `log[]` / SSE erscheinen. stderr wird zeilenweise gestreamt; stdout bleibt das JSON-Ergebnis.
+Job-Worker setzen `VZCTL_PROGRESS=1` und starten Stack-Jobs explizit mit
+`--progress plain`. Dadurch landen Uhrzeit, Prozent, Jobhierarchie sowie
+Image-/Cloud-init-Phasen auch bei `--format json` auf stderr und in `log[]` /
+SSE. stdout bleibt das JSON-Ergebnis.
 
 ### Stacks
 

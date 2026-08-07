@@ -128,6 +128,21 @@ Result:
 
 The blob is only valid while `vz-net` still holds the original ref.
 
+### `net.verify`
+
+Params: none or `{}`. Die Methode mutiert nichts. Sie prüft pro Live-Netz den
+vorhandenen Ref, eine frische `vmnet_network_copy_serialization` und die
+Bridge-Adresse `.0`.
+
+```json
+{"networks":[{"name":"dmz","cidr":"10.80.0.0/24","ref_ok":true,"serialization_ok":true,"bridge_ok":true,"error":null}]}
+```
+
+Ein normaler Host-Pfad-, LAN/WLAN-, VPN- oder Sleep/Wake-Wechsel darf weder
+`net.release` noch ein erneutes `net.acquire` auslösen. Nur der explizite,
+vollständig freigegebene Stack-Fallback darf das betroffene Ref nach graceful
+VM-Stopp neu erwerben.
+
 ## Lifecycle rules
 
 1. Control-plane **must not** release refs on its own shutdown or crash.

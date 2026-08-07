@@ -47,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject"}
+var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject", "network_probe"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -456,6 +456,8 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 		return handleFSUnmount(req)
 	case "ca_inject":
 		return handleCAInject(req)
+	case "network_probe":
+		return handleNetworkProbe(ctx, req)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,

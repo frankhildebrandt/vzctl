@@ -93,6 +93,10 @@ enum Operation {
         cpus: Option<u32>,
         memory_mib: Option<u64>,
     },
+    AgentUpgrade {
+        all: bool,
+        id: Option<String>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -199,6 +203,7 @@ impl Options {
             Operation::Unmount { .. } => "vm.unmount",
             Operation::Mounts { .. } => "vm.mounts",
             Operation::Modify { .. } => "vm.modify",
+            Operation::AgentUpgrade { .. } => "vm.agent.upgrade",
         }
     }
 }
@@ -210,7 +215,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
             usage(if ps_top_level {
                 "usage: vzctl ps [--format human|json]"
             } else {
-                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify ..."
+                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify|agent ..."
             })
         })?;
     let rest = args.collect::<Vec<_>>();
@@ -231,6 +236,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
         "unmount" if !ps_top_level => parse_unmount(rest),
         "mounts" if !ps_top_level => parse_mounts_list(rest),
         "modify" if !ps_top_level => parse_modify(rest),
+        "agent" if !ps_top_level => parse_agent(rest),
         other => Err(usage(if ps_top_level {
             format!("unknown ps option: {other}")
         } else {
@@ -402,6 +408,59 @@ fn parse_modify(args: Vec<String>) -> Result<Options, Failure> {
             cpus,
             memory_mib,
         },
+        format,
+    })
+}
+
+fn parse_agent(args: Vec<String>) -> Result<Options, Failure> {
+    let sub = positional(&args, "vm agent requires a subcommand (upgrade)")?;
+    if sub != "upgrade" {
+        return Err(usage(format!("unknown vm agent subcommand: {sub}")));
+    }
+    let mut format = Format::Human;
+    let mut all = false;
+    let mut id = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => {
+                all = true;
+                index += 1;
+            }
+            "--format" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--format requires human or json"))?;
+                format = match value.as_str() {
+                    "human" => Format::Human,
+                    "json" => Format::Json,
+                    other => {
+                        return Err(usage(format!("unsupported vm format: {other}")));
+                    }
+                };
+                index += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("unknown vm agent option: {other}")));
+            }
+            other => {
+                if id.is_some() {
+                    return Err(usage(format!("unexpected vm agent argument: {other}")));
+                }
+                validate_vm_id(other)?;
+                id = Some(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    if all && id.is_some() {
+        return Err(usage("vm agent upgrade accepts either --all or a VM id"));
+    }
+    if !all && id.is_none() {
+        return Err(usage("vm agent upgrade requires a VM id or --all"));
+    }
+    Ok(Options {
+        operation: Operation::AgentUpgrade { all, id },
         format,
     })
 }
@@ -912,6 +971,7 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             cpus,
             memory_mib,
         } => modify_vm(id, *cpus, *memory_mib, socket_path),
+        Operation::AgentUpgrade { all, id } => agent_upgrade_vm(*all, id.as_deref(), socket_path),
     }
 }
 
@@ -2317,7 +2377,7 @@ fn guest_virtiofs_bind_mount(
     socket_path: &Path,
 ) -> Result<(), Failure> {
     // Deploy the current helper (PrivateTmp hides /tmp from PID 1) then bind.
-    let script = include_str!("../../../guest-agent/scripts/virtiofs-bind");
+    let script = crate::guest_utils::VIRTIOFS_BIND_SCRIPT;
     let deploy_and_bind = format!(
         r#"set -eu
 helper=/usr/local/lib/vzctl/virtiofs-bind
@@ -2651,6 +2711,60 @@ fn modify_vm(
     }))
 }
 
+fn agent_upgrade_vm(all: bool, id: Option<&str>, socket_path: &Path) -> Result<Value, Failure> {
+    let targets = if all {
+        let records = rpc(socket_path, "vm.list", json!({}))?;
+        records
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|record| record["state"].as_str() == Some("running"))
+            .filter_map(|record| {
+                record["vm_id"]
+                    .as_str()
+                    .or_else(|| record["id"].as_str())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![id.unwrap_or_default().to_string()]
+    };
+    if targets.is_empty() {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "no running VMs selected for guest utils upgrade",
+        ));
+    }
+    let bundle = crate::guest_utils::ensure_cached_bundle(&crate::state_dir())
+        .map_err(|error| Failure::new(EXIT_UNAVAILABLE, error.message))?;
+    let results = crate::guest_utils::rollout_targets(&targets, &bundle, &mut |method, params| {
+        rpc(socket_path, method, params).map_err(|failure| failure.message)
+    })
+    .map_err(|error| Failure::new(EXIT_GUEST, error.message))?;
+    let upgraded = results
+        .iter()
+        .filter(|result| result["status"].as_str() == Some("upgraded"))
+        .count();
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.agent.upgrade",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": if upgraded > 0 {
+                format!("guest utils upgraded on {upgraded} VM(s)")
+            } else {
+                "guest utils already current".to_string()
+            },
+            "bundle_id": bundle.bundle_id,
+            "agent_version": bundle.agent_version,
+            "upgraded": upgraded,
+            "total": results.len(),
+        },
+        "results": results,
+    }))
+}
+
 fn read_manifest(bundle: &Path) -> Result<Value, Failure> {
     let manifest = bundle.join("vm.json");
     if !manifest.is_file() {
@@ -2690,6 +2804,18 @@ fn wait_stopped(vm_id: &str, socket_path: &Path) -> Result<(), Failure> {
     }
 }
 
+fn rpc_timeout_secs(method: &str, params: &Value) -> u64 {
+    if method == "vm.exec" || method.starts_with("vm.agent.") {
+        params
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .map(|ms| (ms / 1000).saturating_add(10).max(15))
+            .unwrap_or(40)
+    } else {
+        5
+    }
+}
+
 fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
     let mut stream = UnixStream::connect(socket_path).map_err(|error| {
         Failure::new(
@@ -2697,10 +2823,10 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
             format!("supervisor socket {}: {error}", socket_path.display()),
         )
     })?;
-    let timeout = Some(Duration::from_secs(5));
+    let timeout_secs = rpc_timeout_secs(method, &params);
     stream
-        .set_read_timeout(timeout)
-        .and_then(|_| stream.set_write_timeout(timeout))
+        .set_read_timeout(Some(Duration::from_secs(timeout_secs)))
+        .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(timeout_secs.min(10)))))
         .map_err(|error| {
             Failure::new(
                 EXIT_SUPERVISOR,
@@ -2801,7 +2927,7 @@ fn print_human(command: &str, envelope: &Value) {
             }
         }
         "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" | "vm.mount"
-        | "vm.unmount" | "vm.modify" => {
+        | "vm.unmount" | "vm.modify" | "vm.agent.upgrade" => {
             println!(
                 "{}",
                 envelope["summary"]["message"].as_str().unwrap_or(command)
@@ -3074,6 +3200,41 @@ mod tests {
             }
         );
         assert_eq!(modify.format, Format::Json);
+    }
+
+    #[test]
+    fn parse_agent_upgrade_accepts_vm_id_or_all() {
+        let upgrade = parse(
+            [
+                "agent".into(),
+                "upgrade".into(),
+                "demo/web".into(),
+                "--format".into(),
+                "json".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            upgrade.operation,
+            Operation::AgentUpgrade {
+                all: false,
+                id: Some("demo/web".into()),
+            }
+        );
+        let all = parse(
+            ["agent".into(), "upgrade".into(), "--all".into()].into_iter(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            all.operation,
+            Operation::AgentUpgrade {
+                all: true,
+                id: None,
+            }
+        );
     }
 
     #[test]

@@ -358,7 +358,7 @@ private struct DNSListener {
     let horizon: DNSHorizon
 }
 
-private struct DNSQuestion {
+struct DNSQuestion {
     let name: String
     let type: UInt16
     let dnsClass: UInt16
@@ -366,7 +366,10 @@ private struct DNSQuestion {
 }
 
 final class DNSServer: @unchecked Sendable {
+    typealias SystemResolve = @Sendable (Data, DNSQuestion) -> Data?
+
     private let configuration: DNSConfiguration
+    private let systemResolve: SystemResolve
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "dev.vzctl.dns", attributes: .concurrent)
     private var zone: DNSZone
@@ -378,8 +381,14 @@ final class DNSServer: @unchecked Sendable {
     private var lastError: String?
     private var stopped = false
 
-    init(configuration: DNSConfiguration = .environment()) {
+    init(
+        configuration: DNSConfiguration = .environment(),
+        systemResolve: @escaping SystemResolve = {
+            SystemDNSResolver.resolve(request: $0, question: $1)
+        }
+    ) {
         self.configuration = configuration
+        self.systemResolve = systemResolve
         zone = DNSZone(
             records: [:],
             wildcardRecords: [:],
@@ -654,6 +663,10 @@ final class DNSServer: @unchecked Sendable {
                 responseCode: exists ? 0 : 3
             )
         }
+        if configuration.upstream == "system" {
+            return systemResolve(request, question)
+                ?? errorResponse(request, responseCode: 2)
+        }
         return forward(request) ?? errorResponse(request, responseCode: 2)
     }
 
@@ -702,23 +715,10 @@ final class DNSServer: @unchecked Sendable {
     }
 
     private func upstreamEndpoints() -> [String] {
-        if configuration.upstream != "system" {
-            return configuration.upstream
-                .split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespaces) }
-                .map { $0.contains(":") ? $0 : endpoint($0, 53) }
-        }
-        guard let resolv = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8)
-        else {
-            return []
-        }
-        return resolv.split(separator: "\n").compactMap { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2, fields[0] == "nameserver" else { return nil }
-            let address = String(fields[1])
-            guard ipv4Bytes(address) != nil else { return nil }
-            return endpoint(address, 53)
-        }
+        configuration.upstream
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .map { $0.contains(":") ? $0 : endpoint($0, 53) }
     }
 }
 

@@ -28,6 +28,12 @@ restart it restores the last successfully applied generation before the control
 plane reconnects. A corrupt manifest is never interpreted as an empty desired
 state; health remains degraded until a fresh reconcile succeeds.
 
+Bei Host-Netzwechsel oder Wake wendet der Supervisor dasselbe Manifest
+idempotent erneut an. PF-Regeln, `.1`-Aliase, DNS, Ports und Ingress dürfen
+dabei keine VM-/vmnet-Identität ändern. DNS-Upstream `system` verwendet den
+macOS-Systemresolver statt `/etc/resolv.conf`; explizite UDP-Upstreams bleiben
+unverändert.
+
 ## Methods
 
 ### `edge.health` / `edge.status`

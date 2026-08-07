@@ -42,9 +42,13 @@ Jede apply-Op = eine Journal-Row (SQLite):
 ### Steps (Alpha, geordnet)
 
 ```
-validate → acquire_lease → ensure_nets → ensure_dns →
-ensure_images → ensure_vms → attach_nets → start_helpers →
-await_agents → apply_routes_policies → release_lease → done
+validate → acquire_lease → ensure_nets → ensure_dns → ensure_ca →
+ensure_images → attach_nets → ensure_vms → start_helpers →
+await_agents → await_cloud_init → ensure_guest_utils →
+ensure_docker_project_mount → ensure_oidc → ensure_ingress →
+ensure_ca_rollout → ensure_oidc_inject → ensure_docker_context →
+ensure_containers → ensure_ports → apply_routes_policies →
+release_lease → done
 ```
 
 `down`: stop_helpers → detach → destroy_vms? → release_nets? → dns_cleanup?  

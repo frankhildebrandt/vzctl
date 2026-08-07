@@ -73,6 +73,9 @@ pub(crate) struct Spec {
     ))]
     pub(crate) domain: String,
     pub(crate) dns: DnsConfig,
+    /// Host network/sleep recovery policy. Persisted by apply in the supervisor.
+    #[serde(default)]
+    pub(crate) resilience: ResilienceConfig,
     #[schemars(length(min = 1))]
     pub(crate) images: BTreeMap<String, ImageConfig>,
     #[schemars(length(min = 1))]
@@ -96,6 +99,53 @@ pub(crate) struct Spec {
     pub(crate) oidc: Option<OidcConfig>,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResilienceConfig {
+    #[serde(default)]
+    pub(crate) network: NetworkResilienceConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NetworkResilienceConfig {
+    #[serde(default, rename = "egressProbe")]
+    pub(crate) egress_probe: EgressProbeConfig,
+    #[serde(default, rename = "restartVMsOnStuckEgress")]
+    pub(crate) restart_vms_on_stuck_egress: bool,
+}
+
+impl Default for NetworkResilienceConfig {
+    fn default() -> Self {
+        Self {
+            egress_probe: EgressProbeConfig::default(),
+            restart_vms_on_stuck_egress: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EgressProbeConfig {
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+    #[serde(default = "default_egress_probe_url")]
+    pub(crate) url: String,
+}
+
+impl Default for EgressProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            url: default_egress_probe_url(),
+        }
+    }
+}
+
+fn default_egress_probe_url() -> String {
+    "https://captive.apple.com/".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -640,6 +690,15 @@ fn validate_references(
     let mut issues = Vec::new();
     let mut networks = BTreeMap::new();
 
+    let probe = &environment.spec.resilience.network.egress_probe;
+    if probe.enabled && !valid_probe_url(&probe.url) {
+        issues.push(ValidationIssue::new(
+            "$.spec.resilience.network.egressProbe.url",
+            "egress probe URL must be http(s), include a host, and contain no credentials",
+            "semantic",
+        ));
+    }
+
     validate_name_keys("$.spec.images", environment.spec.images.keys(), &mut issues);
     for (name, image) in &environment.spec.images {
         if !valid_image_tag(&image.tag) {
@@ -1140,6 +1199,15 @@ fn validate_references(
     validate_certs_ingress_oidc(environment, &mut issues);
     sort_and_deduplicate(&mut issues);
     issues
+}
+
+fn valid_probe_url(value: &str) -> bool {
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"));
+    let Some(rest) = rest else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !authority.is_empty() && !authority.contains('@') && !authority.chars().any(char::is_whitespace)
 }
 
 fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<ValidationIssue>) {
@@ -2221,6 +2289,519 @@ impl ValidationIssue {
     }
 }
 
+/// Normalize a project name like the UI scaffold (lowercase, safe chars, max 63).
+pub(crate) fn normalize_project_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut normalized = trimmed.to_ascii_lowercase();
+    normalized = normalized
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while normalized.starts_with('-') {
+        normalized.remove(0);
+    }
+    while normalized.ends_with('-') {
+        normalized.pop();
+    }
+    if normalized.len() > 63 {
+        normalized.truncate(63);
+        while normalized.ends_with('-') {
+            normalized.pop();
+        }
+    }
+    if normalized.is_empty() {
+        return None;
+    }
+    let first = normalized.chars().next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return None;
+    }
+    if !normalized
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+pub(crate) fn scaffold_environment(name: &str, cidr: &str) -> Result<Environment, String> {
+    let name = normalize_project_name(name).ok_or("invalid or empty project name")?;
+    if cidr.parse::<Ipv4Net>().is_err() {
+        return Err(format!("invalid CIDR: {cidr}"));
+    }
+    Ok(Environment {
+        api_version: ConfigApiVersion::HypernetworkV1,
+        kind: ConfigKind::Environment,
+        metadata: Metadata { name: name.clone() },
+        spec: Spec {
+            project: name.clone(),
+            domain: format!("{name}.vz.test"),
+            dns: DnsConfig {
+                enabled: true,
+                host_resolver: true,
+                host_listen: "127.0.0.1:15353".to_string(),
+                forward: DnsForward {
+                    enabled: true,
+                    upstream: "system".to_string(),
+                },
+            },
+            resilience: ResilienceConfig {
+                network: NetworkResilienceConfig::default(),
+            },
+            images: BTreeMap::from([(
+                "ubuntu-base".to_string(),
+                ImageConfig {
+                    from: "ubuntu-latest".to_string(),
+                    role: ImageRole::Base,
+                    tag: "v1".to_string(),
+                },
+            )]),
+            networks: BTreeMap::from([(
+                "lan".to_string(),
+                NetworkConfig {
+                    cidr: cidr.to_string(),
+                    mode: NetworkMode::Shared,
+                    dhcp: false,
+                    nat_egress: true,
+                    backend: NetworkBackend::Vmnet,
+                },
+            )]),
+            routes: Vec::new(),
+            policies: Vec::new(),
+            ports: Vec::new(),
+            volumes: BTreeMap::new(),
+            certs: None,
+            ingress: None,
+            oidc: None,
+            vms: BTreeMap::new(),
+        },
+    })
+}
+
+pub(crate) fn next_free_ip(
+    environment: &Environment,
+    network_name: &str,
+) -> Result<String, String> {
+    let network = environment
+        .spec
+        .networks
+        .get(network_name)
+        .ok_or_else(|| format!("unknown network {network_name:?}"))?;
+    let cidr = network
+        .cidr
+        .parse::<Ipv4Net>()
+        .map_err(|error| format!("invalid CIDR {}: {error}", network.cidr))?;
+    let mut used = BTreeSet::new();
+    for vm in environment.spec.vms.values() {
+        for attachment in &vm.networks {
+            if attachment.name == network_name {
+                if let Ok(ip) = attachment.ip.parse::<Ipv4Addr>() {
+                    used.insert(ip);
+                }
+            }
+        }
+    }
+    if network.backend == NetworkBackend::Docker {
+        let ip = offset_ip(cidr, 2)?;
+        if used.contains(&ip) {
+            return Err(format!(
+                "docker network {network_name:?} already has owner at {ip}"
+            ));
+        }
+        return Ok(ip.to_string());
+    }
+    for offset in 10..254 {
+        let ip = offset_ip(cidr, offset)?;
+        if cidr.contains(&ip) && !used.contains(&ip) {
+            return Ok(ip.to_string());
+        }
+    }
+    Err(format!("no free IP on network {network_name:?}"))
+}
+
+fn offset_ip(cidr: Ipv4Net, offset: u32) -> Result<Ipv4Addr, String> {
+    let network = u32::from(cidr.network());
+    let broadcast = u32::from(cidr.broadcast());
+    let candidate = network + offset;
+    if candidate > broadcast {
+        return Err(format!("host offset {offset} out of range for {cidr}"));
+    }
+    Ok(Ipv4Addr::from(candidate))
+}
+
+pub(crate) fn serialize_environment_yaml(environment: &Environment) -> String {
+    let spec = &environment.spec;
+    let mut spec_map = serde_json::Map::new();
+    spec_map.insert("project".to_string(), json!(spec.project));
+    spec_map.insert("domain".to_string(), json!(spec.domain));
+    spec_map.insert("dns".to_string(), serde_json::to_value(&spec.dns).unwrap());
+    spec_map.insert(
+        "images".to_string(),
+        serde_json::to_value(&spec.images).unwrap(),
+    );
+    spec_map.insert(
+        "networks".to_string(),
+        serde_json::to_value(&spec.networks).unwrap(),
+    );
+    spec_map.insert("routes".to_string(), json!(spec.routes));
+    spec_map.insert("policies".to_string(), json!(spec.policies));
+    if !spec.volumes.is_empty() {
+        spec_map.insert(
+            "volumes".to_string(),
+            serde_json::to_value(&spec.volumes).unwrap(),
+        );
+    }
+    if !spec.ports.is_empty() {
+        spec_map.insert("ports".to_string(), json!(spec.ports));
+    }
+    if spec.certs.is_some() {
+        spec_map.insert(
+            "certs".to_string(),
+            serde_json::to_value(&spec.certs).unwrap(),
+        );
+    }
+    if spec.ingress.is_some() {
+        spec_map.insert(
+            "ingress".to_string(),
+            serde_json::to_value(&spec.ingress).unwrap(),
+        );
+    }
+    if spec.oidc.is_some() {
+        spec_map.insert(
+            "oidc".to_string(),
+            serde_json::to_value(&spec.oidc).unwrap(),
+        );
+    }
+    spec_map.insert(
+        "resilience".to_string(),
+        serde_json::to_value(&spec.resilience).unwrap(),
+    );
+    spec_map.insert("vms".to_string(), serde_json::to_value(&spec.vms).unwrap());
+
+    let document = json!({
+        "apiVersion": "hypernetwork/v1",
+        "kind": "Environment",
+        "metadata": { "name": environment.metadata.name },
+        "spec": Value::Object(spec_map),
+    });
+    serde_yaml::to_string(&document).expect("hypernetwork environment always serializes to YAML")
+}
+
+pub(crate) fn write_environment_atomic(
+    path: &Path,
+    environment: &Environment,
+) -> Result<Environment, Vec<ValidationIssue>> {
+    let config_dir = path.parent();
+    let yaml = serialize_environment_yaml(environment);
+    let validated = validate_source_with_base(&yaml, config_dir.as_deref())?;
+    let tmp_path = path.with_extension("yaml.tmp");
+    fs::write(&tmp_path, yaml).map_err(|error| {
+        vec![ValidationIssue::new(
+            "$",
+            format!("cannot write {}: {error}", tmp_path.display()),
+            "io",
+        )]
+    })?;
+    fs::rename(&tmp_path, path).map_err(|error| {
+        vec![ValidationIssue::new(
+            "$",
+            format!(
+                "cannot rename {} to {}: {error}",
+                tmp_path.display(),
+                path.display()
+            ),
+            "io",
+        )]
+    })?;
+    Ok(validated)
+}
+
+pub(crate) struct AddVmOptions {
+    pub(crate) from_image: String,
+    pub(crate) network: Option<String>,
+    pub(crate) ip: Option<String>,
+    pub(crate) data_disk: String,
+    pub(crate) cpus: Option<u32>,
+    pub(crate) memory: Option<String>,
+    pub(crate) roles: Vec<String>,
+    pub(crate) cloud_init: Option<String>,
+}
+
+/// Resolve a VM `from` reference: image config key or pull alias (`spec.images.*.from`).
+pub(crate) fn resolve_image_key(
+    environment: &Environment,
+    reference: &str,
+) -> Result<String, String> {
+    if environment.spec.images.contains_key(reference) {
+        return Ok(reference.to_string());
+    }
+    let matches = environment
+        .spec
+        .images
+        .iter()
+        .filter(|(_, image)| image.from == reference)
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => {
+            let available = environment
+                .spec
+                .images
+                .iter()
+                .map(|(key, image)| format!("{key} (from {alias})", alias = image.from))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "unknown image {reference:?}; available: {available}"
+            ))
+        }
+        1 => Ok(matches[0].clone()),
+        _ => Err(format!(
+            "image alias {reference:?} is ambiguous; use one of: {}",
+            matches.join(", ")
+        )),
+    }
+}
+
+pub(crate) fn add_vm(
+    environment: &mut Environment,
+    name: &str,
+    options: &AddVmOptions,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.vms.contains_key(name) {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.vms", name),
+            format!("VM {name:?} already exists"),
+            "semantic",
+        )]);
+    }
+    let from_image = resolve_image_key(environment, &options.from_image)
+        .map_err(|message| vec![ValidationIssue::new("$.spec.images", message, "semantic")])?;
+    let network_name = if let Some(name) = options.network.clone() {
+        name
+    } else {
+        environment
+            .spec
+            .networks
+            .keys()
+            .next()
+            .cloned()
+            .ok_or_else(|| {
+                vec![ValidationIssue::new(
+                    "$.spec.networks",
+                    "no networks defined; add a network first",
+                    "semantic",
+                )]
+            })?
+    };
+    if !environment.spec.networks.contains_key(&network_name) {
+        return Err(vec![ValidationIssue::new(
+            "$.spec.networks",
+            format!("unknown network {network_name:?}"),
+            "semantic",
+        )]);
+    }
+    let ip = match &options.ip {
+        Some(ip) => ip.clone(),
+        None => next_free_ip(environment, &network_name).map_err(|message| {
+            vec![ValidationIssue::new(
+                json_path_key("$.spec.vms", name),
+                message,
+                "semantic",
+            )]
+        })?,
+    };
+    environment.spec.vms.insert(
+        name.to_string(),
+        VmConfig {
+            from: from_image,
+            clone: CloneMode::Linked,
+            data_disk: options.data_disk.clone(),
+            cpus: options.cpus,
+            memory: options.memory.clone(),
+            networks: vec![VmNetwork {
+                name: network_name,
+                ip,
+            }],
+            cloud_init: options.cloud_init.clone(),
+            depends_on: Vec::new(),
+            roles: options.roles.clone(),
+            requires: Vec::new(),
+            ports: Vec::new(),
+            mounts: Vec::new(),
+            compose_files: Vec::new(),
+            containers: BTreeMap::new(),
+        },
+    );
+    Ok(())
+}
+
+pub(crate) fn remove_vm(
+    environment: &mut Environment,
+    name: &str,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.vms.remove(name).is_none() {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.vms", name),
+            format!("VM {name:?} does not exist"),
+            "semantic",
+        )]);
+    }
+    Ok(())
+}
+
+pub(crate) struct AddNetworkOptions {
+    pub(crate) cidr: String,
+    pub(crate) mode: NetworkMode,
+    pub(crate) backend: NetworkBackend,
+    pub(crate) nat_egress: bool,
+}
+
+pub(crate) fn add_network(
+    environment: &mut Environment,
+    name: &str,
+    options: &AddNetworkOptions,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.networks.contains_key(name) {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.networks", name),
+            format!("network {name:?} already exists"),
+            "semantic",
+        )]);
+    }
+    environment.spec.networks.insert(
+        name.to_string(),
+        NetworkConfig {
+            cidr: options.cidr.clone(),
+            mode: options.mode,
+            dhcp: false,
+            nat_egress: options.nat_egress,
+            backend: options.backend,
+        },
+    );
+    Ok(())
+}
+
+pub(crate) fn remove_network(
+    environment: &mut Environment,
+    name: &str,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.networks.remove(name).is_none() {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.networks", name),
+            format!("network {name:?} does not exist"),
+            "semantic",
+        )]);
+    }
+    Ok(())
+}
+
+pub(crate) fn add_volume(
+    environment: &mut Environment,
+    name: &str,
+    path: &str,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.volumes.contains_key(name) {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.volumes", name),
+            format!("volume {name:?} already exists"),
+            "semantic",
+        )]);
+    }
+    environment
+        .spec
+        .volumes
+        .insert(name.to_string(), path.to_string());
+    Ok(())
+}
+
+pub(crate) fn remove_volume(
+    environment: &mut Environment,
+    name: &str,
+) -> Result<(), Vec<ValidationIssue>> {
+    if environment.spec.volumes.remove(name).is_none() {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.volumes", name),
+            format!("volume {name:?} does not exist"),
+            "semantic",
+        )]);
+    }
+    Ok(())
+}
+
+pub(crate) fn add_mount(
+    environment: &mut Environment,
+    vm_name: &str,
+    source: &str,
+    target: &str,
+    read_only: bool,
+) -> Result<(), Vec<ValidationIssue>> {
+    let vm = environment.spec.vms.get_mut(vm_name).ok_or_else(|| {
+        vec![ValidationIssue::new(
+            json_path_key("$.spec.vms", vm_name),
+            format!("VM {vm_name:?} does not exist"),
+            "semantic",
+        )]
+    })?;
+    if !environment.spec.volumes.contains_key(source) {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.volumes", source),
+            format!("unknown volume {source:?}"),
+            "semantic",
+        )]);
+    }
+    if vm.mounts.iter().any(|mount| mount.target == target) {
+        return Err(vec![ValidationIssue::new(
+            json_path_key("$.spec.vms", vm_name),
+            format!("mount target {target:?} already exists on VM {vm_name:?}"),
+            "semantic",
+        )]);
+    }
+    vm.mounts.push(VmMount {
+        source: source.to_string(),
+        target: target.to_string(),
+        read_only,
+    });
+    Ok(())
+}
+
+pub(crate) fn remove_mount(
+    environment: &mut Environment,
+    vm_name: &str,
+    target: &str,
+) -> Result<(), Vec<ValidationIssue>> {
+    let vm = environment.spec.vms.get_mut(vm_name).ok_or_else(|| {
+        vec![ValidationIssue::new(
+            json_path_key("$.spec.vms", vm_name),
+            format!("VM {vm_name:?} does not exist"),
+            "semantic",
+        )]
+    })?;
+    let index = vm
+        .mounts
+        .iter()
+        .position(|mount| mount.target == target)
+        .ok_or_else(|| {
+            vec![ValidationIssue::new(
+                json_path_key("$.spec.vms", vm_name),
+                format!("mount target {target:?} not found on VM {vm_name:?}"),
+                "semantic",
+            )]
+        })?;
+    vm.mounts.remove(index);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3064,5 +3645,89 @@ spec:
             pointer_to_json_path("/spec/vms/weird.name/from"),
             "$.spec.vms[\"weird.name\"].from"
         );
+    }
+
+    #[test]
+    fn resilience_defaults_safe_and_validates_probe_url() {
+        let source = include_str!("../tests/fixtures/validate/valid-full.yaml");
+        let environment = validate_source(source).unwrap();
+        assert!(environment.spec.resilience.network.egress_probe.enabled);
+        assert_eq!(
+            environment.spec.resilience.network.egress_probe.url,
+            "https://captive.apple.com/"
+        );
+        assert!(
+            !environment
+                .spec
+                .resilience
+                .network
+                .restart_vms_on_stuck_egress
+        );
+
+        let invalid = source.replacen(
+            "\n  vms:",
+            "\n  resilience:\n    network:\n      egressProbe:\n        enabled: true\n        url: https://user:secret@example.com/\n      restartVMsOnStuckEgress: false\n  vms:",
+            1,
+        );
+        let issues = validate_source(&invalid).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.path.contains("resilience.network.egressProbe.url")));
+    }
+
+    #[test]
+    fn scaffold_environment_matches_ui_defaults() {
+        let environment = scaffold_environment("My Lab", "10.80.0.0/24").unwrap();
+        assert_eq!(environment.metadata.name, "my-lab");
+        assert_eq!(environment.spec.project, "my-lab");
+        assert_eq!(environment.spec.domain, "my-lab.vz.test");
+        assert_eq!(environment.spec.networks["lan"].cidr, "10.80.0.0/24");
+        assert!(environment.spec.images.contains_key("ubuntu-base"));
+        assert!(environment.spec.vms.is_empty());
+        validate_source(&serialize_environment_yaml(&environment)).unwrap();
+    }
+
+    #[test]
+    fn resolve_image_key_accepts_config_key_or_pull_alias() {
+        let environment = scaffold_environment("lab", "10.80.0.0/24").unwrap();
+        assert_eq!(
+            resolve_image_key(&environment, "ubuntu-base").unwrap(),
+            "ubuntu-base"
+        );
+        assert_eq!(
+            resolve_image_key(&environment, "ubuntu-latest").unwrap(),
+            "ubuntu-base"
+        );
+        assert!(resolve_image_key(&environment, "missing").is_err());
+    }
+
+    #[test]
+    fn next_free_ip_skips_used_addresses() {
+        let mut environment = scaffold_environment("lab", "10.80.0.0/24").unwrap();
+        add_vm(
+            &mut environment,
+            "web",
+            &AddVmOptions {
+                from_image: "ubuntu-base".to_string(),
+                network: Some("lan".to_string()),
+                ip: Some("10.80.0.10".to_string()),
+                data_disk: "4G".to_string(),
+                cpus: None,
+                memory: None,
+                roles: Vec::new(),
+                cloud_init: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(next_free_ip(&environment, "lan").unwrap(), "10.80.0.11");
+    }
+
+    #[test]
+    fn serialize_round_trips_through_validator() {
+        let environment = scaffold_environment("lab", "10.80.0.0/24").unwrap();
+        let yaml = serialize_environment_yaml(&environment);
+        assert!(yaml.contains("apiVersion: hypernetwork/v1"));
+        assert!(yaml.contains("resilience:"));
+        validate_source(&yaml).unwrap();
     }
 }

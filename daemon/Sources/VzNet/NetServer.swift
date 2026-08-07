@@ -203,6 +203,11 @@ final class NetServer: @unchecked Sendable {
                     ]),
                     id: id
                 )
+            case "net.verify":
+                return JSONRPCResponse(
+                    result: .object(["networks": .array(try store.verify())]),
+                    id: id
+                )
             default:
                 return JSONRPCResponse(
                     error: JSONRPCError(code: -32601, message: "Method not found"),

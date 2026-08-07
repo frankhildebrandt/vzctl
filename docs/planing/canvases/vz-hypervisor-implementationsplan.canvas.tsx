@@ -189,6 +189,9 @@ export default function VzHypervisorImplementationsplan() {
           <Pill tone="success" size="sm" active>
             #37 apply
           </Pill>
+          <Pill tone="success" size="sm" active>
+            Network Resilience
+          </Pill>
           <Pill tone="warning" size="sm">
             v0.1 Alpha
           </Pill>
@@ -204,7 +207,8 @@ export default function VzHypervisorImplementationsplan() {
       <Callout tone="success" title="G0 Go — Netz/DNS/Router/Crash">
         Dual-Net, UDP-DNS auf <Code>.0</Code>, Router <Code>.2</Code>, Crash-Semantik
         gemessen. <Code>kill -9</Code> Monolith = VM tot + Subnet-Leak → Helper-Modell
-        (ADR 0002 Accepted). Sleep: manuelle Prozedur / Alpha-Risiko.
+        (ADR 0002 Accepted). Sleep/LAN/WLAN/VPN: Host-Network-Reconciler,
+        monotone Epoch, Systemresolver und macOS-26-Lab-Suite implementiert.
         Protokoll: <Code>docs/spikes/g0-network.md</Code>
       </Callout>
 
@@ -351,6 +355,10 @@ export default function VzHypervisorImplementationsplan() {
                 </Text>
                 <Text size="small" tone="secondary">
                   Live-Boot/Sleep Residual bis Base-Raw vom Builder
+                </Text>
+                <Text size="small" tone="secondary">
+                  Guest-Utils Live-Rollout: apply <Code>ensure_guest_utils</Code>{" "}
+                  + <Code>vm agent upgrade</Code> (ohne Re-Bake)
                 </Text>
               </Stack>
             </CardBody>
@@ -535,6 +543,11 @@ export default function VzHypervisorImplementationsplan() {
           Guests <Code>.10+</Code>. <Code>routes</Code> + <Code>policies</Code>{" "}
           für DMZ.
         </Text>
+        <Callout tone="success" title="Netzwechsel + Sleep resilient">
+          <Code>NWPathMonitor</Code> + Wake, 2 s Debounce, maximal 30 s Recovery.
+          Default ohne Restart/Recreate; CIDR-Konflikte nur Diagnose. Optionaler
+          Stack-Fallback ausschließlich bei vollständigem Opt-in aller Attachments.
+        </Callout>
       </Stack>
 
       <Stack gap={12}>
@@ -713,6 +726,7 @@ spec:
         <H2>CLI (Zielbild)</H2>
         <Stack gap={4}>
           <Struck>vzctl validate · --schema</Struck>
+          <Struck>vzctl stack init|vm|net|volume|mount</Struck>
           <Struck>vzctl vm create|… (create/from/data-disk/role)</Struck>
           <Struck>vzctl image pull|bake|seal</Struck>
           <Struck>vzctl net create|attach|list|detach|delete|default</Struck>
@@ -778,7 +792,7 @@ spec:
       <Stack gap={12}>
         <H2>Repo-Layout (Ist)</H2>
         <Code>{`vzctl/
-  crates/vzctl/     # Rust CLI (validate, dns, net, image, doctor, …)
+  crates/vzctl/     # Rust CLI (validate, stack, dns, net, image, doctor, …)
   daemon/           # vz-supervisor + vz-helper (ADR 0002)
   guest-agent/      # Go vzctl-agent + systemd + NoCloud seed
   docs/adr/         # 0001–0003 Accepted

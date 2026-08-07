@@ -88,6 +88,42 @@ export const DnsConfigSchema = z.object({
     .default({ enabled: true, upstream: "system" }),
 });
 
+export const EgressProbeSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    url: z
+      .url()
+      .default("https://captive.apple.com/")
+      .refine((value) => {
+        const parsed = new URL(value);
+        return (
+          (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+          parsed.username === "" &&
+          parsed.password === ""
+        );
+      }, "Probe-URL muss HTTP(S) sein und darf keine Zugangsdaten enthalten"),
+  })
+  .strict();
+
+export const NetworkResilienceSchema = z
+  .object({
+    egressProbe: EgressProbeSchema.default({
+      enabled: true,
+      url: "https://captive.apple.com/",
+    }),
+    restartVMsOnStuckEgress: z.boolean().default(false),
+  })
+  .strict();
+
+export const ResilienceSchema = z
+  .object({
+    network: NetworkResilienceSchema.default({
+      egressProbe: { enabled: true, url: "https://captive.apple.com/" },
+      restartVMsOnStuckEgress: false,
+    }),
+  })
+  .strict();
+
 export const OidcUplinkSchema = z
   .object({
     type: z.enum(["oidc", "github", "microsoft", "discord"]).optional(),
@@ -134,6 +170,7 @@ export const SpecSchema = z.object({
   certs: z.unknown().optional(),
   ingress: z.unknown().optional(),
   oidc: OidcConfigSchema.optional(),
+  resilience: ResilienceSchema.optional(),
 });
 
 export const EnvironmentSchema = z.object({

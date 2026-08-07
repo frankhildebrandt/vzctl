@@ -1,4 +1,8 @@
 use crate::config::{self, Environment, VmConfig};
+use crate::progress::{
+    self, parse_progress_flag, resolve_progress_mode, ProgressMessage, ProgressMode,
+    ProgressReporter, APPLY_STEPS, DOWN_STEPS,
+};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,6 +14,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 const API_VERSION: &str = "vzctl.dev/v1";
@@ -19,31 +25,6 @@ const EXIT_INCOMPLETE: u8 = crate::EXIT_INCOMPLETE_JOURNAL;
 const EXIT_LEASE: u8 = crate::EXIT_LEASE_HELD;
 const EXIT_SUPERVISOR: u8 = 10;
 const EXIT_STEP: u8 = 24;
-
-const APPLY_STEPS: &[&str] = &[
-    "validate",
-    "acquire_lease",
-    "ensure_nets",
-    "ensure_dns",
-    "ensure_ca",
-    "ensure_images",
-    // Attach desired IPs before create so ensure_vm_network / cidata reuse them
-    // instead of auto-allocating .10+ that later diverge from DB attachments.
-    "attach_nets",
-    "ensure_vms",
-    "start_helpers",
-    "await_agents",
-    "ensure_docker_project_mount",
-    "ensure_oidc",
-    "ensure_ingress",
-    "ensure_ca_rollout",
-    "ensure_oidc_inject",
-    "ensure_docker_context",
-    "ensure_containers",
-    "ensure_ports",
-    "apply_routes_policies",
-    "release_lease",
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Format {
@@ -83,6 +64,7 @@ struct Options {
     resume: bool,
     abort: bool,
     purge: bool,
+    progress: ProgressMode,
 }
 
 #[derive(Debug)]
@@ -128,7 +110,31 @@ pub(crate) fn command(
             return ExitCode::from(failure.code);
         }
     };
-    match run(&options, socket_path) {
+    if options.progress == ProgressMode::Ui && progress::ui_available() {
+        return run_with_ui(&options, socket_path);
+    }
+    let progress_mode = if options.progress == ProgressMode::Ui {
+        eprintln!("progress dashboard requires an interactive terminal; using plain output");
+        ProgressMode::Plain
+    } else {
+        options.progress
+    };
+    let steps = if options.mode == Mode::Down {
+        DOWN_STEPS
+    } else {
+        APPLY_STEPS
+    };
+    let mut reporter = ProgressReporter::new(progress_mode, None, steps);
+    let _listener = if reporter.enabled() {
+        Some(progress::spawn_event_listener(
+            socket_path,
+            None,
+            Some(reporter.percent_handle()),
+        ))
+    } else {
+        None
+    };
+    match run(&options, socket_path, &mut reporter) {
         Ok(output) => {
             emit_success(&options, &output);
             ExitCode::SUCCESS
@@ -140,7 +146,53 @@ pub(crate) fn command(
     }
 }
 
-fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
+fn run_with_ui(options: &Options, socket_path: &Path) -> ExitCode {
+    let (tx, rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let _listener = progress::spawn_event_listener(socket_path, Some(tx.clone()), None);
+    let steps: &[&str] = if options.mode == Mode::Down {
+        DOWN_STEPS
+    } else {
+        APPLY_STEPS
+    };
+    let title = format!("{} {}", options.mode.command(), options.config.display());
+    let apply_options = options.clone();
+    let apply_socket = socket_path.to_path_buf();
+    let ui_result = progress::run_ui_session(&title, rx, move || {
+        let mut reporter = ProgressReporter::new(ProgressMode::Ui, Some(tx), steps);
+        let result = run(&apply_options, &apply_socket, &mut reporter);
+        let _ = result_tx.send(match &result {
+            Ok(output) => Ok(output.clone()),
+            Err(failure) => Err(Failure::new(failure.code, failure.message.clone())),
+        });
+        result.map(|_| ()).map_err(|failure| failure.message)
+    });
+    let mode_command = options.mode.command();
+    let format = options.format;
+    match ui_result {
+        Ok(()) => match result_rx.recv() {
+            Ok(Ok(output)) => {
+                emit_success(options, &output);
+                ExitCode::SUCCESS
+            }
+            Ok(Err(failure)) => {
+                emit_failure(format, mode_command, &failure);
+                ExitCode::from(failure.code)
+            }
+            Err(_) => ExitCode::SUCCESS,
+        },
+        Err(message) => {
+            emit_failure(format, mode_command, &Failure::new(EXIT_STEP, message));
+            ExitCode::from(EXIT_STEP)
+        }
+    }
+}
+
+fn run(
+    options: &Options,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<Value, Failure> {
     let environment = load_config(&options.config)?;
     let stack_id = stack_id(&environment);
     let desired = desired_resources(&environment)?;
@@ -185,6 +237,16 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
     }
 
     let plan = build_plan(effective_mode, desired, actual);
+    let vm_ids = if effective_mode != Mode::Down {
+        let vm_ids = dependency_order(&environment.spec.vms)?
+            .into_iter()
+            .map(|name| vm_runtime_id(&environment, &name))
+            .collect::<Vec<_>>();
+        progress.add_vm_jobs(&vm_ids);
+        vm_ids
+    } else {
+        Vec::new()
+    };
 
     let holder = holder();
     let mode = if options.resume {
@@ -225,18 +287,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         .resume
         .then(|| journal["step"].as_str().unwrap_or("validate").to_string());
     let steps = if effective_mode == Mode::Down {
-        vec![
-            "purge_ingress",
-            "purge_dns_records",
-            "purge_oidc",
-            "stop_helpers",
-            "detach_nets",
-            "destroy_managed",
-            "purge_docker_context",
-            "purge_ports",
-            "dns_cleanup",
-            "release_lease",
-        ]
+        DOWN_STEPS.to_vec()
     } else {
         APPLY_STEPS.to_vec()
     };
@@ -246,9 +297,12 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         if !reached_resume {
             reached_resume = resume_step.as_deref() == Some(step);
             if !reached_resume {
+                progress.job_skip(&format!("step:{step}"), "bereits im Journal abgeschlossen");
+                mark_resumed_vm_jobs(progress, &vm_ids, step);
                 continue;
             }
         }
+        progress.step_start(step);
         checkpoint(
             socket_path,
             &journal_id,
@@ -261,9 +315,14 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         let mut execution_options = options.clone();
         execution_options.mode = effective_mode;
         execution_options.purge = effective_purge;
-        if let Err(failure) =
-            execute_step(step, &execution_options, &environment, &plan, socket_path)
-        {
+        if let Err(failure) = execute_step(
+            step,
+            &execution_options,
+            &environment,
+            &plan,
+            socket_path,
+            progress,
+        ) {
             let _ = checkpoint(
                 socket_path,
                 &journal_id,
@@ -273,6 +332,8 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
                 "failed",
                 Some(&failure.message),
             );
+            progress.job_fail(&format!("step:{step}"), &failure.message);
+            progress.finished(false, &failure.message);
             return Err(failure);
         }
         checkpoint(
@@ -284,6 +345,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             "completed",
             None,
         )?;
+        progress.step_done(step);
     }
 
     let final_resources = if effective_mode == Mode::Down && effective_purge {
@@ -312,6 +374,7 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             "resources": final_resources,
         }),
     )?;
+    progress.finished(true, format!("{} completed", effective_mode.command()));
     Ok(json!({
         "message": format!("{} completed", effective_mode.command()),
         "stack_id": stack_id,
@@ -321,39 +384,62 @@ fn run(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
     }))
 }
 
+fn mark_resumed_vm_jobs(progress: &mut ProgressReporter, vm_ids: &[String], step: &str) {
+    let suffix = match step {
+        "ensure_vms" => Some("create"),
+        "start_helpers" => Some("start"),
+        "await_agents" => Some("agent"),
+        "await_cloud_init" => Some("cloud-init"),
+        _ => None,
+    };
+    let Some(suffix) = suffix else {
+        return;
+    };
+    for vm_id in vm_ids {
+        progress.job_skip(
+            &format!("vm:{vm_id}:{suffix}"),
+            "bereits im Journal abgeschlossen",
+        );
+    }
+}
+
 fn execute_step(
     step: &str,
     options: &Options,
     environment: &Environment,
     plan: &Plan,
     socket_path: &Path,
+    progress: &mut ProgressReporter,
 ) -> Result<(), Failure> {
     match step {
         "ensure_nets" => ensure_networks(environment, options.force, socket_path),
-        "ensure_dns" => ensure_dns(environment, &options.config),
-        "ensure_images" => ensure_images(environment),
+        "ensure_dns" => ensure_dns(environment, &options.config, socket_path, progress),
+        "ensure_images" => ensure_images(environment, progress),
         "ensure_vms" => ensure_vms(
             environment,
             options.force,
             plan,
             &options.config,
             socket_path,
+            progress,
         ),
         "attach_nets" => {
             ensure_attachments(environment, options.mode, socket_path)?;
             prune_networks(environment, options.mode, plan, socket_path)
         }
-        "start_helpers" => start_helpers(environment, socket_path),
+        "start_helpers" => start_helpers(environment, socket_path, progress),
         "await_agents" => {
             // Resume often lands here after a failed await while helpers already
             // exited — re-run start_helpers before waiting again.
             if options.resume {
-                start_helpers(environment, socket_path)?;
+                start_helpers(environment, socket_path, progress)?;
             }
-            await_helpers(environment, socket_path)
+            await_helpers(environment, socket_path, progress)
         }
+        "await_cloud_init" => await_cloud_init(environment, plan, socket_path, progress),
+        "ensure_guest_utils" => ensure_guest_utils(environment, socket_path, progress),
         "ensure_docker_project_mount" => {
-            ensure_docker_project_mount(environment, &options.config, socket_path)
+            ensure_docker_project_mount(environment, &options.config, socket_path, progress)
         }
         "ensure_ca" => ensure_ca(environment),
         "ensure_oidc" => ensure_oidc(environment, &options.config, socket_path),
@@ -369,18 +455,21 @@ fn execute_step(
         "purge_oidc" => purge_oidc(environment, socket_path),
         "stop_helpers" => stop_helpers(environment, socket_path, options.purge),
         "detach_nets" if options.purge => detach_networks(environment, socket_path),
-        "destroy_managed" if options.purge => purge_managed(environment, socket_path),
+        "destroy_managed" if options.purge => purge_managed(environment, socket_path, progress),
         "purge_docker_context" if options.purge => purge_docker_context(environment),
         "purge_ports" if options.purge => purge_ports(environment, socket_path),
         "dns_cleanup" if options.purge && environment.spec.dns.host_resolver => {
-            run_self_privileged(&[
-                "dns",
-                "uninstall-resolver",
-                "--project",
-                &environment.spec.project,
-                "--format",
-                "json",
-            ])
+            run_self_privileged(
+                &[
+                    "dns",
+                    "uninstall-resolver",
+                    "--project",
+                    &environment.spec.project,
+                    "--format",
+                    "json",
+                ],
+                progress,
+            )
             .map(|_| ())
         }
         _ => Ok(()),
@@ -460,34 +549,61 @@ fn ensure_networks(
     Ok(())
 }
 
-fn ensure_dns(environment: &Environment, config_path: &Path) -> Result<(), Failure> {
+fn ensure_dns(
+    environment: &Environment,
+    config_path: &Path,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
     if environment.spec.dns.host_resolver {
         let path = config::config_path(config_path)
             .to_string_lossy()
             .into_owned();
-        run_self_privileged(&[
-            "dns",
-            "install-resolver",
-            "--config",
-            &path,
-            "--format",
-            "json",
-        ])
-        .map(|_| ())
+        run_self_privileged(
+            &[
+                "dns",
+                "install-resolver",
+                "--config",
+                &path,
+                "--format",
+                "json",
+            ],
+            progress,
+        )
+        .map(|_| ())?;
     } else {
-        run_self_privileged(&[
-            "dns",
-            "uninstall-resolver",
-            "--project",
-            &environment.spec.project,
-            "--format",
-            "json",
-        ])
-        .map(|_| ())
+        run_self_privileged(
+            &[
+                "dns",
+                "uninstall-resolver",
+                "--project",
+                &environment.spec.project,
+                "--format",
+                "json",
+            ],
+            progress,
+        )
+        .map(|_| ())?;
     }
+    let resilience = &environment.spec.resilience.network;
+    rpc(
+        socket_path,
+        "resilience.ensure",
+        json!({
+            "project": environment.spec.project,
+            "stack": stack_id(environment),
+            "probe_enabled": resilience.egress_probe.enabled,
+            "probe_url": resilience.egress_probe.url,
+            "restart_vms": resilience.restart_vms_on_stuck_egress,
+        }),
+    )
+    .map(|_| ())
 }
 
-fn ensure_images(environment: &Environment) -> Result<(), Failure> {
+fn ensure_images(
+    environment: &Environment,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
     for image in environment.spec.images.values() {
         if crate::image::tagged_seal_ready(&crate::images_dir(), &image.from, &image.tag)
             .map_err(|error| Failure::new(EXIT_STEP, error))?
@@ -498,26 +614,38 @@ fn ensure_images(environment: &Environment) -> Result<(), Failure> {
             .map_err(|error| Failure::new(EXIT_STEP, error))?
             .is_some();
         if !existing {
-            run_self(&["image", "pull", &image.from, "--format", "json"])?;
+            progress.log(format!("pull image {}", image.from));
+            run_self(
+                &["image", "pull", &image.from, "--format", "json"],
+                progress,
+            )?;
         }
-        run_self(&[
-            "image",
-            "bake",
-            &image.from,
-            "--tag",
-            &image.tag,
-            "--format",
-            "json",
-        ])?;
-        run_self(&[
-            "image",
-            "seal",
-            &image.from,
-            "--tag",
-            &image.tag,
-            "--format",
-            "json",
-        ])?;
+        progress.log(format!("bake {}:{}", image.from, image.tag));
+        run_self(
+            &[
+                "image",
+                "bake",
+                &image.from,
+                "--tag",
+                &image.tag,
+                "--format",
+                "json",
+            ],
+            progress,
+        )?;
+        progress.log(format!("seal {}:{}", image.from, image.tag));
+        run_self(
+            &[
+                "image",
+                "seal",
+                &image.from,
+                "--tag",
+                &image.tag,
+                "--format",
+                "json",
+            ],
+            progress,
+        )?;
     }
     Ok(())
 }
@@ -528,6 +656,7 @@ fn ensure_vms(
     plan: &Plan,
     config_path: &Path,
     socket_path: &Path,
+    progress: &mut ProgressReporter,
 ) -> Result<(), Failure> {
     if options_apply_deletes(plan) {
         for action in plan
@@ -547,6 +676,7 @@ fn ensure_vms(
         .unwrap_or_else(|| PathBuf::from("."));
     for name in order {
         let runtime_id = vm_runtime_id(environment, &name);
+        let create_job = format!("vm:{runtime_id}:create");
         let vm = &environment.spec.vms[&name];
         let action = plan
             .actions
@@ -560,6 +690,7 @@ fn ensure_vms(
             // After a failed later step, stack resources stay stale and plan keeps
             // asking for a breaking update. Don't wipe a bundle that already matches.
             if bundle_matches_vm(&bundle, vm)? {
+                progress.job_skip(&create_job, "bereits im vorherigen Lauf ersetzt");
                 continue;
             }
             stop_one(&runtime_id, socket_path)?;
@@ -568,6 +699,8 @@ fn ensure_vms(
         }
         let bundle = crate::state_dir().join("vms").join(&runtime_id);
         if bundle.join("vm.json").is_file() {
+            progress.log(format!("vm {runtime_id} already exists"));
+            progress.job_skip(&create_job, "bereits vorhanden");
             continue;
         }
         let image_cfg = &environment.spec.images[&vm.from];
@@ -664,7 +797,22 @@ fn ensure_vms(
         }
         owned.extend(["--format".to_string(), "json".to_string()]);
         let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
-        run_self(&refs)?;
+        progress.log(format!("create vm {runtime_id}"));
+        progress.job_start(&create_job);
+        match run_self(&refs, progress) {
+            Ok(result) => {
+                add_cloud_init_summary_details(
+                    progress,
+                    &format!("vm:{runtime_id}:cloud-init"),
+                    &result,
+                );
+                progress.job_done(&create_job);
+            }
+            Err(failure) => {
+                progress.job_fail(&create_job, &failure.message);
+                return Err(failure);
+            }
+        }
     }
     Ok(())
 }
@@ -790,20 +938,35 @@ fn prune_networks(
     Ok(())
 }
 
-fn start_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+fn start_helpers(
+    environment: &Environment,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
     for name in dependency_order(&environment.spec.vms)? {
         let runtime_id = vm_runtime_id(environment, &name);
+        let job_id = format!("vm:{runtime_id}:start");
         let bundle = crate::state_dir().join("vms").join(&runtime_id);
-        rpc(
+        progress.log(format!("start vm {runtime_id}"));
+        progress.job_start(&job_id);
+        if let Err(failure) = rpc(
             socket_path,
             "vm.start",
             json!({"vm_id": runtime_id, "bundle": bundle}),
-        )?;
+        ) {
+            progress.job_fail(&job_id, &failure.message);
+            return Err(failure);
+        }
+        progress.job_done(&job_id);
     }
     Ok(())
 }
 
-fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+fn await_helpers(
+    environment: &Environment,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
     let wanted = environment
         .spec
         .vms
@@ -818,6 +981,12 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
         .any(|vm| vm.roles.iter().any(|role| role == "docker"));
     let budget = if has_docker { 180 } else { 120 };
     let deadline = Instant::now() + Duration::from_secs(budget);
+    let mut last_status = String::new();
+    let mut last_report = Instant::now() - Duration::from_secs(5);
+    let mut completed = BTreeSet::new();
+    for vm_id in &wanted {
+        progress.job_start(&format!("vm:{vm_id}:agent"));
+    }
     loop {
         let records = rpc(socket_path, "vm.list", json!({}))?;
         let running = records
@@ -842,14 +1011,30 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
             match rpc(socket_path, "vm.agent.health", json!({ "vm_id": vm_id })) {
                 Ok(_) => {
                     ready.insert(vm_id.clone());
+                    if completed.insert(vm_id.clone()) {
+                        progress.job_done(&format!("vm:{vm_id}:agent"));
+                    }
                 }
                 Err(_) => pending.push(format!("{vm_id} (agent)")),
             }
         }
         if ready.len() == wanted.len() {
+            progress.log(format!("agents ready ({})", ready.len()));
             return Ok(());
         }
+        let status = format!("waiting: {}", pending.join(", "));
+        if status != last_status || last_report.elapsed() >= Duration::from_secs(5) {
+            progress.log(status.clone());
+            last_status = status;
+            last_report = Instant::now();
+        }
         if Instant::now() >= deadline {
+            for vm_id in wanted.difference(&ready) {
+                progress.job_fail(
+                    &format!("vm:{vm_id}:agent"),
+                    "Guest Agent nicht rechtzeitig bereit",
+                );
+            }
             return Err(Failure::new(
                 EXIT_STEP,
                 format!("helpers/agents not ready: {}", pending.join(", ")),
@@ -859,12 +1044,429 @@ fn await_helpers(environment: &Environment, socket_path: &Path) -> Result<(), Fa
     }
 }
 
+#[derive(Debug)]
+enum CloudInitEvent {
+    Update {
+        vm_id: String,
+        stage: Option<String>,
+        completed: Option<(u32, u32)>,
+        datasource: Option<String>,
+    },
+    Done {
+        vm_id: String,
+    },
+    Failed {
+        vm_id: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CloudInitState {
+    Running,
+    Done,
+    Failed(String),
+}
+
+#[derive(Debug)]
+struct CloudInitObservation {
+    state: CloudInitState,
+    stage: Option<String>,
+    datasource: Option<String>,
+}
+
+fn await_cloud_init(
+    environment: &Environment,
+    plan: &Plan,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
+    let targets = plan
+        .actions
+        .iter()
+        .filter(|action| action.kind == "vm" && matches!(action.action, "create" | "update"))
+        .map(|action| action.name.clone())
+        .collect::<BTreeSet<_>>();
+    let all = environment
+        .spec
+        .vms
+        .iter()
+        .map(|(name, vm)| (vm_runtime_id(environment, name), vm))
+        .collect::<Vec<_>>();
+
+    for (vm_id, _) in &all {
+        let job_id = format!("vm:{vm_id}:cloud-init");
+        if targets.contains(vm_id) {
+            add_cloud_init_manifest_details(progress, &job_id, vm_id);
+            progress.job_start(&job_id);
+        } else {
+            progress.job_skip(&job_id, "VM unverändert");
+        }
+    }
+    if targets.is_empty() {
+        progress.log("cloud-init: keine neu erstellten oder ersetzten VMs");
+        return Ok(());
+    }
+
+    let (tx, rx) = mpsc::channel();
+    thread::scope(|scope| {
+        for (vm_id, vm) in all.into_iter().filter(|(vm_id, _)| targets.contains(vm_id)) {
+            let tx = tx.clone();
+            let timeout = if vm.roles.iter().any(|role| role == "docker") {
+                Duration::from_secs(600)
+            } else {
+                Duration::from_secs(180)
+            };
+            scope.spawn(move || monitor_cloud_init(socket_path, &vm_id, timeout, tx));
+        }
+        drop(tx);
+
+        let mut failures = Vec::new();
+        while let Ok(event) = rx.recv() {
+            match event {
+                CloudInitEvent::Update {
+                    vm_id,
+                    stage,
+                    completed,
+                    datasource,
+                } => {
+                    let job_id = format!("vm:{vm_id}:cloud-init");
+                    if let Some(datasource) = datasource {
+                        progress.job_detail(&job_id, "Datasource", datasource);
+                    }
+                    if let Some(stage) = &stage {
+                        progress.job_detail(&job_id, "Stufe", stage.clone());
+                    }
+                    if let Some((done, total)) = completed {
+                        progress.job_progress(&job_id, done, total, stage);
+                    } else if let Some(stage) = stage {
+                        progress.log(format!("{vm_id}: cloud-init {stage}"));
+                    }
+                }
+                CloudInitEvent::Done { vm_id } => {
+                    let job_id = format!("vm:{vm_id}:cloud-init");
+                    progress.job_progress(&job_id, 100, 100, Some("done".to_string()));
+                    progress.job_done(&job_id);
+                }
+                CloudInitEvent::Failed { vm_id, message } => {
+                    progress.job_fail(&format!("vm:{vm_id}:cloud-init"), &message);
+                    failures.push(format!("{vm_id}: {message}"));
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(Failure::new(
+                EXIT_STEP,
+                format!("cloud-init provisioning failed: {}", failures.join("; ")),
+            ))
+        }
+    })
+}
+
+fn monitor_cloud_init(
+    socket_path: &Path,
+    vm_id: &str,
+    timeout: Duration,
+    tx: mpsc::Sender<CloudInitEvent>,
+) {
+    monitor_cloud_init_with(vm_id, timeout, Duration::from_secs(1), tx, || {
+        query_cloud_init(socket_path, vm_id)
+    });
+}
+
+fn monitor_cloud_init_with(
+    vm_id: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    tx: mpsc::Sender<CloudInitEvent>,
+    mut query: impl FnMut() -> Result<CloudInitObservation, Failure>,
+) {
+    let deadline = Instant::now() + timeout;
+    let mut last_stage = None;
+    let mut last_error = None;
+    loop {
+        match query() {
+            Ok(observation) => match observation.state {
+                CloudInitState::Done => {
+                    let _ = tx.send(CloudInitEvent::Done {
+                        vm_id: vm_id.to_string(),
+                    });
+                    return;
+                }
+                CloudInitState::Failed(message) => {
+                    let _ = tx.send(CloudInitEvent::Failed {
+                        vm_id: vm_id.to_string(),
+                        message,
+                    });
+                    return;
+                }
+                CloudInitState::Running => {
+                    if observation.stage != last_stage {
+                        last_stage = observation.stage.clone();
+                        let _ = tx.send(CloudInitEvent::Update {
+                            vm_id: vm_id.to_string(),
+                            completed: progress::cloud_init_stage_progress(
+                                observation.stage.as_deref(),
+                            ),
+                            stage: observation.stage,
+                            datasource: observation.datasource,
+                        });
+                    }
+                }
+            },
+            Err(failure) => last_error = Some(failure.message),
+        }
+        if Instant::now() >= deadline {
+            let diagnostic = last_error
+                .map(|message| format!("; letzte Diagnose: {}", safe_status_text(&message)))
+                .unwrap_or_default();
+            let _ = tx.send(CloudInitEvent::Failed {
+                vm_id: vm_id.to_string(),
+                message: format!(
+                    "Timeout nach {}s{diagnostic}; prüfen mit `vzctl vm exec {vm_id} -- cloud-init status --long`",
+                    timeout.as_secs()
+                ),
+            });
+            return;
+        }
+        if !poll_interval.is_zero() {
+            thread::sleep(poll_interval);
+        }
+    }
+}
+
+fn query_cloud_init(socket_path: &Path, vm_id: &str) -> Result<CloudInitObservation, Failure> {
+    let result = rpc(
+        socket_path,
+        "vm.exec",
+        json!({
+            "vm_id": vm_id,
+            "cmd": ["cloud-init", "status", "--format=json"],
+            "timeout_ms": 5_000,
+        }),
+    )?;
+    let exit = result["exit"].as_u64().unwrap_or(1);
+    let stdout = result["stdout"].as_str().unwrap_or_default();
+    let stderr = result["stderr"].as_str().unwrap_or_default();
+    if cloud_init_command_missing(exit, stderr) {
+        return Ok(CloudInitObservation {
+            state: CloudInitState::Failed("cloud-init ist im Guest nicht installiert".to_string()),
+            stage: None,
+            datasource: None,
+        });
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(stdout.trim()) {
+        return Ok(parse_cloud_init_json(exit, &value));
+    }
+
+    let fallback = rpc(
+        socket_path,
+        "vm.exec",
+        json!({
+            "vm_id": vm_id,
+            "cmd": ["cloud-init", "status", "--long"],
+            "timeout_ms": 5_000,
+        }),
+    )?;
+    Ok(parse_cloud_init_long(
+        fallback["exit"].as_u64().unwrap_or(exit),
+        fallback["stdout"].as_str().unwrap_or_default(),
+        fallback["stderr"].as_str().unwrap_or_default(),
+    ))
+}
+
+fn cloud_init_command_missing(exit: u64, stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    exit == 127 || stderr.contains("not found") || stderr.contains("no such file")
+}
+
+fn parse_cloud_init_json(exit: u64, value: &Value) -> CloudInitObservation {
+    let status = value["extended_status"]
+        .as_str()
+        .or_else(|| value["status"].as_str())
+        .unwrap_or("running")
+        .to_ascii_lowercase();
+    let stage = value["stage"].as_str().map(normalize_cloud_init_stage);
+    let datasource = value["datasource"]
+        .as_str()
+        .or_else(|| value["detail"].as_str())
+        .map(safe_status_text);
+    let errors = value["errors"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+        || value["recoverable_errors"]
+            .as_object()
+            .is_some_and(|items| !items.is_empty());
+    let state = if exit == 2 || status.contains("degraded") || errors {
+        CloudInitState::Failed("cloud-init meldet behebbare Fehler (Exit 2/degraded)".to_string())
+    } else if exit == 1 || status.contains("error") {
+        CloudInitState::Failed("cloud-init ist fehlgeschlagen (Exit 1)".to_string())
+    } else if status.contains("disabled") {
+        CloudInitState::Failed("cloud-init ist für diese VM deaktiviert".to_string())
+    } else if status.contains("done") {
+        CloudInitState::Done
+    } else {
+        CloudInitState::Running
+    };
+    CloudInitObservation {
+        state,
+        stage,
+        datasource,
+    }
+}
+
+fn parse_cloud_init_long(exit: u64, stdout: &str, stderr: &str) -> CloudInitObservation {
+    let combined = format!("{stdout}\n{stderr}");
+    let lower = combined.to_ascii_lowercase();
+    let stage = combined.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Running in stage:")
+            .map(|value| normalize_cloud_init_stage(value.trim()))
+    });
+    let state = if exit == 2 || lower.contains("degraded") {
+        CloudInitState::Failed("cloud-init meldet behebbare Fehler (Exit 2/degraded)".to_string())
+    } else if exit == 1 || lower.contains("status: error") {
+        CloudInitState::Failed("cloud-init ist fehlgeschlagen (Exit 1)".to_string())
+    } else if lower.contains("status: disabled") {
+        CloudInitState::Failed("cloud-init ist für diese VM deaktiviert".to_string())
+    } else if lower.contains("status: done") {
+        CloudInitState::Done
+    } else {
+        CloudInitState::Running
+    };
+    CloudInitObservation {
+        state,
+        stage,
+        datasource: None,
+    }
+}
+
+fn normalize_cloud_init_stage(stage: &str) -> String {
+    match stage.trim() {
+        "init-local" => "init-local",
+        "init" => "init",
+        "modules-config" | "config" => "modules-config",
+        "modules-final" | "final" => "modules-final",
+        other => other,
+    }
+    .to_string()
+}
+
+fn safe_status_text(value: &str) -> String {
+    let one_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = one_line.to_ascii_lowercase();
+    if [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "authorization",
+        "private key",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "[sensible Diagnose ausgeblendet]".to_string();
+    }
+    one_line.chars().take(160).collect()
+}
+
+fn add_cloud_init_manifest_details(progress: &mut ProgressReporter, job_id: &str, vm_id: &str) {
+    let manifest_path = crate::state_dir().join("vms").join(vm_id).join("vm.json");
+    let Ok(bytes) = fs::read(manifest_path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    add_cloud_init_summary_details(progress, job_id, &value);
+}
+
+fn add_cloud_init_summary_details(progress: &mut ProgressReporter, job_id: &str, value: &Value) {
+    let summary = value
+        .pointer("/cloud_init/summary")
+        .or_else(|| value.pointer("/result/cloud_init/summary"));
+    let Some(summary) = summary else {
+        return;
+    };
+    if let Some(roles) = summary["roles"].as_array() {
+        let roles = roles.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        if !roles.is_empty() {
+            progress.job_detail(job_id, "Rollen", roles.join(", "));
+        }
+    }
+    let packages = summary["packages"].as_array().map(Vec::len).unwrap_or(0);
+    let files = summary["write_files"].as_array().map(Vec::len).unwrap_or(0);
+    let commands = summary["commands"].as_u64().unwrap_or(0);
+    let users = summary["users"].as_u64().unwrap_or(0);
+    progress.job_detail(
+        job_id,
+        "Inhalt",
+        format!("{files} Dateien · {packages} Pakete · {commands} Kommandos · {users} Benutzer"),
+    );
+    let package_names = summary["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if !package_names.is_empty() {
+        progress.job_detail(job_id, "Pakete", package_names.join(", "));
+    }
+    let file_paths = summary["write_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if !file_paths.is_empty() {
+        progress.job_detail(job_id, "Dateien", file_paths.join(", "));
+    }
+}
+
+fn ensure_guest_utils(
+    environment: &Environment,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
+    let targets = environment
+        .spec
+        .vms
+        .keys()
+        .map(|name| vm_runtime_id(environment, name))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let bundle = crate::guest_utils::ensure_cached_bundle(&crate::state_dir())
+        .map_err(|error| Failure::new(EXIT_STEP, error.message))?;
+    progress.log(format!(
+        "guest utils bundle {} (agent {})",
+        bundle.bundle_id, bundle.agent_version
+    ));
+    let results = crate::guest_utils::rollout_targets(&targets, &bundle, &mut |method, params| {
+        rpc(socket_path, method, params).map_err(|failure| failure.message)
+    })
+    .map_err(|error| Failure::new(EXIT_STEP, error.message))?;
+    let upgraded = results
+        .iter()
+        .filter(|result| result["status"].as_str() == Some("upgraded"))
+        .count();
+    if upgraded > 0 {
+        progress.log(format!("guest utils upgraded on {upgraded} VM(s)"));
+    }
+    Ok(())
+}
+
 /// Share the hypernetwork project directory into docker-role VMs at the same
 /// absolute path so container `-v /Users/…/project:…` binds work.
 fn ensure_docker_project_mount(
     environment: &Environment,
     config_path: &Path,
     _socket_path: &Path,
+    progress: &mut ProgressReporter,
 ) -> Result<(), Failure> {
     let docker_vms = environment
         .spec
@@ -924,6 +1526,7 @@ fn ensure_docker_project_mount(
                     || failure.message.contains("Connection reset")
                     || failure.message.contains("Connection refused")
             },
+            progress,
         )?;
     }
     Ok(())
@@ -934,10 +1537,11 @@ fn run_self_retrying(
     args: &[&str],
     budget: Duration,
     retryable: impl Fn(&Failure) -> bool,
+    progress: &mut ProgressReporter,
 ) -> Result<Value, Failure> {
     let deadline = Instant::now() + budget;
     loop {
-        match run_self(args) {
+        match run_self(args, progress) {
             Ok(value) => return Ok(value),
             Err(failure) if retryable(&failure) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_secs(2));
@@ -1023,11 +1627,18 @@ fn detach_networks(environment: &Environment, socket_path: &Path) -> Result<(), 
     Ok(())
 }
 
-fn purge_managed(environment: &Environment, socket_path: &Path) -> Result<(), Failure> {
+fn purge_managed(
+    environment: &Environment,
+    socket_path: &Path,
+    progress: &mut ProgressReporter,
+) -> Result<(), Failure> {
     for name in environment.spec.vms.keys() {
         let runtime_id = vm_runtime_id(environment, name);
         // Hard delete: SIGKILL via vm.purge + wipe managed bundle (no graceful stop).
-        match run_self(&["vm", "delete", &runtime_id, "--force", "--format", "json"]) {
+        match run_self(
+            &["vm", "delete", &runtime_id, "--force", "--format", "json"],
+            progress,
+        ) {
             Ok(_) => {}
             Err(failure) => {
                 // Already gone after a partial purge is fine.
@@ -1637,6 +2248,11 @@ fn purge_dns_records(environment: &Environment, socket_path: &Path) -> Result<()
         "dns.records.purge",
         json!({ "project": environment.spec.project }),
     );
+    let _ = rpc(
+        socket_path,
+        "resilience.remove",
+        json!({ "project": environment.spec.project }),
+    );
     Ok(())
 }
 
@@ -2014,11 +2630,12 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
             format!("connect {}: {error}", socket_path.display()),
         )
     })?;
+    let timeout_secs = rpc_timeout_secs(method, &params);
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_secs(timeout_secs)))
         .map_err(|error| Failure::new(EXIT_SUPERVISOR, error.to_string()))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
+        .set_write_timeout(Some(Duration::from_secs(timeout_secs.min(10))))
         .map_err(|error| Failure::new(EXIT_SUPERVISOR, error.to_string()))?;
     let request = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
     writeln!(stream, "{request}")
@@ -2046,18 +2663,58 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         .ok_or_else(|| Failure::new(EXIT_SUPERVISOR, format!("{method}: missing result")))
 }
 
-fn run_self(args: &[&str]) -> Result<Value, Failure> {
+fn rpc_timeout_secs(method: &str, params: &Value) -> u64 {
+    if method == "vm.exec" || method.starts_with("vm.agent.") {
+        params
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .map(|ms| (ms / 1000).saturating_add(10).max(15))
+            .unwrap_or(40)
+    } else {
+        10
+    }
+}
+
+fn run_self(args: &[&str], progress: &mut ProgressReporter) -> Result<Value, Failure> {
     let executable = std::env::current_exe()
         .map_err(|error| Failure::new(EXIT_STEP, format!("resolve vzctl executable: {error}")))?;
+    let pipe_stderr = progress.pipe_subprocess_stderr();
     let mut child = Command::new(executable)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(if pipe_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .spawn()
         .map_err(|error| {
             Failure::new(EXIT_STEP, format!("run vzctl {}: {error}", args.join(" ")))
         })?;
+    let stderr_thread = if pipe_stderr {
+        child.stderr.take().map(|stderr| {
+            let tx = progress.log_sender();
+            let job_id = progress.current_job_id();
+            let job_path = progress.current_job_path();
+            let plain_percent = progress.plain_percent();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(tx) = &tx {
+                        let _ = tx.send(ProgressMessage::Log {
+                            job_id: job_id.clone(),
+                            line,
+                        });
+                    } else if let Some(percent) = plain_percent {
+                        progress::print_plain_subprocess_line(percent, job_path.as_deref(), &line);
+                    }
+                }
+            })
+        })
+    } else {
+        None
+    };
     let mut stdout = Vec::new();
     child
         .stdout
@@ -2078,6 +2735,9 @@ fn run_self(args: &[&str]) -> Result<Value, Failure> {
     let status = child.wait().map_err(|error| {
         Failure::new(EXIT_STEP, format!("wait vzctl {}: {error}", args.join(" ")))
     })?;
+    if let Some(handle) = stderr_thread {
+        let _ = handle.join();
+    }
     if !status.success() {
         let message = serde_json::from_slice::<Value>(&stdout)
             .ok()
@@ -2102,8 +2762,8 @@ fn run_self(args: &[&str]) -> Result<Value, Failure> {
 }
 
 /// Like `run_self`, but retries via macOS Admin dialog when `/etc/resolver` needs root.
-fn run_self_privileged(args: &[&str]) -> Result<Value, Failure> {
-    match run_self(args) {
+fn run_self_privileged(args: &[&str], progress: &mut ProgressReporter) -> Result<Value, Failure> {
+    match run_self(args, progress) {
         Ok(value) => Ok(value),
         Err(failure) if failure_needs_dns_elevation(&failure) => run_self_elevated(args),
         Err(failure) => Err(failure),
@@ -2216,6 +2876,7 @@ fn parse(mode: &str, mut args: impl Iterator<Item = String>) -> Result<Options, 
     let mut resume = false;
     let mut abort = false;
     let mut purge = false;
+    let mut progress_explicit: Option<ProgressMode> = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "-C" | "--config" => {
@@ -2230,6 +2891,15 @@ fn parse(mode: &str, mut args: impl Iterator<Item = String>) -> Result<Options, 
                     Some("json") => Format::Json,
                     _ => return Err(Failure::new(EXIT_USAGE, "--format requires human or json")),
                 }
+            }
+            "--progress" if matches!(mode, Mode::Apply | Mode::Up | Mode::Down) => {
+                let value = args.next().ok_or_else(|| {
+                    Failure::new(EXIT_USAGE, "--progress requires plain, ui, or off")
+                })?;
+                progress_explicit = Some(
+                    parse_progress_flag(Some(&value))
+                        .map_err(|message| Failure::new(EXIT_USAGE, message))?,
+                );
             }
             "--force" if matches!(mode, Mode::Apply | Mode::Up) => force = true,
             "--resume" if mode == Mode::Apply => resume = true,
@@ -2257,6 +2927,11 @@ fn parse(mode: &str, mut args: impl Iterator<Item = String>) -> Result<Options, 
         resume,
         abort,
         purge,
+        progress: resolve_progress_mode(
+            progress_explicit,
+            format == Format::Human,
+            matches!(mode, Mode::Up | Mode::Apply),
+        ),
     })
 }
 
@@ -2568,6 +3243,206 @@ mod tests {
             .position(|step| *step == "ensure_vms")
             .unwrap();
         assert!(ca < vms);
+    }
+
+    #[test]
+    fn guest_utils_runs_after_agents_before_mounts() {
+        let agents = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "await_agents")
+            .unwrap();
+        let utils = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "ensure_guest_utils")
+            .unwrap();
+        let cloud_init = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "await_cloud_init")
+            .unwrap();
+        let mounts = APPLY_STEPS
+            .iter()
+            .position(|step| *step == "ensure_docker_project_mount")
+            .unwrap();
+        assert!(agents < cloud_init);
+        assert!(cloud_init < utils);
+        assert!(utils < mounts);
+    }
+
+    #[test]
+    fn cloud_init_json_tracks_stages_and_strict_failure_codes() {
+        let running = parse_cloud_init_json(
+            0,
+            &json!({
+                "status": "running",
+                "extended_status": "running",
+                "stage": "modules-config",
+                "datasource": "nocloud",
+                "errors": [],
+                "recoverable_errors": {},
+            }),
+        );
+        assert_eq!(running.state, CloudInitState::Running);
+        assert_eq!(running.stage.as_deref(), Some("modules-config"));
+        assert_eq!(running.datasource.as_deref(), Some("nocloud"));
+
+        let done = parse_cloud_init_json(
+            0,
+            &json!({"status": "done", "errors": [], "recoverable_errors": {}}),
+        );
+        assert_eq!(done.state, CloudInitState::Done);
+
+        let degraded = parse_cloud_init_json(
+            2,
+            &json!({"status": "done", "recoverable_errors": {"warning": ["x"]}}),
+        );
+        assert!(matches!(degraded.state, CloudInitState::Failed(_)));
+    }
+
+    #[test]
+    fn cloud_init_long_fallback_handles_running_disabled_and_failure() {
+        let running = parse_cloud_init_long(
+            0,
+            "status: running\ndetail:\nRunning in stage: modules-final\n",
+            "",
+        );
+        assert_eq!(running.state, CloudInitState::Running);
+        assert_eq!(running.stage.as_deref(), Some("modules-final"));
+        assert!(matches!(
+            parse_cloud_init_long(0, "status: disabled", "").state,
+            CloudInitState::Failed(_)
+        ));
+        assert!(matches!(
+            parse_cloud_init_long(1, "status: error", "").state,
+            CloudInitState::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn cloud_init_monitor_emits_all_four_stages_and_completion() {
+        let stages = ["init-local", "init", "modules-config", "modules-final"];
+        let mut observations = stages
+            .iter()
+            .map(|stage| CloudInitObservation {
+                state: CloudInitState::Running,
+                stage: Some((*stage).to_string()),
+                datasource: Some("NoCloud".to_string()),
+            })
+            .chain(std::iter::once(CloudInitObservation {
+                state: CloudInitState::Done,
+                stage: None,
+                datasource: None,
+            }));
+        let (tx, rx) = mpsc::channel();
+        monitor_cloud_init_with(
+            "demo/web",
+            Duration::from_secs(1),
+            Duration::ZERO,
+            tx,
+            || Ok(observations.next().expect("finite cloud-init sequence")),
+        );
+        let events = rx.into_iter().collect::<Vec<_>>();
+        let reported = events
+            .iter()
+            .filter_map(|event| match event {
+                CloudInitEvent::Update { stage, .. } => stage.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reported, stages);
+        assert!(matches!(events.last(), Some(CloudInitEvent::Done { .. })));
+    }
+
+    #[test]
+    fn cloud_init_monitors_multiple_vms_in_parallel() {
+        let (tx, rx) = mpsc::channel();
+        thread::scope(|scope| {
+            for vm_id in ["demo/web", "demo/db"] {
+                let tx = tx.clone();
+                scope.spawn(move || {
+                    monitor_cloud_init_with(
+                        vm_id,
+                        Duration::from_secs(1),
+                        Duration::ZERO,
+                        tx,
+                        || {
+                            Ok(CloudInitObservation {
+                                state: CloudInitState::Done,
+                                stage: None,
+                                datasource: None,
+                            })
+                        },
+                    );
+                });
+            }
+        });
+        drop(tx);
+        let completed = rx
+            .into_iter()
+            .filter_map(|event| match event {
+                CloudInitEvent::Done { vm_id } => Some(vm_id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            completed,
+            BTreeSet::from(["demo/db".into(), "demo/web".into()])
+        );
+    }
+
+    #[test]
+    fn cloud_init_monitor_reports_timeout_and_missing_command() {
+        let (tx, rx) = mpsc::channel();
+        monitor_cloud_init_with("demo/web", Duration::ZERO, Duration::ZERO, tx, || {
+            Err(Failure::new(EXIT_STEP, "agent antwortet nicht"))
+        });
+        let event = rx.recv().unwrap();
+        assert!(matches!(
+            event,
+            CloudInitEvent::Failed { message, .. }
+                if message.contains("Timeout") && message.contains("agent antwortet nicht")
+        ));
+        assert!(cloud_init_command_missing(127, ""));
+        assert!(cloud_init_command_missing(
+            1,
+            "cloud-init: command not found"
+        ));
+        assert!(cloud_init_command_missing(1, "No such file or directory"));
+        assert!(!cloud_init_command_missing(1, "status: error"));
+    }
+
+    #[test]
+    fn cloud_init_diagnostics_redact_sensitive_values() {
+        assert_eq!(
+            safe_status_text("authorization token=top-secret"),
+            "[sensible Diagnose ausgeblendet]"
+        );
+        assert_eq!(safe_status_text("DataSourceNoCloud"), "DataSourceNoCloud");
+    }
+
+    #[test]
+    fn progress_defaults_preserve_json_and_down_contracts() {
+        let json = parse(
+            "apply",
+            ["--format", "json"].into_iter().map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(json.progress, ProgressMode::Off);
+
+        let down = parse("down", std::iter::empty()).unwrap();
+        assert_eq!(down.progress, ProgressMode::Plain);
+
+        let explicit = parse(
+            "apply",
+            ["--format", "json", "--progress", "plain"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(explicit.progress, ProgressMode::Plain);
+
+        let missing = parse("apply", ["--progress"].into_iter().map(str::to_string)).unwrap_err();
+        assert_eq!(missing.code, EXIT_USAGE);
+        assert!(missing.message.contains("requires plain, ui, or off"));
     }
 
     #[test]

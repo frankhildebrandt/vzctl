@@ -97,6 +97,8 @@ Wird nach einer vom Guest-Agent bestätigten Uhrkorrektur emittiert.
 
 `status` ist `running`, `done` oder `failed`. Die Step-Reihenfolge folgt ADR
 0003; ein Resume beginnt beim zuletzt gespeicherten `failed`/`running`-Step.
+`await_cloud_init` folgt auf `await_agents` und ist erst `done`, wenn alle neu
+erstellten oder ersetzten VMs Cloud-init ohne Exit `1`/`2` beendet haben.
 
 ### `apply.finished`
 
@@ -125,6 +127,25 @@ A-Adressen, nicht nur Namen.
 
 Gleiches Schema wie `dns.reloaded`, aber `ok=false` und `error` enthält die
 Snapshot- oder Bind-Ursache. Bereits erfolgreiche Listener bleiben aktiv.
+
+### Host-Network-Recovery
+
+Alle Events tragen `epoch`. Sensible Pfaddaten wie SSID, öffentliche IP und
+Probe-URL werden nie aufgenommen.
+
+| Event | Zusätzliche Daten |
+|---|---|
+| `host.network_changed` | `path_satisfied`, grobe `interfaces` (`wifi`, `ethernet`, `other`) |
+| `host.sleep` | keine |
+| `host.wake` | keine |
+| `network.recovering` | `attempt` |
+| `network.recovered` | `attempt`, optional `fallback` |
+| `network.degraded` | `state`, optional sanitisiertes `error` |
+| `network.cidr_conflict` | `conflicts[]` mit Netz-CIDR, Hostroute und Interface |
+| `network.fallback_restart` | `network`, `vms[]` |
+
+Ein Event ist Diagnose, kein Config-Write. Insbesondere führt
+`network.cidr_conflict` niemals zu einer automatischen CIDR-Änderung.
 
 ## Reservierte v1-Namen
 

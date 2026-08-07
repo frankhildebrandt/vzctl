@@ -438,6 +438,45 @@ import VzDaemonKit
     #expect(read16(response, 2) & 0x8080 == 0x8080)
 }
 
+@Test func systemResolverResponsePreservesQuestionAndRecordTTL() {
+    let query = dnsQuery("example.com")
+    let response = SystemDNSResolver.response(
+        request: query,
+        question: DNSQuestion(
+            name: "example.com",
+            type: 1,
+            dnsClass: 1,
+            endOffset: query.count
+        ),
+        records: [SystemDNSRecord(
+            type: 1,
+            dnsClass: 1,
+            ttl: 42,
+            rdata: Data([192, 0, 2, 1])
+        )]
+    )
+    #expect(read16(response, 4) == 1)
+    #expect(read16(response, 6) == 1)
+    #expect(response.suffix(4) == Data([192, 0, 2, 1]))
+}
+
+@Test func systemResolverSelectionCanChangeWithoutDNSRestart() {
+    let fake = SwitchingSystemResolver()
+    let server = DNSServer(
+        configuration: DNSConfiguration(
+            hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+            ttl: 15, upstream: "system"
+        ),
+        systemResolve: { request, question in fake.resolve(request, question) }
+    )
+    defer { server.shutdown() }
+    let query = dnsQuery("corp.example")
+    #expect(aRecords(in: server.response(for: query)) == ["192.0.2.10"])
+
+    fake.useVPNResolver()
+    #expect(aRecords(in: server.response(for: query)) == ["10.20.30.40"])
+}
+
 @Test(.enabled(if: ProcessInfo.processInfo.environment["VZCTL_DNS_LAB"] == "1"))
 func systemUpstreamLabResolvesExternalName() {
     let server = DNSServer(configuration: DNSConfiguration(
@@ -513,6 +552,22 @@ private final class UDPFixture: @unchecked Sendable {
 
     func close() {
         Darwin.close(descriptor)
+    }
+}
+
+private final class SwitchingSystemResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var address = Data([192, 0, 2, 10])
+
+    func useVPNResolver() { lock.withLock { address = Data([10, 20, 30, 40]) } }
+
+    func resolve(_ request: Data, _ question: DNSQuestion) -> Data {
+        let rdata = lock.withLock { address }
+        return SystemDNSResolver.response(
+            request: request,
+            question: question,
+            records: [SystemDNSRecord(type: 1, dnsClass: 1, ttl: 15, rdata: rdata)]
+        )
     }
 }
 

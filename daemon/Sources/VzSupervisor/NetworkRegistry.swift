@@ -484,6 +484,38 @@ final class NetworkRegistry: @unchecked Sendable {
         }
     }
 
+    /// Last-resort recovery for an opt-in stack after every attached helper has
+    /// stopped. Desired state and attachments stay unchanged.
+    func recreateRuntime(name: String) throws {
+        try lock.withLock {
+            try requireRunning()
+            guard let record = try database.networks().first(where: { $0.name == name }) else {
+                throw NetworkRegistryError.notFound("network not found: \(name)")
+            }
+            guard !record.isDockerBackend else {
+                throw NetworkRegistryError.invalid("docker backend has no vmnet runtime")
+            }
+            guard let current = handles.removeValue(forKey: name) else {
+                throw NetworkRegistryError.runtime("network \(name) has no live handle")
+            }
+            do {
+                try backend.release(name: name, handle: current)
+                let replacement = try backend.reserve(record)
+                handles[name] = replacement
+                try database.updateNetworkRuntime(name: name, state: "active", error: nil)
+            } catch {
+                try? database.updateNetworkRuntime(
+                    name: name,
+                    state: "orphaned",
+                    error: String(describing: error)
+                )
+                throw NetworkRegistryError.runtime(
+                    "cannot recreate network \(name): \(error)"
+                )
+            }
+        }
+    }
+
     /// Portable vmnet blobs for every attachment of `vmID` (vz-net-owned refs stay live).
     /// Docker-backend attachments are logical (docker0) and are omitted from helper NICs.
     func serializedAttachments(for vmID: String) throws -> [SerializedVmnetAttachment] {

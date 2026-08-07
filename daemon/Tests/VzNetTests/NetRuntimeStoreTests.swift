@@ -40,3 +40,17 @@ import Testing
     let parsed = try VzNetNetworkInfo(json: info.json)
     #expect(parsed == info)
 }
+
+@Test func vzNetVerificationParsesHealthWithoutMutation() throws {
+    let verification = try VzNetVerification(json: .object([
+        "name": .string("dmz"),
+        "cidr": .string("10.80.0.0/24"),
+        "ref_ok": .bool(true),
+        "serialization_ok": .bool(true),
+        "bridge_ok": .bool(false),
+        "error": .string("bridge missing"),
+    ]))
+    #expect(verification.name == "dmz")
+    #expect(!verification.ok)
+    #expect(verification.error == "bridge missing")
+}

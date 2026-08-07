@@ -90,6 +90,7 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `22` | Image-Checksum fehlgeschlagen | Upstream-/lokaler Digest-Mismatch |
 | `23` | Image-Architektur unsupported | `image pull` ist ARM64-only |
 | `24` | Reconciler- oder VM-Lifecycle-Operation fehlgeschlagen | `up`, `apply`, `down`, `vm start|stop|delete` |
+| `25` | Host-Service-Lifecycle fehlgeschlagen | `services start|stop|restart` (Helper-Timeout, vz-net bootout, Socket nicht ready) |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
@@ -111,9 +112,9 @@ Payload: `checks[]` mit stabilen Check-IDs. Die Summary enthält `ok`,
 
 ```bash
 vzctl plan|diff [-C <directory|config>] [--format human|json]
-vzctl up [-C <directory|config>] [--force] [--format human|json]
-vzctl apply [-C <directory|config>] [--force|--resume|--abort] [--format human|json]
-vzctl down [-C <directory|config>] [--purge] [--format human|json]
+vzctl up [-C <directory|config>] [--force] [--progress plain|ui|off] [--format human|json]
+vzctl apply [-C <directory|config>] [--force|--resume|--abort] [--progress plain|ui|off] [--format human|json]
+vzctl down [-C <directory|config>] [--purge] [--progress plain|ui|off] [--format human|json]
 vzctl adopt [-C <directory|config>] [--format human|json]
 ```
 
@@ -146,6 +147,57 @@ Lease frei. Eine aktive Lease eines anderen Holders liefert Exit `6`. Fehler
 innerhalb eines Reconciler-Steps bleiben als `failed` resumierbar und liefern
 Exit `24`, soweit das aufgerufene Primitive keinen spezifischeren v1-Exitcode
 liefert.
+
+Bei Human-Ausgabe verwenden `up` und `apply` auf einem interaktiven Terminal
+standardmäßig das Live-Dashboard; `down` bleibt standardmäßig `plain`.
+`--progress ui|plain|off` überschreibt die Auswahl. Ohne TTY fällt `ui` mit
+Diagnostic auf `plain` zurück. Plain-Zeilen auf stderr enthalten Uhrzeit,
+Gesamtprozent, Jobhierarchie und Dauer. JSON-stdout bleibt davon unberührt;
+ohne explizites `--progress` ist Progress bei `--format json` aus.
+
+Der Fortschritt zählt feste Arbeitsanteile abgeschlossener bzw. messbarer
+Unterjobs und ist monoton; für nicht messbare laufende Jobs wird kein
+Zeitfortschritt erfunden. Im Dashboard wählen `↑`/`↓` Jobs, `Enter` klappt
+Unterjobs auf und `L` zeigt das begrenzte Joblog. Das erste `Ctrl-C` wechselt
+zum Plain-Follow; ein weiteres beendet den Prozess mit resumierbarem Journal.
+
+Nach `await_agents` wartet `await_cloud_init` bei neu erstellten oder ersetzten
+VMs parallel auf Cloud-init. Exit `1`, Exit `2`, `disabled`, fehlendes
+`cloud-init` und Timeout (180s, Docker 600s) liefern Exit `24`. Angezeigt werden
+nur strukturierte Stufen und eine sichere Inhaltszusammenfassung.
+
+### `vzctl stack init|vm|net|volume|mount`
+
+```bash
+vzctl stack init [DIR] --name <project> [--cidr CIDR] [--force] [-C path] [--format human|json]
+vzctl stack vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr] [--data-disk SIZE]
+  [--cpus N] [--memory size] [--role router|docker] [--cloud-init path] [--format human|json]
+vzctl stack vm remove <name> [-C path] [--format human|json]
+vzctl stack net add <name> --cidr CIDR [-C path] [--mode shared|host] [--backend vmnet|docker]
+  [--nat-egress|--no-nat-egress] [--format human|json]
+vzctl stack net remove <name> [-C path] [--format human|json]
+vzctl stack volume add <name> <path> [-C path] [--format human|json]
+vzctl stack volume remove <name> [-C path] [--format human|json]
+vzctl stack mount add <vm> --source <volume> --target <path> [--read-only] [-C path] [--format human|json]
+vzctl stack mount remove <vm> --target <path> [-C path] [--format human|json]
+```
+
+`stack init` schreibt nur `hypernetwork.config.yaml` (UI-Scaffold-Parität, kein
+`diagram.json`). `-C` / `--config` und das optionale `DIR`-Argument verweisen
+auf ein Stack-Verzeichnis; Default ist das aktuelle Verzeichnis. Vor dem
+Schreiben wird die volle `hypernetwork/v1`-Validierung ausgeführt; bei Fehler
+bleibt die Datei unverändert. `stack init` ohne `--force` scheitert, wenn die
+Config bereits existiert.
+
+Mutationen laden die Config, ändern sie in-memory und schreiben atomisch nur bei
+validem Ergebnis. `stack vm add` vergibt ohne `--ip` die nächste freie Gast-IP
+(`.10+`, docker-backend `.2`). Volume-Pfade müssen existierende Verzeichnisse
+sein (relativ zur Config oder absolut).
+
+JSON-Payloads: `stack.init` → `path`, `name`, `project`; `stack.vm.add` →
+`path`, `vm`, `ip`; Remove-Commands → `path` plus entfernter Key (`vm`,
+`network`, `volume`); Mount-Commands → `path`, `vm`, `source`, `target`,
+optional `readOnly`. Exitcodes: `0`, `2`, `3`.
 
 ### `vzctl validate`
 
@@ -210,6 +262,9 @@ cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
 `cidata.iso` und ein privater Agent-Token. `vm.resources` enthält `cpus` und
 `memory_mib` (Defaults `2` / `1024`); `--cpus` und `--memory` (bare MiB oder
 `512M`/`2G`/`2Gi`) überschreiben sie und landen in `vm.json`.
+`cloud_init.summary` enthält additiv Datasource, Rollen, Paketnamen,
+Zieldateipfade sowie die Anzahl von Kommandos und Benutzern. Datei-Inhalte,
+Kommandotexte, Passwörter und Token-Werte werden nie aufgenommen.
 
 VM-IDs sind entweder flach (`web`, 1–63 Zeichen) oder namespaced
 (`{project}/{vm}`, Gesamtlänge ≤127, genau ein `/`). Mit `--project P` und
@@ -296,11 +351,12 @@ vzctl vm transfer <id> <src> <dst> [--format human|json]
 vzctl vm attach <id>
 vzctl vm services <id> [start|stop|restart <unit>] [--format human|json]
 vzctl vm ps <id> [--format human|json]
+vzctl vm agent upgrade <id>|--all [--format human|json]
 ```
 
 Kanonische Commands sind `vm.inspect`, `vm.logs`, `vm.exec`, `vm.transfer`,
-`vm.attach`, `vm.services` und `vm.ps` (Gast-Prozessliste; Host-Übersicht bleibt
-`vzctl ps`).
+`vm.attach`, `vm.services`, `vm.ps` (Gast-Prozessliste; Host-Übersicht bleibt
+`vzctl ps`) und `vm.agent.upgrade` (Guest-Utils-Live-Rollout).
 
 `inspect` merged Bundle-Manifest, Runtime-`vm.list`, Attachments und optional
 Agent `health`/`version`/`report_ip`. Das Envelope enthält additiv
@@ -330,6 +386,15 @@ One-Shot-`exec` unverändert.
 Usage liefert `2`, ungültige IDs/Pfade `3`, fehlender Supervisor/Helper/
 Console-Socket/`vm.logs`-Serial-Datei `10`, zu große Transfers `12`,
 Agent-/Guest-Fehler `18`.
+
+`vm agent upgrade` synchronisiert `vzctl-agent`, privilegierte Helper-Skripte
+(`/usr/local/lib/vzctl/*`), sudoers und systemd-Unit auf den Host-Stand aus
+`guest-agent/VERSION` (ohne Re-Bake). `--all` wählt alle laufenden VMs aus dem
+Supervisor. Das JSON-Envelope enthält `results[]` mit `status` `unchanged` oder
+`upgraded` sowie `summary.bundle_id` / `summary.agent_version`. Fehlender
+laufender Helper/Agent liefert Exit `18`; fehlender Go-Build für den Host-Cache
+Exit `12`. Der Apply-Step `ensure_guest_utils` ruft dieselbe Rollout-Logik für
+alle Stack-VMs auf.
 
 ### `vzctl net create|attach|list|detach|delete|default`
 
@@ -443,6 +508,33 @@ dem Exec nutzen Exit `24` / `3`. Siehe [`docs/docker.md`](../docker.md).
 `port.list` folgt dem CLI-v1-Envelope; Payload `ports[]` mit `bind`,
 `host_port`, `guest_ip`, `guest_port`, `vm_id`, `state`, `source`. Siehe
 [`docs/ports.md`](../ports.md).
+
+### `vzctl services status|start|stop|restart`
+
+```bash
+vzctl services status [--format human|json]
+vzctl services start  [all|net|edge|supervisor] [--format human|json]
+vzctl services stop   [all|net|edge|supervisor] [--format human|json]
+vzctl services restart [all|net|edge|supervisor] [--format human|json]
+```
+
+Steuert die drei User-LaunchAgents `com.vzctl.net`, `com.vzctl.edge` und
+`com.vzctl.supervisor` (Plists unter `~/Library/LaunchAgents/`). Default-Ziel
+ist `all`. `dns-bind` (Root-LaunchDaemon) bleibt unter `vzctl dns
+install-bind-helper`.
+
+Start-Reihenfolge: `vz-net` → `vz-edge` → `vz-supervisor`. Stop bei `all`/`net`:
+VM-Helper graceful stoppen, dann `supervisor` → `edge` → `net` (`launchctl
+bootout`; **kein** `kickstart -k` auf `vz-net`). `restart net` recycelt danach
+auch `edge` und `supervisor`.
+
+Kanonische Commands: `services.status`, `services.start`, `services.stop`,
+`services.restart`. Payload `services[]` mit `id`, `label`, `loaded`,
+`socket`, `socket_ready`, `plist` (status) bzw. `changed`, `message`
+(start/stop/restart).
+
+Exitcodes: Usage `2`, unbekannter Service-Name `3`, fehlende LaunchAgents
+`12`, Lifecycle-Fehler `25`. Nicht-macOS: `12`.
 
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events

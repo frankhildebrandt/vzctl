@@ -125,7 +125,7 @@ Nicht interne Queries werden als unveränderte UDP-DNS-Pakete weitergeleitet:
 
 | Einstellung | Bedeutung |
 |---|---|
-| `VZCTL_DNS_UPSTREAM=system` | IPv4-Nameserver aus `/etc/resolv.conf`, bei jeder Query neu gelesen |
+| `VZCTL_DNS_UPSTREAM=system` | macOS-Systemresolver (`mDNSResponder`/DNS-SD), inklusive VPN- und Split-DNS-Auswahl |
 | `VZCTL_DNS_UPSTREAM=10.0.0.53` | ein expliziter UDP-Upstream auf Port 53 |
 | `VZCTL_DNS_UPSTREAM=10.0.0.53:5353,10.0.0.54` | geordnete Upstream-Liste |
 
@@ -134,13 +134,10 @@ Ohne Antwort liefert der Server `SERVFAIL`.
 
 ### VPN und Split DNS
 
-`system` bildet nur `/etc/resolv.conf` ab. macOS verwaltet resolver-spezifische
-Routen und VPN-Split-DNS zusätzlich in der Dynamic Store; diese Auswahl wird
-in v1 nicht nachgebaut. Ein VPN-Name kann deshalb am vzctl-DNS scheitern oder am
-falschen Upstream landen, obwohl `getaddrinfo` auf dem Host funktioniert.
-Für reproduzierbare Labs muss der gewünschte VPN-/Corporate-Resolver explizit
-über `VZCTL_DNS_UPSTREAM` gesetzt werden. Änderungen an `/etc/resolv.conf`
-werden ohne Supervisor-Restart übernommen.
+`system` fragt den macOS-Systemresolver pro DNS-Record ab. Damit folgen externe
+Queries automatisch der aktuellen resolver-spezifischen VPN-/Split-DNS-Auswahl.
+Explizite UDP-Upstreams umgehen diese Auswahl unverändert. Autoritative
+`.vz.test`-Antworten benötigen keinen Host-Egress und bleiben offline aktiv.
 
 Der echte System-Upstream lässt sich opt-in prüfen:
 

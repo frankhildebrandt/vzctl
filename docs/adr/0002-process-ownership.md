@@ -66,7 +66,7 @@ Zielbild: Control Plane + **1 Helper/VM** + minimaler `vz-net` + `vz-edge`, dami
 
 ## Consequences
 
-- Install bootstrapped `com.vzctl.net`, dann `com.vzctl.edge`, dann `com.vzctl.supervisor`.
+- Install bootstrapped `com.vzctl.net`, dann `com.vzctl.edge`, dann `com.vzctl.supervisor` (`make install` oder `vzctl services start all`).
 - Ein geplanter `vz-net`-Neustart stoppt zuerst alle VM-Helper graceful. Die
   helperseitig rekonstruierten Refs bleiben nach dem Ende des originalen
   `vz-net`-Owners nicht nutzbar; weiterlaufende VMs wären sonst vom neuen

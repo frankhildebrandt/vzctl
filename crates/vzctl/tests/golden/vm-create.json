@@ -63,7 +63,18 @@
   },
   "cloud_init": {
     "seed": "/state/vms/web/cidata.iso",
-    "agent_token": "/state/vms/web/agent.token"
+    "agent_token": "/state/vms/web/agent.token",
+    "summary": {
+      "datasource": "nocloud",
+      "custom": false,
+      "roles": [],
+      "packages": [],
+      "write_files": [
+        "/var/lib/vzctl/agent.token"
+      ],
+      "commands": 1,
+      "users": 0
+    }
   },
   "warnings": []
 }

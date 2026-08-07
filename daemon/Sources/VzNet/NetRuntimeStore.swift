@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import VzDaemonKit
 
@@ -158,6 +159,40 @@ final class NetRuntimeStore: @unchecked Sendable {
         lock.withLock { records.count }
     }
 
+    func verify() throws -> [JSONValue] {
+        try lock.withLock {
+            try requireRunning()
+            let addresses = hostIPv4Addresses()
+            return records.values.sorted { $0.name < $1.name }.map { record in
+                let refOK = handles[record.name] != nil
+                var serializationOK = false
+                var verificationError: String?
+                if let handle = handles[record.name] {
+                    do {
+                        _ = try VmnetSerialization.blob(from: handle.network)
+                        serializationOK = true
+                    } catch {
+                        verificationError = String(describing: error)
+                    }
+                } else {
+                    verificationError = "missing live vmnet handle"
+                }
+                let bridgeOK = addresses.contains(record.gateway)
+                if !bridgeOK, verificationError == nil {
+                    verificationError = "host bridge gateway \(record.gateway) is missing"
+                }
+                return .object([
+                    "name": .string(record.name),
+                    "cidr": .string(record.cidr),
+                    "ref_ok": .bool(refOK),
+                    "serialization_ok": .bool(serializationOK),
+                    "bridge_ok": .bool(bridgeOK),
+                    "error": verificationError.map(JSONValue.string) ?? .null,
+                ])
+            }
+        }
+    }
+
     func shutdown() {
         lock.withLock {
             stopped = true
@@ -171,4 +206,30 @@ final class NetRuntimeStore: @unchecked Sendable {
             throw NetRuntimeError.runtime("vz-net is shutting down")
         }
     }
+}
+
+private func hostIPv4Addresses() -> Set<String> {
+    var result = Set<String>()
+    var first: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&first) == 0, let first else { return result }
+    defer { freeifaddrs(first) }
+    var current: UnsafeMutablePointer<ifaddrs>? = first
+    while let item = current?.pointee {
+        defer { current = item.ifa_next }
+        guard let address = item.ifa_addr,
+              address.pointee.sa_family == UInt8(AF_INET)
+        else { continue }
+        var value = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+            $0.pointee.sin_addr
+        }
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &value, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else {
+            continue
+        }
+        result.insert(String(
+            decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        ))
+    }
+    return result
 }
