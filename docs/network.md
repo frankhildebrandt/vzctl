@@ -48,7 +48,7 @@ Happy Path für VMs ohne explizites Attachment:
 ```bash
 vzctl net default set lan --cidr 10.70.0.0/24
 vzctl net default show
-vzctl vm create web --from ubuntu-base --data-disk 4
+vzctl vm create web --from ubuntu-base --disk 20
 # web erhält z. B. 10.70.0.10/24, Gateway/DNS 10.70.0.0
 ```
 

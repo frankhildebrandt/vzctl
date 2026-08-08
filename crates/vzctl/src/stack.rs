@@ -299,7 +299,7 @@ fn parse_vm_add(args: &[String]) -> Result<VmAddOptions, Failure> {
     let mut from_image = "ubuntu-base".to_string();
     let mut network = None;
     let mut ip = None;
-    let mut data_disk = "4G".to_string();
+    let mut disk = "4G".to_string();
     let mut cpus = None;
     let mut memory = None;
     let mut roles = Vec::new();
@@ -332,9 +332,9 @@ fn parse_vm_add(args: &[String]) -> Result<VmAddOptions, Failure> {
                 ip = Some(next_value(args, index, "--ip requires a value")?);
                 index += 1;
             }
-            "--data-disk" => {
+            "--disk" | "--data-disk" => {
                 index += 1;
-                data_disk = next_value(args, index, "--data-disk requires a value")?;
+                disk = next_value(args, index, "--disk requires a value")?;
                 index += 1;
             }
             "--cpus" => {
@@ -393,7 +393,7 @@ fn parse_vm_add(args: &[String]) -> Result<VmAddOptions, Failure> {
             from_image,
             network,
             ip,
-            data_disk,
+            disk,
             cpus,
             memory,
             roles,
@@ -1196,7 +1196,7 @@ fn usage() -> &'static str {
 }
 
 fn vm_usage() -> &'static str {
-    "usage: vzctl stack vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr] [--data-disk size] [--cpus N] [--memory size] [--role router|docker] [--cloud-init path] [--format human|json]\n       vzctl stack vm remove <name> [-C path] [--format human|json]"
+    "usage: vzctl stack vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr] [--disk size] [--cpus N] [--memory size] [--role router|docker] [--cloud-init path] [--format human|json]\n       vzctl stack vm remove <name> [-C path] [--format human|json]"
 }
 
 fn net_usage() -> &'static str {

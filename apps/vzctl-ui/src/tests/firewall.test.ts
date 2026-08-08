@@ -60,7 +60,7 @@ describe("firewall / policy validation", () => {
     env.spec.vms.edge = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "10G",
+      disk: "10G",
       networks: [
         { name: "lan", ip: "10.80.0.2" },
         { name: "dmz", ip: "10.90.0.2" },
@@ -153,7 +153,7 @@ describe("firewall / policy validation", () => {
     snap.env.spec.vms.docker = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "40G",
+      disk: "40G",
       networks: [
         { name: "lan", ip: "10.80.0.10" },
         { name: "containers", ip: "10.95.0.2" },

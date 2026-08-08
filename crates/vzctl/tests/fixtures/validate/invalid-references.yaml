@@ -32,13 +32,13 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 40G
+      disk: 40G
       networks:
         - { name: dmz, ip: 10.90.0.10 }
       dependsOn: [database]
     database:
       from: missing-image
-      dataDisk: 40G
+      disk: 40G
       networks:
         - { name: dmz, ip: 10.80.0.10 }
       dependsOn: [web]

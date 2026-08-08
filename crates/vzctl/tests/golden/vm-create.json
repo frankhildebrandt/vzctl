@@ -1,5 +1,5 @@
 {
-  "apiVersion": "vzctl.dev/v1",
+  "apiVersion": "vzctl.dev/v2",
   "command": "vm.create",
   "status": "ok",
   "exit_code": 0,
@@ -39,10 +39,6 @@
     "root": {
       "path": "/state/vms/web/disk.raw",
       "clone": "linked",
-      "read_only": false
-    },
-    "data": {
-      "path": "/state/vms/web/dataDisk.raw",
       "size_gib": 64,
       "sparse": true,
       "read_only": false

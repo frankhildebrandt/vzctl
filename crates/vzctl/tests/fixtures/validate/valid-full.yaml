@@ -40,7 +40,7 @@ spec:
     router:
       from: ubuntu-base
       clone: linked
-      dataDisk: 4G
+      disk: 4G
       networks:
         - { name: dmz, ip: 10.80.0.2 }
         - { name: lan, ip: 10.90.0.2 }
@@ -50,7 +50,7 @@ spec:
     web:
       from: ubuntu-base
       clone: linked
-      dataDisk: 40G
+      disk: 40G
       cpus: 2
       memory: 2Gi
       networks:
@@ -63,7 +63,7 @@ spec:
     docker:
       from: ubuntu-base
       clone: linked
-      dataDisk: 100G
+      disk: 100G
       networks:
         - { name: dmz, ip: 10.80.0.50 }
       cloudInit: cloud-init/docker.yaml

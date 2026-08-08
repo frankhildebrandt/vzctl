@@ -32,7 +32,7 @@ export function VmForm({
   const t = useT();
   const [id, setId] = useState(initial?.id ?? "");
   const [from, setFrom] = useState(initial?.from ?? "ubuntu-latest");
-  const [dataDiskGib, setDataDiskGib] = useState(initial?.dataDiskGib ?? 8);
+  const [diskGib, setDiskGib] = useState(initial?.diskGib ?? 8);
   const [cpus, setCpus] = useState(initial?.cpus ?? 2);
   const [memory, setMemory] = useState(initial?.memory ?? "1024");
   const [network, setNetwork] = useState(initial?.network ?? "");
@@ -49,7 +49,7 @@ export function VmForm({
     const input: CreateVmInput = {
       id: id.trim(),
       from: from.trim(),
-      dataDiskGib: Number(dataDiskGib),
+      diskGib: Number(diskGib),
       cpus: Number(cpus),
       memory: memory.trim() || undefined,
       network: network.trim() || undefined,
@@ -115,14 +115,14 @@ export function VmForm({
             ))}
           </datalist>
         </FormField>
-        <FormField label={t("vmForm.dataDisk")}>
+        <FormField label={t("vmForm.disk")}>
           <input
             type="number"
             min={1}
             required
-            value={dataDiskGib}
+            value={diskGib}
             disabled={busy}
-            onChange={(e) => setDataDiskGib(Number(e.target.value))}
+            onChange={(e) => setDiskGib(Number(e.target.value))}
           />
         </FormField>
         <FormField label={t("vmForm.cpus")}>

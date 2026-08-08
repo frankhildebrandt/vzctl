@@ -73,6 +73,29 @@ describe("yaml round-trip", () => {
     expect(yaml).toContain("resilience:");
   });
 
+  it("normalizes legacy dataDisk to canonical disk", () => {
+    const env = scaffoldEnvironment({ name: "lab" });
+    env.spec.vms.web = {
+      from: "ubuntu-base",
+      clone: "linked",
+      disk: "20G",
+      networks: [{ name: "lan", ip: "10.80.0.10" }],
+      dependsOn: [],
+      roles: [],
+      requires: [],
+      ports: [],
+      mounts: [],
+    };
+    const yaml = serializeEnvironmentYaml(env).replace("disk: 20G", "dataDisk: 20G");
+
+    const parsed = parseEnvironmentYaml(yaml);
+
+    expect(parsed.spec.vms.web?.disk).toBe("20G");
+    const canonical = serializeEnvironmentYaml(parsed);
+    expect(canonical).toContain("disk: 20G");
+    expect(canonical).not.toContain("dataDisk:");
+  });
+
   it("rejects unsafe egress probe URLs", () => {
     const env = scaffoldEnvironment({ name: "lab" });
     env.spec.resilience!.network.egressProbe.url = "https://secret@example.com/";
@@ -88,7 +111,7 @@ describe("connection validation", () => {
     env.spec.vms.web = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "20G",
+      disk: "20G",
       networks: [{ name: "lan", ip: "10.80.0.10" }],
       dependsOn: [],
       roles: [],
@@ -111,7 +134,7 @@ describe("connection validation", () => {
     env.spec.vms.web = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "20G",
+      disk: "20G",
       networks: [{ name: "lan", ip: "10.80.0.10" }],
       dependsOn: [],
       roles: [],
@@ -134,7 +157,7 @@ describe("connection validation", () => {
     env.spec.vms.web = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "20G",
+      disk: "20G",
       networks: [{ name: "lan", ip: "10.80.0.10" }],
       dependsOn: [],
       roles: [],
@@ -171,7 +194,7 @@ describe("topology validation", () => {
     env.spec.vms.web = {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "20G",
+      disk: "20G",
       networks: [{ name: "lan", ip: "192.168.1.10" }],
       dependsOn: [],
       roles: [],

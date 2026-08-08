@@ -214,7 +214,7 @@ export default function VzHypervisorImplementationsplan() {
 
       <Callout tone="success" title="P0 + P1 + P2 Netzwerk-Epic #30">
         P0 Foundation closed. P1: #18/#19 Contracts sowie #21 mit #22 seal,
-        #23 linked clone + dataDisk und #24 Identity-Reset ✅. P2 #31/#32:
+        #23 linked clone + disk und #24 Identity-Reset ✅. P2 #31/#32:
         vmnet CRUD, Router-Apply, #51 Default-Netz mit vollem NAT-Egress und
         #33 nftables Forward-Policies mit Plan/Status ✅.
       </Callout>
@@ -577,11 +577,11 @@ export default function VzHypervisorImplementationsplan() {
           </Card>
           <Card>
             <CardHeader trailing={<Pill tone="success" size="sm" active>#24✓ #52✓</Pill>}>
-              3. dataDisk + Pull
+              3. disk + Pull
             </CardHeader>
             <CardBody>
               <Struck>
-                dataDisk pro VM · image pull *-latest Aliase · Digest/Raw-Store
+                disk pro VM · image pull *-latest Aliase · Digest/Raw-Store
               </Struck>
             </CardBody>
           </Card>
@@ -702,7 +702,7 @@ spec:
     router:
       from: ubuntu-base
       clone: linked
-      dataDisk: 4G
+      disk: 4G
       networks:
         - { name: dmz, ip: 10.80.0.2 }
         - { name: lan, ip: 10.90.0.2 }
@@ -710,14 +710,14 @@ spec:
     web:
       from: ubuntu-base
       clone: linked
-      dataDisk: 40G
+      disk: 40G
       dependsOn: [router]
       networks:
         - { name: dmz, ip: 10.80.0.10 }
     docker:
       from: ubuntu-base
       roles: [docker]
-      dataDisk: 100G
+      disk: 100G
       networks:
         - { name: dmz, ip: 10.80.0.50 }`}</Code>
       </Stack>

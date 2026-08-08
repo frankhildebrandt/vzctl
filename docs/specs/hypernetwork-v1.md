@@ -50,9 +50,13 @@ Details: [CLI Contract v1](cli-contract-v1.md#vzctl-stack-initvmnetvolumemount).
 - `spec.dns`, `images`, `networks`, `routes`, `policies`, `vms`
 - Image: `from` (pull alias), `role: base`, `tag` (Artifact-Pin für sealed Bake/Seal,
   1–64 `[A-Za-z0-9][A-Za-z0-9._-]*`)
-- VM: `from`, `dataDisk`, mindestens ein `networks[]` mit `name` und `ip`
+- VM: `from`, `disk`, mindestens ein `networks[]` mit `name` und `ip`
 
-`clone` is optional und standardmäßig `linked`. `cpus` (positive Ganzzahl) und
+`disk` ist die nutzbare Root-Kapazität der VM; der APFS Linked Clone wird vor
+dem ersten Boot sparse auf diese Größe erweitert. Alle VMs teilen unveränderte
+Blöcke des sealed Base-Images, erhalten aber eine isolierte COW-Schreibschicht.
+`dataDisk` wird beim Einlesen alter v1-Configs als Alias für `disk` akzeptiert.
+`clone` ist optional und ausschließlich `linked`. `cpus` (positive Ganzzahl) und
 `memory` (mindestens 256 MiB; MiB als bare Integer oder Size wie
 `2Gi`/`2048MiB`) sind optional und steuern Helper-Resources beim Create
 (Defaults: 2 vCPUs / 1024 MiB). `cloudInit`,

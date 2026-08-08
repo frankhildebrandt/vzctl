@@ -38,7 +38,7 @@ Rules:
 ## CLI
 
 ```bash
-vzctl vm create web --from ubuntu --data-disk 8 \
+vzctl vm create web --from ubuntu --disk 20 \
   --mount tag=web-src,source=/Users/me/app,target=/srv/app
 
 # Live (running VM) or manifest-only (stopped):

@@ -408,7 +408,7 @@ export function VmDetailPage({
           initial={{
             id: vmId,
             from: "ubuntu",
-            dataDiskGib: 8,
+            diskGib: 8,
             cpus: inspect?.resources?.cpus,
             memory: inspect?.resources
               ? String(inspect.resources.memory_mib)

@@ -716,14 +716,14 @@ fn ensure_vms(
                         ),
                     )
                 })?;
-        let size = data_disk_gib(&vm.data_disk)?;
+        let size = disk_gib(&vm.disk)?;
         let mut owned = vec![
             "vm".to_string(),
             "create".to_string(),
             runtime_id.clone(),
             "--from".to_string(),
             sealed_path.to_string_lossy().into_owned(),
-            "--data-disk".to_string(),
+            "--disk".to_string(),
             size.to_string(),
             "--project".to_string(),
             environment.spec.project.clone(),
@@ -2329,8 +2329,9 @@ fn remove_managed_vm(vm_id: &str) -> Result<(), Failure> {
         .map_err(|error| Failure::new(EXIT_STEP, format!("purge {}: {error}", bundle.display())))
 }
 
-/// True when an existing bundle already reflects the desired VM roles and
-/// vmnet NIC addresses (docker-backend nets are logical and not in identity).
+/// True when an existing bundle already reflects the desired root capacity,
+/// roles and vmnet NIC addresses (docker-backend nets are logical and not in
+/// identity).
 fn bundle_matches_vm(bundle: &Path, vm: &VmConfig) -> Result<bool, Failure> {
     let manifest = bundle.join("vm.json");
     if !manifest.is_file() {
@@ -2340,6 +2341,9 @@ fn bundle_matches_vm(bundle: &Path, vm: &VmConfig) -> Result<bool, Failure> {
         Failure::new(EXIT_STEP, format!("read {}: {error}", manifest.display()))
     })?)
     .map_err(|error| Failure::new(EXIT_STEP, format!("parse {}: {error}", manifest.display())))?;
+    if value["disks"]["root"]["size_gib"].as_u64() != Some(disk_gib(&vm.disk)?) {
+        return Ok(false);
+    }
     let mut actual_roles = value["roles"]
         .as_array()
         .into_iter()
@@ -2607,22 +2611,22 @@ fn dependency_order(vms: &BTreeMap<String, VmConfig>) -> Result<Vec<String>, Fai
     Ok(result)
 }
 
-fn data_disk_gib(value: &str) -> Result<u64, Failure> {
+fn disk_gib(value: &str) -> Result<u64, Failure> {
     let split = value
         .find(|character: char| !character.is_ascii_digit())
-        .ok_or_else(|| Failure::new(EXIT_INVALID, format!("invalid dataDisk: {value}")))?;
+        .ok_or_else(|| Failure::new(EXIT_INVALID, format!("invalid disk: {value}")))?;
     let number = value[..split]
         .parse::<u64>()
-        .map_err(|_| Failure::new(EXIT_INVALID, format!("invalid dataDisk: {value}")))?;
+        .map_err(|_| Failure::new(EXIT_INVALID, format!("invalid disk: {value}")))?;
     let unit = value[split..].to_ascii_lowercase();
     match unit.as_str() {
         "g" | "gb" | "gib" => Ok(number),
         "t" | "tb" | "tib" => number
             .checked_mul(1024)
-            .ok_or_else(|| Failure::new(EXIT_INVALID, "dataDisk is too large")),
+            .ok_or_else(|| Failure::new(EXIT_INVALID, "disk is too large")),
         _ => Err(Failure::new(
             EXIT_INVALID,
-            format!("dataDisk must use GiB/TiB for VM creation: {value}"),
+            format!("disk must use GiB/TiB for VM creation: {value}"),
         )),
     }
 }
@@ -3587,9 +3591,39 @@ mod tests {
 
     #[test]
     fn parses_gib_and_tib() {
-        assert_eq!(data_disk_gib("4G").unwrap(), 4);
-        assert_eq!(data_disk_gib("2TiB").unwrap(), 2048);
-        assert!(data_disk_gib("512M").is_err());
+        assert_eq!(disk_gib("4G").unwrap(), 4);
+        assert_eq!(disk_gib("2TiB").unwrap(), 2048);
+        assert!(disk_gib("512M").is_err());
+    }
+
+    #[test]
+    fn bundle_match_rejects_stale_root_capacity() {
+        let environment =
+            config::validate_source(include_str!("../tests/fixtures/validate/valid-full.yaml"))
+                .unwrap();
+        let vm = &environment.spec.vms["web"];
+        let bundle = std::env::temp_dir().join(format!(
+            "vzctl-bundle-match-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("vm.json"),
+            serde_json::to_vec(&json!({
+                "disks": {"root": {"size_gib": 20}},
+                "roles": [],
+                "identity": {"nics": [{"address": "10.80.0.10"}]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(!bundle_matches_vm(&bundle, vm).unwrap());
+        fs::remove_dir_all(bundle).unwrap();
     }
 
     #[test]

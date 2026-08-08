@@ -51,10 +51,18 @@ export const VmMountSchema = z.object({
   readOnly: z.boolean().default(false),
 });
 
-export const VmConfigSchema = z.object({
+export const VmConfigSchema = z.preprocess((value) => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const vm = value as Record<string, unknown>;
+  if (vm.disk !== undefined || vm.dataDisk === undefined) return value;
+  const { dataDisk, ...rest } = vm;
+  return { ...rest, disk: dataDisk };
+}, z.object({
   from: z.string().min(1),
-  clone: z.enum(["linked", "full"]).default("linked"),
-  dataDisk: z.string().min(1),
+  clone: z.literal("linked").default("linked"),
+  disk: z.string().min(1),
   cpus: z.number().int().positive().optional(),
   memory: z.union([z.string(), z.number()]).optional(),
   networks: z.array(VmNetworkSchema).min(1),
@@ -64,7 +72,7 @@ export const VmConfigSchema = z.object({
   requires: z.array(z.string()).default([]),
   ports: z.array(z.string()).default([]),
   mounts: z.array(VmMountSchema).default([]),
-});
+}));
 
 export const ImageConfigSchema = z.object({
   from: z.string().min(1),

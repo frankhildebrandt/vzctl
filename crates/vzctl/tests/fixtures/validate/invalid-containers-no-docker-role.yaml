@@ -24,7 +24,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 8G
+      disk: 8G
       networks:
         - { name: lan, ip: 10.90.0.10 }
       containers:

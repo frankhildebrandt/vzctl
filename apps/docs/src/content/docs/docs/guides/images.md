@@ -39,5 +39,6 @@ Bake/Seal nutzen lokales `virt-customize` oder die gepinnte Builder-VM-Appliance
 
 ## Clones
 
-Sealed Base nie writable öffnen. VMs sind APFS Linked Clones + eigene dataDisk;
+Sealed Base nie writable öffnen. VMs sind APFS Linked Clones mit sparse
+erweiterter Root-Disk; unveränderte Blöcke bleiben zwischen allen VMs geteilt.
 Identity (machine-id, MAC, SSH-Host-Keys, cloud-init instance-id) wird pro Clone neu gesetzt.

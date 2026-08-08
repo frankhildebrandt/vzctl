@@ -6,7 +6,7 @@ Network-Sollzustand aus #31 um Router-VMs.
 ## Router anlegen
 
 ```bash
-vzctl vm create router --from ubuntu-base --data-disk 4 --role router
+vzctl vm create router --from ubuntu-base --disk 20 --role router
 vzctl net attach router --network dmz --ip 10.80.0.2
 vzctl net attach router --network lan --ip 10.90.0.2
 ```

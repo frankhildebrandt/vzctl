@@ -258,7 +258,7 @@ spec:
   vms:
     docker:
       from: ubuntu-base
-      dataDisk: 40G
+      disk: 40G
       networks:
         - { name: lan, ip: 10.90.0.10 }
         - { name: containers, ip: 10.95.0.2 }

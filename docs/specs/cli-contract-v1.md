@@ -50,6 +50,10 @@ Felder dürfen nicht umbenannt, entfernt oder semantisch geändert werden.
 Breaking Changes benötigen eine neue `apiVersion`. Feldreihenfolge ist nicht
 Teil des Vertrags.
 
+`vm.create` liefert ab der Root-Disk-Migration `vzctl.dev/v2`: `disks.root`
+beschreibt die konfigurierte Root-Kapazität; die frühere zusätzliche
+`disks.data` entfällt. Alle übrigen Commands bleiben auf `vzctl.dev/v1`.
+
 ## Status und WARN/FAIL
 
 - `ok`: Operation erfolgreich, keine relevante Warnung.
@@ -173,7 +177,7 @@ Secrets bereinigt ausgegeben.
 
 ```bash
 vzctl stack init [DIR] --name <project> [--cidr CIDR] [--force] [-C path] [--format human|json]
-vzctl stack vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr] [--data-disk SIZE]
+vzctl stack vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr] [--disk SIZE]
   [--cpus N] [--memory size] [--role router|docker] [--cloud-init path] [--format human|json]
 vzctl stack vm remove <name> [-C path] [--format human|json]
 vzctl stack net add <name> --cidr CIDR [-C path] [--mode shared|host] [--backend vmnet|docker]
@@ -258,7 +262,12 @@ Customize-Backend (lokal oder Builder-Appliance) `12` und die
 commandspezifischen Fehler `13`–`15`.
 Details stehen im [Image Seal Contract v1](../images/seal-contract-v1.md).
 
-### `vzctl vm create <id> --from <sealed> --data-disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--project P] [--root-password <secret>] --format json`
+### `vzctl vm create <id> --from <sealed> --disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--project P] [--root-password <secret>] --format json`
+
+`--disk` legt die nutzbare Root-Kapazität fest. vzctl erstellt auf APFS einen
+isolierten Linked Clone, dessen unveränderte Blöcke mit dem sealed Base geteilt
+bleiben, und erweitert Partition sowie Root-Dateisystem beim ersten Boot.
+`--data-disk` bleibt als veralteter CLI-Alias für `--disk` akzeptiert.
 
 Payloads: `vm`, `network`, `image`, `disks`, `identity`, `cloud_init` und `warnings`;
 kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue

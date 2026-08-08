@@ -86,11 +86,11 @@ export function TopologyInspector() {
           />
         </label>
         <label className="topology-field">
-          <span>{t("topo.field.dataDisk")}</span>
+          <span>{t("topo.field.disk")}</span>
           <input
             type="text"
-            value={vm.dataDisk}
-            onChange={(e) => updateVm(name, { dataDisk: e.target.value })}
+            value={vm.disk}
+            onChange={(e) => updateVm(name, { disk: e.target.value })}
           />
         </label>
         <fieldset className="topology-fieldset">

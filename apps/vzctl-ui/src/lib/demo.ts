@@ -69,7 +69,7 @@ function seedDemoProject(): void {
     router: {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "4G",
+      disk: "4G",
       networks: [
         { name: "dmz", ip: "10.80.0.2" },
         { name: "lan", ip: "10.90.0.2" },
@@ -83,7 +83,7 @@ function seedDemoProject(): void {
     web: {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "40G",
+      disk: "40G",
       networks: [{ name: "dmz", ip: "10.80.0.10" }],
       dependsOn: ["router"],
       roles: [],
@@ -94,7 +94,7 @@ function seedDemoProject(): void {
     docker: {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "100G",
+      disk: "100G",
       networks: [
         { name: "lan", ip: "10.90.0.10" },
         { name: "containers", ip: "10.95.0.2" },
@@ -108,7 +108,7 @@ function seedDemoProject(): void {
     host: {
       from: "ubuntu-base",
       clone: "linked",
-      dataDisk: "20G",
+      disk: "20G",
       cpus: 2,
       memory: "2048MiB",
       networks: [{ name: "lan", ip: "10.90.0.11" }],

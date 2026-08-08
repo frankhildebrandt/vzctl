@@ -11,7 +11,7 @@ describe("projection helpers", () => {
       env.spec.vms[`vm-${i}`] = {
         from: "ubuntu-base",
         clone: "linked",
-        dataDisk: "10G",
+        disk: "10G",
         networks: [{ name: i % 2 === 0 ? "lan" : "dmz", ip: `10.${i % 2 === 0 ? 80 : 90}.0.${10 + i}` }],
         dependsOn: [],
         roles: [],

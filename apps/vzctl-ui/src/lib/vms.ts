@@ -51,7 +51,7 @@ export type VmInspect = {
 export type CreateVmInput = {
   id: string;
   from: string;
-  dataDiskGib: number;
+  diskGib: number;
   cpus?: number;
   memory?: string;
   network?: string;
@@ -241,7 +241,7 @@ export async function createVm(input: CreateVmInput): Promise<VzctlEnvelope> {
     await api.post("/v1/vms", {
       id: input.id,
       from: input.from,
-      dataDiskGib: input.dataDiskGib,
+      diskGib: input.diskGib,
       cpus: input.cpus,
       memory: input.memory,
       network: input.network,

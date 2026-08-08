@@ -3,9 +3,8 @@
 # (user vzctl + authorized_keys). Do not publish TCP 2375.
 # With backend: docker, vzctl writes /etc/docker/daemon.json (bip=.2, iptables:false).
 #
-# Mount the data disk before apt so package caches /var/lib/docker stay off the
-# small sealed root; Ubuntu growpart expands a vzctl-grown 8GiB root on first boot.
-# Pick the largest writable non-root disk (skip cidata / RO media).
+# A legacy extra disk is mounted when present. New VMs use the configured sparse
+# root capacity; Ubuntu growpart expands it on first boot.
 bootcmd:
   - |
     (

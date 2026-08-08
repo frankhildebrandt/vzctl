@@ -123,7 +123,7 @@ spec:
     router:
       from: ubuntu-base
       clone: linked
-      dataDisk: 4G
+      disk: 4G
       networks:
         - name: dmz
           ip: 10.80.1.2
@@ -139,7 +139,7 @@ spec:
     web:
       from: ubuntu-base
       clone: linked
-      dataDisk: 40G
+      disk: 40G
       networks:
         - name: dmz
           ip: 10.80.1.10
@@ -154,7 +154,7 @@ spec:
     docker:
       from: ubuntu-base
       clone: linked
-      dataDisk: 100G
+      disk: 100G
       networks:
         - name: lan
           ip: 10.90.0.10
@@ -172,7 +172,7 @@ spec:
     host:
       from: ubuntu-base
       clone: linked
-      dataDisk: 20G
+      disk: 20G
       cpus: 2
       memory: 2048MiB
       networks:

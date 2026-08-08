@@ -79,7 +79,7 @@ Issue-Bodies sind **implementationsreif** formatiert und mit G0-Messungen (2026-
 | [#19](https://github.com/frankhildebrandt/vzctl/issues/19) | Event-Schema + Subscribe | **closed** (UDS + NDJSON + Filter) |
 | [#21](https://github.com/frankhildebrandt/vzctl/issues/21) | Base Seal / Linked Clones / Identity | **complete** (#22/#23/#24 ✅) |
 | [#22](https://github.com/frankhildebrandt/vzctl/issues/22) | `vzctl image seal` | **closed** (offline ✅; Builder-VM Backend in vzctl) |
-| [#23](https://github.com/frankhildebrandt/vzctl/issues/23) | APFS linked clone + `dataDisk` | **closed** (APFS COW + fallback + Helper attach) |
+| [#23](https://github.com/frankhildebrandt/vzctl/issues/23) | APFS linked clone + Root-Disk | **closed** (APFS COW, geteilte Base-Blöcke, sparse Root-Kapazität) |
 | [#24](https://github.com/frankhildebrandt/vzctl/issues/24) | Identity-Reset | **complete** (NoCloud + Helper-MAC) |
 | [#31](https://github.com/frankhildebrandt/vzctl/issues/31) | vmnet Network CRUD + Attachments | **closed** (SQLite rebuild + refs + metadata) |
 | [#32](https://github.com/frankhildebrandt/vzctl/issues/32) | Router-Template + Routes | **complete** (Helper→Guest-Agent, idempotent, default DROP) |

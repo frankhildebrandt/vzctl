@@ -9,7 +9,7 @@ vzctl image list
 vzctl image pull ubuntu-latest
 vzctl image pull coreos-latest --format json
 vzctl image seal ubuntu-latest
-vzctl vm create web --from ubuntu-latest --data-disk 4
+vzctl vm create web --from ubuntu-latest --disk 20
 ```
 
 ## Katalog und Pins

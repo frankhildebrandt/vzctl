@@ -98,7 +98,7 @@ type EditorStore = {
     patch: Partial<{
       cpus: number;
       memory: string;
-      dataDisk: string;
+      disk: string;
       roles: Array<"router" | "docker">;
       dependsOn: string[];
     }>,

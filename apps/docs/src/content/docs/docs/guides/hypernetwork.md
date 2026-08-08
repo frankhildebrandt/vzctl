@@ -38,7 +38,7 @@ spec:
   vms:
     web:
       from: ubuntu
-      dataDisk: 4Gi
+      disk: 4Gi
       networks:
         - name: lan
           ip: 10.90.0.10
@@ -60,7 +60,7 @@ Unvollständige Apply-Journals: `--resume` oder `--abort`.
 ## Wichtige Felder
 
 - **Images:** `from` (Pull-Alias), `role: base`, `tag` pinnt sealed Artefakte
-- **VMs:** `from`, `dataDisk`, mindestens ein Netz mit `name` + `ip`
+- **VMs:** `from`, `disk` (Root-Kapazität), mindestens ein Netz mit `name` + `ip`
 - **Optional:** `cpus`, `memory`, `cloudInit`, `dependsOn`, `roles` (`router`, `docker`)
 - **Policies:** bei mehreren passenden Routern `policies.*.via` setzen
 

@@ -457,9 +457,9 @@ pub(crate) struct VmConfig {
     pub(crate) from: String,
     #[serde(default = "default_clone")]
     pub(crate) clone: CloneMode,
-    #[serde(rename = "dataDisk")]
+    #[serde(alias = "dataDisk")]
     #[schemars(regex(pattern = r"^[1-9][0-9]*(?:[KMGTP]i?B?|[kmgpt]i?b?)$"))]
-    pub(crate) data_disk: String,
+    pub(crate) disk: String,
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub(crate) cpus: Option<u32>,
@@ -541,7 +541,6 @@ pub(crate) const VIRTIOFS_DEVICE_TAG: &str = "vzctl";
 #[serde(rename_all = "lowercase")]
 pub(crate) enum CloneMode {
     Linked,
-    Full,
 }
 
 fn default_clone() -> CloneMode {
@@ -2530,7 +2529,7 @@ pub(crate) struct AddVmOptions {
     pub(crate) from_image: String,
     pub(crate) network: Option<String>,
     pub(crate) ip: Option<String>,
-    pub(crate) data_disk: String,
+    pub(crate) disk: String,
     pub(crate) cpus: Option<u32>,
     pub(crate) memory: Option<String>,
     pub(crate) roles: Vec<String>,
@@ -2626,7 +2625,7 @@ pub(crate) fn add_vm(
         VmConfig {
             from: from_image,
             clone: CloneMode::Linked,
-            data_disk: options.data_disk.clone(),
+            disk: options.disk.clone(),
             cpus: options.cpus,
             memory: options.memory.clone(),
             networks: vec![VmNetwork {
@@ -2928,7 +2927,7 @@ spec:
   vms:
     docker:
       from: ubuntu-base
-      dataDisk: 40G
+      disk: 40G
       networks:
         - { name: lan, ip: 10.90.0.10 }
       roles: [docker]
@@ -2960,7 +2959,7 @@ spec:
   vms:
     docker:
       from: ubuntu-base
-      dataDisk: 40G
+      disk: 40G
       networks:
         - { name: lan, ip: 10.90.0.10 }
         - { name: containers, ip: 10.95.0.2 }
@@ -2990,7 +2989,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 8G
+      disk: 8G
       networks:
         - { name: lan, ip: 10.90.0.10 }
 "#;
@@ -3045,7 +3044,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       roles: [builder]
       ports: ["8080:80"]
@@ -3084,7 +3083,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       mounts:
         - { source: missing, target: /srv/app }
@@ -3127,14 +3126,14 @@ spec:
   vms:
     router:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       roles: [router]
       networks:
         - { name: dmz, ip: 10.80.0.2 }
         - { name: lan, ip: 10.90.0.2 }
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3169,7 +3168,7 @@ spec:
   vms:
     router:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       roles: [router]
       networks:
         - { name: dmz, ip: 10.80.0.2 }
@@ -3204,7 +3203,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       mounts:
         - { source: web-src, target: /srv/app }
@@ -3272,7 +3271,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       requires: [oidc]
 "#;
@@ -3316,7 +3315,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3372,7 +3371,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       requires: [oidc]
 "#;
@@ -3425,7 +3424,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3466,7 +3465,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3521,7 +3520,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
       requires: [oidc]
 "#;
@@ -3576,7 +3575,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3626,7 +3625,7 @@ spec:
   vms:
     web:
       from: ubuntu-base
-      dataDisk: 4G
+      disk: 4G
       networks: [{ name: dmz, ip: 10.80.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
@@ -3711,7 +3710,7 @@ spec:
                 from_image: "ubuntu-base".to_string(),
                 network: Some("lan".to_string()),
                 ip: Some("10.80.0.10".to_string()),
-                data_disk: "4G".to_string(),
+                disk: "4G".to_string(),
                 cpus: None,
                 memory: None,
                 roles: Vec::new(),

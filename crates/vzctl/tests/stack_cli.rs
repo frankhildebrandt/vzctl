@@ -72,6 +72,8 @@ fn stack_vm_add_assigns_next_free_ip() {
             "web",
             "-C",
             root.to_str().unwrap(),
+            "--disk",
+            "20G",
             "--format",
             "json",
         ])
@@ -81,6 +83,9 @@ fn stack_vm_add_assigns_next_free_ip() {
     let envelope: Value = serde_json::from_slice(&add.stdout).unwrap();
     assert_eq!(envelope["vm"], "web");
     assert_eq!(envelope["ip"], "10.80.0.10");
+    let config = fs::read_to_string(root.join("hypernetwork.config.yaml")).unwrap();
+    assert!(config.contains("disk: 20G"));
+    assert!(!config.contains("dataDisk:"));
 
     let collision = vzctl()
         .args([

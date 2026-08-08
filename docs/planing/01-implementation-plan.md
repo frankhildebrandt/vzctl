@@ -10,7 +10,7 @@ Devstack-Supervisor auf **Virtualization.framework**:
 
 - Git-native Environments (`hypernetwork.config.yaml`) — `up` / `down` / `apply`
 - Custom Networks + Routing (Router-VM) + Firewall-Policy
-- Shared Base + APFS Linked Clones + `dataDisk` + Identity-Reset
+- Shared Base + APFS Linked Clones + `disk` + Identity-Reset
 - Hypervisor-DNS (intern) + macOS-Resolver
 - Docker-Context + Port-Forwards (Polish in v0.1.x)
 - v0.2: Ingress (Caddy), Local CA→Guests, OIDC (Dex)
@@ -207,7 +207,7 @@ spec:
     router:
       from: ubuntu-base
       clone: linked
-      dataDisk: 4G
+      disk: 4G
       networks:
         - { name: dmz, ip: 10.80.0.2 }   # .1 = Gateway-Konvention Spike
         - { name: lan, ip: 10.90.0.2 }
@@ -217,7 +217,7 @@ spec:
     web:
       from: ubuntu-base
       clone: linked
-      dataDisk: 40G
+      disk: 40G
       dependsOn: [router]
       networks:
         - { name: dmz, ip: 10.80.0.10 }
@@ -226,7 +226,7 @@ spec:
     docker:
       from: ubuntu-base
       roles: [docker]
-      dataDisk: 100G
+      disk: 100G
       networks:
         - { name: dmz, ip: 10.80.0.50 }
 ```
@@ -234,9 +234,9 @@ spec:
 ### Linked Clone / Identity
 
 1. ✅ Base mit Agent sealen (`role: base`, immutable) — #22
-2. ✅ APFS `clonefile` + neues `dataDisk` — #23
+2. ✅ APFS `clonefile` + neues `disk` — #23
 3. ✅ Auto: MACs, machine-id, Hostname, SSH Host Keys, instance-id — #24
-4. Disk-Lifecycle: Seal nie schreiben; purge löscht Clone+dataDisk; Base bleibt
+4. Disk-Lifecycle: Seal nie schreiben; purge löscht Clone+disk; Base bleibt
 
 ### v0.2 Auszug
 

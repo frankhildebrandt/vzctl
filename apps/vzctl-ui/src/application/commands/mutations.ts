@@ -142,7 +142,7 @@ export function applyCreateVm(
     roles?: Array<"router" | "docker">;
     cpus?: number;
     memory?: string;
-    dataDisk?: string;
+    disk?: string;
     position: { x: number; y: number };
   },
 ): EditorSnapshot {
@@ -163,7 +163,7 @@ export function applyCreateVm(
   env.spec.vms[name] = {
     from: Object.keys(env.spec.images)[0] ?? "ubuntu-base",
     clone: "linked",
-    dataDisk: opts.dataDisk ?? "20G",
+    disk: opts.disk ?? "20G",
     cpus: opts.cpus ?? 2,
     memory: opts.memory ?? "2048MiB",
     networks,
@@ -556,7 +556,7 @@ export function applyUpdateVm(
   patch: Partial<{
     cpus: number;
     memory: string;
-    dataDisk: string;
+    disk: string;
     roles: Array<"router" | "docker">;
     dependsOn: string[];
   }>,

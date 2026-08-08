@@ -74,8 +74,8 @@ The boot disk must be a writable raw Ubuntu arm64 disk image (not QCOW2):
 
 ```text
 vm.bundle/
-├── disk.raw       # required unless --disk is supplied
-├── dataDisk.raw   # optional writable per-VM data disk
+├── disk.raw       # sparse writable APFS COW root; shares sealed base blocks
+├── dataDisk.raw   # optional legacy extra disk (existing bundles only)
 ├── cidata.iso     # optional cloud-init seed
 ├── agent.token    # optional guest-agent token, mode 0600
 ├── vm.json        # optional vzctl manifest incl. persisted NIC MAC

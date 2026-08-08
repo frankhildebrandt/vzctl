@@ -329,8 +329,8 @@ final class RestRouter: @unchecked Sendable {
             throw RestRouteError(400, .badRequest, "from required")
         }
         var args = ["vm", "create", id, "--from", from, "--format", "json"]
-        if case let .number(disk)? = obj["dataDiskGib"] {
-            args += ["--data-disk", String(Int(disk))]
+        if case let .number(disk)? = obj["diskGib"] ?? obj["dataDiskGib"] {
+            args += ["--disk", String(Int(disk))]
         }
         if case let .number(cpus)? = obj["cpus"] {
             args += ["--cpus", String(Int(cpus))]
