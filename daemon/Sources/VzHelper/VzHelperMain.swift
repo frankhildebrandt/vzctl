@@ -6,9 +6,10 @@ import VzDaemonKit
 @main
 enum VzHelperMain {
     static func main() async {
+        let arguments = Array(CommandLine.arguments.dropFirst())
         do {
             switch try HelperArguments.parse(
-                Array(CommandLine.arguments.dropFirst()),
+                arguments,
                 environment: ProcessInfo.processInfo.environment
             ) {
             case .version:
@@ -23,13 +24,34 @@ enum VzHelperMain {
                 try await agentSmoke(options)
             }
         } catch let error as HelperError {
+            reportRunFailure(arguments: arguments, error: error)
             fputs("error: \(error)\n", stderr)
             if case .usage = error { fputs("\n\(help)\n", stderr) }
             exit(error.isUsage ? VzExit.usage.rawValue : 1)
         } catch {
+            reportRunFailure(arguments: arguments, error: error)
             fputs("error: \(error)\n", stderr)
             exit(1)
         }
+    }
+
+    static func reportRunFailure(arguments: [String], error: Error) {
+        guard arguments.first == "run",
+              let vmID = argumentValue("--vm-id", in: arguments),
+              let bundle = argumentValue("--bundle", in: arguments),
+              let socketPath = argumentValue("--supervisor-sock", in: arguments)
+        else {
+            return
+        }
+        SupervisorReporter(vmID: vmID, bundle: bundle, socketPath: socketPath)
+            .report(.failed, error: String(describing: error))
+    }
+
+    private static func argumentValue(_ flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else {
+            return nil
+        }
+        return arguments[index + 1]
     }
 
     private static func agentSmoke(_ options: RunOptions) async throws {
@@ -193,39 +215,39 @@ enum VzHelperMain {
     }
 
     private static func run(_ options: RunOptions) async throws {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        guard version.majorVersion >= VzDaemonKit.minMacOSMajor else {
-            throw HelperError.invalid("macOS \(VzDaemonKit.minMacOSMajor)+ required")
-        }
-
-        let stateDirectory = try StatePaths.stateDirectory(
-            environment: ProcessInfo.processInfo.environment
-        )
-        let lock = try HelperLock(vmID: options.vmID, stateDirectory: stateDirectory)
-        defer { withExtendedLifetime(lock) {} }
-
-        signal(SIGPIPE, SIG_IGN)
-        let signals = terminationSignals()
         let reporter = SupervisorReporter(
             vmID: options.vmID,
             bundle: options.bundleURL.path,
             socketPath: options.supervisorSocket
         )
-        reporter.report(.starting, method: "helper.hello")
-
-        if options.mock {
-            print("vm-id=\(options.vmID) state=running mock=true lock=\(lock.url.path)")
-            fflush(stdout)
-            reporter.report(.running)
-            let heartbeat = heartbeatTask(reporter: reporter, state: .running)
-            _ = await signals.stream.first { _ in true }
-            heartbeat.cancel()
-            reporter.report(.stopped)
-            return
-        }
-
         var runtime: VirtualMachineRuntime?
         do {
+            let version = ProcessInfo.processInfo.operatingSystemVersion
+            guard version.majorVersion >= VzDaemonKit.minMacOSMajor else {
+                throw HelperError.invalid("macOS \(VzDaemonKit.minMacOSMajor)+ required")
+            }
+
+            let stateDirectory = try StatePaths.stateDirectory(
+                environment: ProcessInfo.processInfo.environment
+            )
+            let lock = try HelperLock(vmID: options.vmID, stateDirectory: stateDirectory)
+            defer { withExtendedLifetime(lock) {} }
+
+            signal(SIGPIPE, SIG_IGN)
+            let signals = terminationSignals()
+            reporter.report(.starting, method: "helper.hello")
+
+            if options.mock {
+                print("vm-id=\(options.vmID) state=running mock=true lock=\(lock.url.path)")
+                fflush(stdout)
+                reporter.report(.running)
+                let heartbeat = heartbeatTask(reporter: reporter, state: .running)
+                _ = await signals.stream.first { _ in true }
+                heartbeat.cancel()
+                reporter.report(.stopped)
+                return
+            }
+
             let timeSyncToken: String?
             if FileManager.default.fileExists(atPath: options.agentTokenURL.path) {
                 timeSyncToken = try AgentToken.load(from: options.agentTokenURL)
@@ -339,7 +361,6 @@ enum VzHelperMain {
             }
         } catch {
             if let runtime { await runtime.stop() }
-            reporter.report(.failed)
             throw error
         }
     }

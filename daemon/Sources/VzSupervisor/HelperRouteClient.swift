@@ -11,7 +11,7 @@ enum HelperRouteClient {
     ) throws -> JSONValue {
         let path = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
-            .appendingPathComponent("\(StateFileName.component(plan.vmID)).sock")
+            .appendingPathComponent("\(StateFileName.socketComponent(plan.vmID)).sock")
             .path
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw RouteApplyError.unavailable("helper socket: \(errno)") }

@@ -99,6 +99,78 @@ fn stack_vm_add_assigns_next_free_ip() {
 }
 
 #[test]
+fn stack_vm_add_rejects_memory_below_supported_minimum() {
+    let root = std::env::temp_dir().join(format!("vzctl-stack-vm-memory-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    vzctl()
+        .args(["stack", "init", "--name", "lab"])
+        .arg(&root)
+        .status()
+        .unwrap();
+
+    let config_path = root.join("hypernetwork.config.yaml");
+    let before = fs::read_to_string(&config_path).unwrap();
+    let add = vzctl()
+        .args([
+            "stack",
+            "vm",
+            "add",
+            "web",
+            "-C",
+            root.to_str().unwrap(),
+            "--memory",
+            "6",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(add.status.code(), Some(3));
+    let envelope: Value = serde_json::from_slice(&add.stderr).unwrap();
+    assert_eq!(envelope["command"], "stack.vm.add");
+    assert!(envelope["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("at least 256 MiB"));
+    assert!(envelope["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("6Gi"));
+    assert_eq!(fs::read_to_string(config_path).unwrap(), before);
+}
+
+#[test]
+fn stack_vm_add_accepts_explicit_gib_memory() {
+    let root =
+        std::env::temp_dir().join(format!("vzctl-stack-vm-memory-gib-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    vzctl()
+        .args(["stack", "init", "--name", "lab"])
+        .arg(&root)
+        .status()
+        .unwrap();
+
+    let add = vzctl()
+        .args([
+            "stack",
+            "vm",
+            "add",
+            "web",
+            "-C",
+            root.to_str().unwrap(),
+            "--memory",
+            "6Gi",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(add.status.success(), "{add:?}");
+    let config = fs::read_to_string(root.join("hypernetwork.config.yaml")).unwrap();
+    assert!(config.contains("memory: 6Gi"));
+}
+
+#[test]
 fn stack_net_remove_fails_when_vm_attached() {
     let root = std::env::temp_dir().join(format!("vzctl-stack-net-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();

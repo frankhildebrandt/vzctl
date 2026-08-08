@@ -19,15 +19,21 @@ final class SupervisorReporter: @unchecked Sendable {
         self.socketPath = socketPath
     }
 
-    func report(_ state: HelperState, method: String = "helper.state") {
+    func report(
+        _ state: HelperState,
+        method: String = "helper.state",
+        error: String? = nil
+    ) {
+        var params: [String: JSONValue] = [
+            "vm_id": .string(vmID),
+            "state": .string(state.rawValue),
+            "pid": .number(Double(getpid())),
+            "bundle": .string(bundle),
+        ]
+        if let error { params["error"] = .string(error) }
         let request = JSONRPCRequest(
             method: method,
-            params: .object([
-                "vm_id": .string(vmID),
-                "state": .string(state.rawValue),
-                "pid": .number(Double(getpid())),
-                "bundle": .string(bundle),
-            ]),
+            params: .object(params),
             id: .number(Double.random(in: 1...9_000_000))
         )
         do {

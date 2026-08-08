@@ -165,6 +165,9 @@ Nach `await_agents` wartet `await_cloud_init` bei neu erstellten oder ersetzten
 VMs parallel auf Cloud-init. Exit `1`, Exit `2`, `disabled`, fehlendes
 `cloud-init` und Timeout (180s, Docker 600s) liefern Exit `24`. Angezeigt werden
 nur strukturierte Stufen und eine sichere Inhaltszusammenfassung.
+Ein Helper mit `state=failed` beendet `await_agents` sofort; dessen
+`last_error` wird auf eine Zeile und 160 Zeichen begrenzt sowie um mögliche
+Secrets bereinigt ausgegeben.
 
 ### `vzctl stack init|vm|net|volume|mount`
 
@@ -191,8 +194,9 @@ Config bereits existiert.
 
 Mutationen laden die Config, ändern sie in-memory und schreiben atomisch nur bei
 validem Ergebnis. `stack vm add` vergibt ohne `--ip` die nächste freie Gast-IP
-(`.10+`, docker-backend `.2`). Volume-Pfade müssen existierende Verzeichnisse
-sein (relativ zur Config oder absolut).
+(`.10+`, docker-backend `.2`) und lehnt `--memory` unter 256 MiB ab.
+Volume-Pfade müssen existierende Verzeichnisse sein (relativ zur Config oder
+absolut).
 
 JSON-Payloads: `stack.init` → `path`, `name`, `project`; `stack.vm.add` →
 `path`, `vm`, `ip`; Remove-Commands → `path` plus entfernter Key (`vm`,
@@ -260,8 +264,10 @@ Payloads: `vm`, `network`, `image`, `disks`, `identity`, `cloud_init` und `warni
 kanonischer Command ist `vm.create`. Pro Bundle entstehen eine neue
 cloud-init `instance-id`, eine local-admin MAC (`02:…`), Hostname/FQDN,
 `cidata.iso` und ein privater Agent-Token. `vm.resources` enthält `cpus` und
-`memory_mib` (Defaults `2` / `1024`); `--cpus` und `--memory` (bare MiB oder
-`512M`/`2G`/`2Gi`) überschreiben sie und landen in `vm.json`.
+`memory_mib` (Defaults `2` / `1024`); `--cpus` und `--memory` (mindestens
+256 MiB; bare MiB oder `512M`/`2G`/`2Gi`) überschreiben sie und landen in
+`vm.json`. Bei kleinen bare Werten nennt die Diagnose explizit die MiB-Semantik
+und eine passende GiB-Schreibweise.
 `cloud_init.summary` enthält additiv Datasource, Rollen, Paketnamen,
 Zieldateipfade sowie die Anzahl von Kommandos und Benutzern. Datei-Inhalte,
 Kommandotexte, Passwörter und Token-Werte werden nie aufgenommen.
@@ -334,8 +340,8 @@ Detach-Konflikte `17` und Timeout/Lifecycle-Fehler `24`.
 
 Kanonischer Command ist `vm.modify`. Patcht `resources.{cpus,memory_mib}` in
 `$VZCTL_STATE_DIR/vms/<id>/vm.json`. Mindestens eines von `--cpus` oder
-`--memory` ist Pflicht; Größenparsing entspricht `vm create` (bare MiB oder
-`512M`/`2G`/`2Gi`). Es gibt keinen Hotplug: Änderungen greifen erst beim
+`--memory` ist Pflicht; Größenparsing entspricht `vm create` (mindestens
+256 MiB; bare MiB oder `512M`/`2G`/`2Gi`). Es gibt keinen Hotplug: Änderungen greifen erst beim
 nächsten Helper-Start. Läuft die VM, liefert das Envelope
 `restart_required: true` und `live: false` ohne Auto-Restart. Payload enthält
 `vm.resources`. Usage ohne Flags liefert `2`, ungültige IDs/Werte `3`,
@@ -375,7 +381,8 @@ zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).
 `exec` + base64/`tee` und ist auf 256 KiB begrenzt (darüber Exit `12`).
 `services` und `vm ps` sind feste `exec`-Wrapper (`systemctl` bzw. `ps`).
 `attach` öffnet die Serial-Console am Helper-Socket
-`$VZCTL_STATE_DIR/helpers/<vm>.console.sock` im Raw-TTY-Modus.
+`$VZCTL_STATE_DIR/helpers/<FNV64(vm-id)>.console.sock` im Raw-TTY-Modus. Der
+hash-only Dateiname hält den AF_UNIX-Pfad auch bei Project-prefixten VM-IDs kurz.
 Detach mit **Ctrl-P Ctrl-Q** (wie Docker; nicht Ctrl-C — das geht im Raw-Modus
 an den Guest). Literal Ctrl-P an den Guest: Ctrl-P Ctrl-P.
 

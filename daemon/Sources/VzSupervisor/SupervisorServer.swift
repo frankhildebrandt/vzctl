@@ -46,6 +46,7 @@ final class SupervisorServer: @unchecked Sendable {
     private let edgeClient: VzEdgeClient
     private var helpers: [String: HelperRecord] = [:]
     private var helperProcesses: [String: Process] = [:]
+    private var expectedHelperStops: Set<String> = []
     private var subscribers: [UUID: EventSubscriber] = [:]
     private var eventListeners: [UUID: EventListener] = [:]
     private var restServer: RestServer?
@@ -210,6 +211,24 @@ final class SupervisorServer: @unchecked Sendable {
     }
 
     var apiListenDescription: String { apiListenSpec.description }
+
+    static func helperTerminationMessage(
+        status: Int32,
+        reason: Process.TerminationReason
+    ) -> String {
+        switch reason {
+        case .exit:
+            return "helper exited with status \(status) before reporting an error"
+        case .uncaughtSignal:
+            return "helper terminated by signal \(status) before reporting an error"
+        @unknown default:
+            return "helper terminated unexpectedly with status \(status)"
+        }
+    }
+
+    static func helperTerminationState(expected: Bool, status: Int32) -> String {
+        expected || status == 0 ? "stopped" : "failed"
+    }
 
     private func handle(_ client: Int32) {
         guard peerUID(client) == geteuid() else { return }
@@ -382,16 +401,45 @@ final class SupervisorServer: @unchecked Sendable {
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.standardError
                 process.terminationHandler = { [weak self] process in
-                    _ = self?.stateLock.withLock {
-                        self?.helperProcesses.removeValue(forKey: vmID)
-                        self?.helpers.removeValue(forKey: vmID)
+                    guard let self else { return }
+                    let termination = self.stateLock.withLock { () -> (String, String?) in
+                        self.helperProcesses.removeValue(forKey: vmID)
+                        let expected = self.expectedHelperStops.remove(vmID) != nil
+                        let state = Self.helperTerminationState(
+                            expected: expected,
+                            status: process.terminationStatus
+                        )
+                        if state == "stopped" {
+                            self.helpers.removeValue(forKey: vmID)
+                            return (state, nil)
+                        }
+                        if self.helpers[vmID]?.state == "failed" {
+                            return (state, self.helpers[vmID]?.lastError)
+                        }
+                        let message = Self.helperTerminationMessage(
+                            status: process.terminationStatus,
+                            reason: process.terminationReason
+                        )
+                        self.helpers[vmID] = HelperRecord(
+                            vmID: vmID,
+                            state: "failed",
+                            pid: Int(process.processIdentifier),
+                            bundle: bundle,
+                            lastError: message
+                        )
+                        return (state, message)
                     }
-                    self?.emit(type: "vm.state", data: [
+                    self.emit(type: "vm.state", data: [
                         "vm_id": .string(vmID),
-                        "state": .string(process.terminationStatus == 0 ? "stopped" : "failed"),
+                        "state": .string(termination.0),
                         "pid": .number(Double(process.processIdentifier)),
                         "bundle": .string(bundle),
+                        "last_error": termination.1.map(JSONValue.string) ?? .null,
                     ])
+                }
+                stateLock.withLock {
+                    _ = helpers.removeValue(forKey: vmID)
+                    _ = expectedHelperStops.remove(vmID)
                 }
                 try process.run()
                 stateLock.withLock { helperProcesses[vmID] = process }
@@ -419,9 +467,11 @@ final class SupervisorServer: @unchecked Sendable {
                 let signal = force ? SIGKILL : SIGTERM
                 let record = stateLock.withLock { helpers[vmID] }
                 if let record, record.state == "starting" || record.state == "running" {
+                    _ = stateLock.withLock { expectedHelperStops.insert(vmID) }
                     let killResult = Darwin.kill(pid_t(record.pid), signal)
                     let killErrno = errno
-                    guard killResult == 0 || killErrno == ESRCH else {
+                    if killResult != 0, killErrno != ESRCH {
+                        _ = stateLock.withLock { expectedHelperStops.remove(vmID) }
                         throw SupervisorError.system("stop helper \(vmID)", killErrno)
                     }
                     // Force / ESRCH / already-dead: drop bookkeeping immediately.
@@ -434,6 +484,7 @@ final class SupervisorServer: @unchecked Sendable {
                 } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
                           process.isRunning
                 {
+                    _ = stateLock.withLock { expectedHelperStops.insert(vmID) }
                     if force {
                         _ = Darwin.kill(process.processIdentifier, SIGKILL)
                     } else {
@@ -470,10 +521,12 @@ final class SupervisorServer: @unchecked Sendable {
                 // Hard-kill + clear helper bookkeeping even if the process is already gone.
                 let record = stateLock.withLock { helpers[vmID] }
                 if let record, record.state == "starting" || record.state == "running" {
+                    _ = stateLock.withLock { expectedHelperStops.insert(vmID) }
                     _ = Darwin.kill(pid_t(record.pid), SIGKILL)
                 } else if let process = stateLock.withLock({ helperProcesses[vmID] }),
                           process.isRunning
                 {
+                    _ = stateLock.withLock { expectedHelperStops.insert(vmID) }
                     _ = Darwin.kill(process.processIdentifier, SIGKILL)
                 }
                 stateLock.withLock {
@@ -1103,6 +1156,7 @@ final class SupervisorServer: @unchecked Sendable {
                     "state": .string(record.state),
                     "pid": .number(Double(record.pid)),
                     "bundle": .string(record.bundle),
+                    "last_error": record.lastError.map(JSONValue.string) ?? .null,
                 ]
             )
             return JSONRPCResponse(
@@ -1495,13 +1549,14 @@ final class SupervisorServer: @unchecked Sendable {
         switch error {
         case let ReconcileDatabaseError.incomplete(journal):
             code = 5
-            message = "incomplete journal \(journal.id) at \(journal.step); use --resume or --abort"
+            message = "incomplete journal \(journal.id) at \(journal.step); "
+                + "run `vzctl apply --resume` or `vzctl apply --abort`"
         case let ReconcileDatabaseError.leaseHeld(lease):
             code = 6
             message = "stack lease held by \(lease.holder) until \(lease.expiresAtText)"
         case ReconcileDatabaseError.generationChanged:
             code = 5
-            message = "desired config changed; abort the incomplete journal before applying"
+            message = "desired config changed; run `vzctl apply --abort` before applying"
         case ReconcileDatabaseError.noIncomplete:
             code = 5
             message = "no incomplete journal"
@@ -2166,7 +2221,17 @@ private struct HelperRecord: Sendable {
     let state: String
     let pid: Int
     let bundle: String
+    let lastError: String?
     let updatedAt: String
+
+    init(vmID: String, state: String, pid: Int, bundle: String, lastError: String?) {
+        self.vmID = vmID
+        self.state = state
+        self.pid = pid
+        self.bundle = bundle
+        self.lastError = lastError
+        updatedAt = ISO8601DateFormatter().string(from: Date())
+    }
 
     init?(params: JSONValue?) {
         guard case let .object(values) = params,
@@ -2184,11 +2249,19 @@ private struct HelperRecord: Sendable {
         else {
             return nil
         }
-        self.vmID = vmID
-        self.state = state
-        self.pid = Int(pid)
-        self.bundle = bundle
-        updatedAt = ISO8601DateFormatter().string(from: Date())
+        let lastError: String?
+        if case let .string(error)? = values["error"], !error.isEmpty {
+            lastError = error
+        } else {
+            lastError = nil
+        }
+        self.init(
+            vmID: vmID,
+            state: state,
+            pid: Int(pid),
+            bundle: bundle,
+            lastError: lastError
+        )
     }
 
     var json: JSONValue {
@@ -2197,6 +2270,7 @@ private struct HelperRecord: Sendable {
             "state": .string(state),
             "pid": .number(Double(pid)),
             "bundle": .string(bundle),
+            "last_error": lastError.map(JSONValue.string) ?? .null,
             "updated_at": .string(updatedAt),
         ])
     }

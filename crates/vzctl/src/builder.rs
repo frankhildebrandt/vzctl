@@ -382,8 +382,8 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
     if options.progress {
         eprintln!("Starting builder VM…");
     }
-    // Keep work + vm_id short: macOS AF_UNIX sun_path is ~104 bytes, and the
-    // helper nests `{state}/helpers/{StateFileName(vm_id)}.console.sock`.
+    // Keep the work root short: macOS AF_UNIX sun_path is ~104 bytes, and the
+    // helper nests `{state}/helpers/{FNV64(vm_id)}.console.sock`.
     let token = builder_run_token();
     let work = PathBuf::from(format!("/tmp/vzb-{token}"));
     let bundle = work.join("bundle");

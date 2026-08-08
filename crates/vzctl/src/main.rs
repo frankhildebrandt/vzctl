@@ -1935,8 +1935,10 @@ pub(crate) fn parse_memory_mib(value: &str) -> Result<u64, String> {
         let mib = value
             .parse::<u64>()
             .map_err(|_| format!("invalid --memory: {value}"))?;
-        if mib == 0 {
-            return Err("--memory must be greater than zero".to_string());
+        if mib < 256 {
+            return Err(format!(
+                "--memory must be at least 256 MiB; bare values are MiB (use {value}Gi for {value} GiB)"
+            ));
         }
         return Ok(mib);
     }
@@ -1950,7 +1952,7 @@ pub(crate) fn parse_memory_mib(value: &str) -> Result<u64, String> {
         return Err("--memory must be greater than zero".to_string());
     }
     let unit = value[split..].to_ascii_lowercase();
-    match unit.as_str() {
+    let mib = match unit.as_str() {
         "m" | "mb" | "mi" | "mib" => Ok(number),
         "g" | "gb" | "gi" | "gib" => number
             .checked_mul(1024)
@@ -1961,7 +1963,11 @@ pub(crate) fn parse_memory_mib(value: &str) -> Result<u64, String> {
         _ => Err(format!(
             "--memory must use MiB/GiB/TiB or a bare MiB integer: {value}"
         )),
+    }?;
+    if mib < 256 {
+        return Err("--memory must be at least 256 MiB".to_string());
     }
+    Ok(mib)
 }
 
 fn valid_vm_id_segment(segment: &str) -> bool {

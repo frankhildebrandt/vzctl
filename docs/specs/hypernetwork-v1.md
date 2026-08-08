@@ -53,8 +53,9 @@ Details: [CLI Contract v1](cli-contract-v1.md#vzctl-stack-initvmnetvolumemount).
 - VM: `from`, `dataDisk`, mindestens ein `networks[]` mit `name` und `ip`
 
 `clone` is optional und standardmäßig `linked`. `cpus` (positive Ganzzahl) und
-`memory` (MiB als bare Integer oder Size wie `2Gi`/`2048MiB`) sind optional und
-steuern Helper-Resources beim Create (Defaults: 2 vCPUs / 1024 MiB). `cloudInit`,
+`memory` (mindestens 256 MiB; MiB als bare Integer oder Size wie
+`2Gi`/`2048MiB`) sind optional und steuern Helper-Resources beim Create
+(Defaults: 2 vCPUs / 1024 MiB). `cloudInit`,
 `dependsOn`, `roles` sowie das v0.2-Vorbereitungsfeld `requires` sind optional.
 
 Netz-Recovery ist optional und standardmäßig vollständig nicht-destruktiv:

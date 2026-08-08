@@ -2092,7 +2092,7 @@ fn logs_dir() -> PathBuf {
 fn console_socket_path(id: &str) -> PathBuf {
     crate::state_dir()
         .join("helpers")
-        .join(format!("{}.console.sock", state_file_component(id)))
+        .join(format!("{}.console.sock", socket_file_component(id)))
 }
 
 fn state_file_component(value: &str) -> String {
@@ -2107,13 +2107,17 @@ fn state_file_component(value: &str) -> String {
         })
         .take(64)
         .collect();
+    format!("{prefix}-{}", socket_file_component(value))
+}
+
+fn socket_file_component(value: &str) -> String {
     let hash = value
         .as_bytes()
         .iter()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
-    format!("{prefix}-{hash:x}")
+    format!("{hash:x}")
 }
 
 fn raw_console_session(stream: &mut UnixStream) -> Result<(), Failure> {
@@ -3135,6 +3139,14 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn console_socket_component_matches_daemon_contract() {
+        assert_eq!(
+            socket_file_component("monitos/monitos-main"),
+            "44da7bb0f51beebe"
+        );
     }
 
     #[test]

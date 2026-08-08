@@ -21,7 +21,7 @@ final class HelperControlServer: @unchecked Sendable {
     ) {
         socketPath = stateDirectory
             .appendingPathComponent("helpers", isDirectory: true)
-            .appendingPathComponent("\(StateFileName.component(vmID)).sock")
+            .appendingPathComponent("\(StateFileName.socketComponent(vmID)).sock")
             .path
         self.routeHandler = routeHandler
         self.agentHandler = agentHandler

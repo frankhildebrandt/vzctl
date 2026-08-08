@@ -989,6 +989,18 @@ fn await_helpers(
     }
     loop {
         let records = rpc(socket_path, "vm.list", json!({}))?;
+        let failed = failed_helper_diagnostics(&records, &wanted);
+        if !failed.is_empty() {
+            for diagnostic in &failed {
+                if let Some((vm_id, message)) = diagnostic.split_once(": ") {
+                    progress.job_fail(&format!("vm:{vm_id}:agent"), message);
+                }
+            }
+            return Err(Failure::new(
+                EXIT_STEP,
+                format!("helpers failed: {}", failed.join(", ")),
+            ));
+        }
         let running = records
             .as_array()
             .into_iter()
@@ -1042,6 +1054,26 @@ fn await_helpers(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+fn failed_helper_diagnostics(records: &Value, wanted: &BTreeSet<String>) -> Vec<String> {
+    records
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|record| record["state"].as_str() == Some("failed"))
+        .filter_map(|record| {
+            let vm_id = record["vm_id"].as_str().or_else(|| record["id"].as_str())?;
+            if !wanted.contains(vm_id) {
+                return None;
+            }
+            let message = record["last_error"]
+                .as_str()
+                .map(safe_status_text)
+                .unwrap_or_else(|| "helper exited unexpectedly".to_string());
+            Some(format!("{vm_id}: {message}"))
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -3417,6 +3449,24 @@ mod tests {
             "[sensible Diagnose ausgeblendet]"
         );
         assert_eq!(safe_status_text("DataSourceNoCloud"), "DataSourceNoCloud");
+    }
+
+    #[test]
+    fn failed_helper_diagnostics_include_vm_and_safe_error() {
+        let wanted = BTreeSet::from(["monitos/monitos-main".to_string()]);
+        let diagnostics = failed_helper_diagnostics(
+            &json!([{
+                "vm_id": "monitos/monitos-main",
+                "state": "failed",
+                "last_error": "console socket path is too long",
+            }]),
+            &wanted,
+        );
+
+        assert_eq!(
+            diagnostics,
+            vec!["monitos/monitos-main: console socket path is too long"]
+        );
     }
 
     #[test]

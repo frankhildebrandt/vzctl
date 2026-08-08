@@ -182,7 +182,7 @@ final class VirtualMachineRuntime: NSObject, VZVirtualMachineDelegate, @unchecke
             attributes: [.posixPermissions: 0o700]
         )
         let path = helpersDirectory
-            .appendingPathComponent("\(StateFileName.component(vmID)).console.sock")
+            .appendingPathComponent("\(StateFileName.socketComponent(vmID)).console.sock")
             .path
         stopConsoleServer()
         if FileManager.default.fileExists(atPath: path) {
