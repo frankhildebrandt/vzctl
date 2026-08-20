@@ -1290,7 +1290,11 @@ pub(crate) fn command(
     let args = args.collect::<Vec<_>>();
     let parsed = match parse_docker_args(args) {
         Ok(parsed) => parsed,
-        Err(error) if error == "help" || error == "usage" => {
+        Err(error) if error == "help" => {
+            crate::help::print_topic("docker");
+            return ExitCode::SUCCESS;
+        }
+        Err(error) if error == "usage" => {
             eprintln!(
                 "usage: vzctl docker [--project P] [--format human|json] <ps|inspect|start|stop|restart|run> ...\n\
                  \x20      vzctl docker [--project P] [--] <docker-args...>"

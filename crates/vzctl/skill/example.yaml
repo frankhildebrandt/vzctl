@@ -1,0 +1,37 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: demo
+spec:
+  project: demo
+  domain: demo.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: 127.0.0.1:15353
+    forward:
+      enabled: true
+      upstream: system
+  images:
+    ubuntu-base:
+      from: ubuntu-latest
+      role: base
+      tag: v1
+  networks:
+    lan:
+      cidr: 10.90.0.0/24
+      mode: shared
+      dhcp: false
+      natEgress: true
+      backend: vmnet
+  routes: []
+  policies: []
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 8G
+      cpus: 2
+      memory: 1024MiB
+      networks:
+        - name: lan
+          ip: 10.90.0.10

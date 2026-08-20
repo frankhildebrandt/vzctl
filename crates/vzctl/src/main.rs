@@ -19,6 +19,8 @@ mod config;
 mod dns;
 mod docker;
 mod guest_utils;
+mod help;
+mod hostbin;
 mod image;
 mod ingress;
 mod mounts;
@@ -29,6 +31,7 @@ mod progress;
 mod reconciler;
 mod route;
 mod services;
+mod skill;
 mod stack;
 mod vm;
 
@@ -316,142 +319,72 @@ fn main() -> ExitCode {
 
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        None | Some("help") | Some("-h") | Some("--help") => {
-            print_help();
-            ExitCode::SUCCESS
+        None => help::command(std::iter::empty()),
+        Some(command) if help::is_help(command) => help::command(args),
+        Some("version") => help::with_help("version", args, |args| {
+            match parse_format_options(args, "version") {
+                Ok(OutputFormat::Human) => {
+                    println!("vzctl {}", env!("CARGO_PKG_VERSION"));
+                    ExitCode::SUCCESS
+                }
+                Ok(OutputFormat::Json) => {
+                    println!("{}", version_json(env!("CARGO_PKG_VERSION")));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::from(EXIT_USAGE)
+                }
+            }
+        }),
+        Some("doctor") => {
+            help::with_help("doctor", args, |args| match parse_doctor_options(args) {
+                Ok(options) => doctor(options),
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
+            })
         }
-        Some("version") => match parse_format_options(args, "version") {
-            Ok(OutputFormat::Human) => {
-                println!("vzctl {}", env!("CARGO_PKG_VERSION"));
-                ExitCode::SUCCESS
-            }
-            Ok(OutputFormat::Json) => {
-                println!("{}", version_json(env!("CARGO_PKG_VERSION")));
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::from(EXIT_USAGE)
-            }
-        },
-        Some("doctor") => match parse_doctor_options(args) {
-            Ok(options) => doctor(options),
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::from(EXIT_INVALID_INPUT)
-            }
-        },
-        Some("validate") => config::command(args),
+        Some("validate") => help::with_help("validate", args, config::command),
         Some(command @ ("plan" | "diff" | "up" | "down" | "apply" | "adopt")) => {
-            reconciler::command(command, args, &supervisor_socket_path())
+            help::with_help(command, args, |args| {
+                reconciler::command(command, args, &supervisor_socket_path())
+            })
         }
-        Some("events") => events_command(args),
-        Some("net") => network::command(args, &supervisor_socket_path()),
-        Some("route") => route::command(args, &supervisor_socket_path()),
-        Some("stack") => stack::command(args),
-        Some("dns") => dns::command(args, &supervisor_socket_path()),
-        Some("docker") => docker::command(args, &state_dir(), &supervisor_socket_path()),
-        Some("port") => port::command(args, &supervisor_socket_path()),
-        Some("services") => services::command(args),
-        Some("certs") => certs::command(args, &state_dir()),
-        Some("oidc") => oidc::command(args, &state_dir(), &supervisor_socket_path()),
-        Some("image") => image_command(args),
-        Some("vm") => vm_command(args),
-        Some("ps") => vm::ps_command(args, &supervisor_socket_path()),
+        Some("events") => help::with_help("events", args, events_command),
+        Some("net") => help::with_help("net", args, |args| {
+            network::command(args, &supervisor_socket_path())
+        }),
+        Some("route") => help::with_help("route", args, |args| {
+            route::command(args, &supervisor_socket_path())
+        }),
+        Some("stack") => help::with_help("stack", args, stack::command),
+        Some("dns") => help::with_help("dns", args, |args| {
+            dns::command(args, &supervisor_socket_path())
+        }),
+        Some("docker") => help::with_help("docker", args, |args| {
+            docker::command(args, &state_dir(), &supervisor_socket_path())
+        }),
+        Some("port") => help::with_help("port", args, |args| {
+            port::command(args, &supervisor_socket_path())
+        }),
+        Some("services") => help::with_help("services", args, services::command),
+        Some("skill") => help::with_help("skill", args, skill::command),
+        Some("certs") => help::with_help("certs", args, |args| certs::command(args, &state_dir())),
+        Some("oidc") => help::with_help("oidc", args, |args| {
+            oidc::command(args, &state_dir(), &supervisor_socket_path())
+        }),
+        Some("image") => help::with_help("image", args, image_command),
+        Some("vm") => help::with_help("vm", args, vm_command),
+        Some("ps") => help::with_help("ps", args, |args| {
+            vm::ps_command(args, &supervisor_socket_path())
+        }),
         Some(other) => {
             eprintln!("unknown command: {other}");
             ExitCode::from(EXIT_USAGE)
         }
     }
-}
-
-fn print_help() {
-    println!(
-        "\
-vzctl — Environments-as-Code for macOS Virtualization (Alpha)
-
-Commands:
-  doctor [--format human|json] [--min-free-gib N]
-                      Check host baseline and supervisor health
-  version [--format human|json]
-  validate [-C <directory|config>] [--format human|json]
-  validate --schema   Export hypernetwork/v1 JSON Schema
-  plan|diff [-C <directory|config>] [--format human|json]
-  up [-C <directory|config>] [--force] [--progress plain|ui|off] [--format human|json]
-  apply [-C <directory|config>] [--force|--resume|--abort] [--progress plain|ui|off] [--format human|json]
-  down [-C <directory|config>] [--purge] [--progress plain|ui|off] [--format human|json]
-  adopt [-C <directory|config>] [--format human|json]
-  stack init [DIR] --name <project> [--cidr CIDR] [--force] [-C path] [--format human|json]
-  stack vm add|remove ...
-  stack net add|remove ...
-  stack volume add|remove ...
-  stack mount add|remove ...
-  events subscribe [--filter 'vm.*,apply.*']
-  net create <name> --cidr CIDR [--mode shared] [--label key=value] [--project P] [--stack S]
-  net attach <vm> --network <name> --ip <address> [--label key=value] [--project P] [--stack S]
-  net list [--format human|json]
-  net detach <vm> --network <name> [--format human|json]
-  net delete <name> [--format human|json]
-  net default show [--format human|json]
-  net default set <name> --cidr CIDR [--format human|json]
-  route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]
-  route status [--router <vm-id>] [--format human|json]
-  dns status [--format human|json]
-  dns query <name> [--type A|AAAA] [--server IP:port] [--format human|json]
-  dns install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
-  dns install-bind-helper|uninstall-bind-helper [--format human|json]
-  docker [--project P] [--format human|json] <ps|inspect|start|stop|restart|run> ...
-  docker [--project P] [--] <docker-args...>
-  port list [--project P] [--stack S] [--format human|json]
-  services status [--format human|json]
-  services start|stop|restart [all|net|edge|supervisor] [--format human|json]
-  certs ca init|install [--force] [--format human|json]
-  certs mint <san> [--san alias...] [--format human|json]
-  certs fingerprint [--format human|json]
-  oidc status|clients [--project P] [--format human|json]
-  image list [--format human|json]
-  image pull <alias> [--format human|json]
-  image bake <alias> --tag <tag> [--format human|json]
-  image seal <name|path> --tag <tag> [--format human|json]
-  vm create <id> --from <sealed> --disk <GiB> [--cpus N] [--memory <SIZE>] [--network <name>] [--role router|docker] [--cloud-init PATH] [--project P] [--root-password <secret>] [--format human|json]
-  vm list [--format human|json]
-  vm start <id> [--format human|json]
-  vm stop <id> [--wait true|false] [--format human|json]
-  vm delete <id> [--force] [--format human|json]
-  vm modify <id> [--cpus N] [--memory <SIZE>] [--format human|json]
-  vm inspect <id> [--format human|json]
-  vm logs <id> [-f|--follow] [--tail N] [--format human|json]
-  vm exec <id> [-it] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
-  vm transfer <id> <src> <dst> [--format human|json]
-  vm attach <id>
-  vm services <id> [start|stop|restart <unit>] [--format human|json]
-  vm ps <id> [--format human|json]
-  ps [--format human|json]
-  help
-
-Stable exit codes:
-  0   success (warnings allowed)
-  2   usage or unknown command
-  3   invalid input or validation
-  5   incomplete apply journal
-  6   apply lease held
-  10  supervisor socket or health is bad
-  11  macOS 26 baseline is not met
-  12  command backend unavailable or not implemented
-  13  image customization failed
-  14  image seal invariant failed
-  15  image seal state/marker failed
-  16  VM root disk preparation failed
-  17  network operation failed
-  18  route or guest-agent operation failed
-  19  resolver operation failed
-  20  DNS query failed or returned a non-zero rcode
-  21  image download/metadata network failure
-  22  image checksum mismatch or invalid checksum metadata
-  23  image architecture unsupported
-  24  reconciler or VM lifecycle operation failed
-  25  host service lifecycle failed"
-    );
 }
 
 fn parse_format_options(
@@ -949,7 +882,7 @@ fn bake_image(options: &ImageBakeOptions) -> Result<image::BakeResult, SealFailu
             if progress {
                 eprintln!("Baking via builder VM…");
             }
-            let appliance = builder::resolve_builder_image(&images)
+            let appliance = builder::ensure_builder_image(&images, progress)
                 .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
             let runbook = builder::bake_runbook("staging");
             builder::run_builder_vm(builder::BuilderRunOptions {
@@ -3347,7 +3280,7 @@ impl ImageSealBackend for BuilderVmBackend {
         if self.progress {
             eprintln!("Resolving builder appliance…");
         }
-        let appliance = builder::resolve_builder_image(&self.images_dir)
+        let appliance = builder::ensure_builder_image(&self.images_dir, self.progress)
             .map_err(|failure| SealFailure::new(failure.code, failure.message))?;
         let runbook = builder::seal_runbook();
         if self.progress {
@@ -3367,7 +3300,13 @@ impl ImageSealBackend for BuilderVmBackend {
 }
 
 fn inspect_image_format(path: &Path) -> Result<String, SealFailure> {
-    let output = Command::new("qemu-img")
+    let qemu = hostbin::resolve("qemu-img").ok_or_else(|| {
+        SealFailure::new(
+            EXIT_UNAVAILABLE,
+            "qemu-img is required to inspect images; run make vendor-qemu-img (or set VZCTL_QEMU_IMG)",
+        )
+    })?;
+    let output = Command::new(qemu)
         .args(["info", "--output=json"])
         .arg(path)
         .output()

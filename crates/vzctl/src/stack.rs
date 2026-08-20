@@ -29,7 +29,47 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     let requested_format = requested_format(&args);
     let subcommand = args.first().map(String::as_str);
     match subcommand {
+        Some(token) if crate::help::is_help(token) => {
+            crate::help::print_topic("stack");
+            ExitCode::SUCCESS
+        }
         Some("init") => init_command(&args[1..], requested_format),
+        Some("vm")
+            if args
+                .get(1)
+                .map(String::as_str)
+                .is_some_and(crate::help::is_help) =>
+        {
+            crate::help::print_topic("stack");
+            ExitCode::SUCCESS
+        }
+        Some("net")
+            if args
+                .get(1)
+                .map(String::as_str)
+                .is_some_and(crate::help::is_help) =>
+        {
+            crate::help::print_topic("stack");
+            ExitCode::SUCCESS
+        }
+        Some("volume")
+            if args
+                .get(1)
+                .map(String::as_str)
+                .is_some_and(crate::help::is_help) =>
+        {
+            crate::help::print_topic("stack");
+            ExitCode::SUCCESS
+        }
+        Some("mount")
+            if args
+                .get(1)
+                .map(String::as_str)
+                .is_some_and(crate::help::is_help) =>
+        {
+            crate::help::print_topic("stack");
+            ExitCode::SUCCESS
+        }
         Some("vm") => vm_command(&args[1..], requested_format),
         Some("net") => net_command(&args[1..], requested_format),
         Some("volume") => volume_command(&args[1..], requested_format),

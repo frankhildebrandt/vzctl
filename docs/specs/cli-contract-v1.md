@@ -552,6 +552,27 @@ Kanonische Commands: `services.status`, `services.start`, `services.stop`,
 Exitcodes: Usage `2`, unbekannter Service-Name `3`, fehlende LaunchAgents
 `12`, Lifecycle-Fehler `25`. Nicht-macOS: `12`.
 
+### `vzctl skill [--install-local|--install-global]`
+
+Kanonischer Command: `skill`. Ohne Flags schreibt stdout den gebündelten
+Agent-Skill inklusive aller Anhänge (`SKILL.md`, `yaml.md`, `cli.md`,
+`example.yaml`), jeweils mit einem Header `===== <datei> =====`.
+`--install-local` schreibt bzw. aktualisiert `./.agents/skills/vzctl/`,
+`--install-global` schreibt `~/.agents/skills/vzctl/` (`HOME`). Beide
+Install-Flags zusammen oder unbekannte Optionen liefern Exit `2`.
+`--help` druckt die Usage nach stdout, Exit `0`.
+Fehlendes `HOME` oder Schreibfehler beim Install liefern Exit `3`.
+JSON-Format gibt es nicht; stdout bleibt Klartext.
+
+### `vzctl help` und `vzctl <command> help`
+
+Kanonischer Command: `help`. Ohne Topic druckt stdout die kurze Command-Liste.
+`vzctl help exit-codes` (alias `vzctl help --exit-codes`) listet die stabilen
+Exitcodes. `vzctl help <command>` und `vzctl <command> help` (sowie `-h` /
+`--help` an derselben Stelle) drucken die Namespace-Hilfe nach stdout, Exit `0`.
+Unbekanntes Topic oder unbekannter Command: Exit `2`. Fehlende Subcommands
+ohne `help` bleiben Usage auf stderr, Exit `2`.
+
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events
 verwenden NDJSON und sind nicht Teil des Ein-Dokument-Vertrags dieses Slices.

@@ -69,10 +69,8 @@ fn services_help_lists_lifecycle_commands() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("services start"));
-    assert!(stderr.contains("services stop"));
-    assert!(stderr.contains("services restart"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("start|stop|restart"));
 }
 
 #[test]
@@ -83,6 +81,5 @@ fn top_level_help_lists_services() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("services status"));
-    assert!(stdout.contains("services start|stop|restart"));
+    assert!(stdout.contains("services"));
 }
