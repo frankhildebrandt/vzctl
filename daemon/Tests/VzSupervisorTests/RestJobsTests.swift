@@ -57,6 +57,43 @@ struct RestJobsTests {
         #expect(box.snapshot() == ["Baking via builder VM…", "Starting builder VM…", "done"])
     }
 
+    @Test func lineAccumulatorSplitsCarriageReturnProgress() {
+        let box = StringBox()
+        let acc = LineAccumulator(progressMinInterval: 0) { line in
+            box.append(line)
+        }
+        acc.append(Data("Downloading image…\n#  10.0%\r#  20.0%\r".utf8))
+        #expect(box.snapshot() == ["Downloading image…", "#  10.0%", "#  20.0%"])
+        var crlf = Data("#  40.0%".utf8)
+        crlf.append(contentsOf: [0x0D, 0x0A])
+        crlf.append(contentsOf: Data("Verifying checksum…\n".utf8))
+        acc.append(crlf)
+        #expect(box.snapshot().last == "Verifying checksum…")
+        #expect(box.snapshot().contains("#  40.0%"))
+    }
+
+    @Test func ingestLogLineReplacesTrailingProgressMeter() {
+        var job = RestJob(
+            id: "p",
+            kind: "image.pull",
+            status: .running,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            result: nil,
+            error: nil,
+            log: ["Downloading image…"],
+            progressPercent: nil,
+            progressLabel: nil
+        )
+        RestJobRunner.ingestLogLine(&job, line: "Downloading image… 10%")
+        RestJobRunner.ingestLogLine(&job, line: "Downloading image… 42%")
+        #expect(job.log == ["Downloading image…", "Downloading image… 42%"])
+        #expect(job.progressPercent == 42)
+        RestJobRunner.ingestLogLine(&job, line: "Verifying checksum…")
+        #expect(job.log.last == "Verifying checksum…")
+        #expect(job.log.count == 3)
+    }
+
     @Test func restJobJsonIncludesLog() {
         let job = RestJob(
             id: "abc",
@@ -66,7 +103,9 @@ struct RestJobsTests {
             updatedAt: "2026-01-01T00:00:01Z",
             result: nil,
             error: nil,
-            log: ["line-a", "line-b"]
+            log: ["line-a", "line-b"],
+            progressPercent: nil,
+            progressLabel: nil
         )
         guard case let .object(obj) = job.json,
               case let .array(log)? = obj["log"]

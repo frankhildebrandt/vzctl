@@ -34,8 +34,9 @@ CLI und REST brauchen `--tag` / `body.tag`. Die Config pinnt sealed Artefakte ü
 
 Apply skippt Bake/Seal, wenn der Tag bereits sealed ist.
 
-Bake/Seal nutzen lokales `virt-customize` oder die gepinnte Builder-VM-Appliance
-(`scripts/build-builder-appliance.sh`). Progress: `VZCTL_PROGRESS` / Job-Log.
+Bake/Seal nutzen lokales `virt-customize` oder eine Builder-VM. Fehlt die
+Appliance, provisioniert `vzctl` sie einmalig aus `debian-latest`
+(Job-Log: Pull + libguestfs-Install). Override: `VZCTL_BUILDER_IMAGE`.
 
 ## Clones
 

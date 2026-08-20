@@ -304,6 +304,8 @@ export const enUS: Record<MessageKey, string> = {
   "images.refresh": "Refresh",
   "images.busy": "Running: {alias} (may take minutes)…",
   "images.jobLog.title": "Job log",
+  "images.jobLog.working": "Running…",
+  "images.jobLog.progressAria": "Job progress",
   "images.pullTitle": "Pull",
   "images.pullHint": "Load alias from catalog and normalize as raw.",
   "images.pullAlias": "Alias",

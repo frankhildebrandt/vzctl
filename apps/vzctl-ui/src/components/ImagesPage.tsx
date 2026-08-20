@@ -21,6 +21,11 @@ import {
 import { useT } from "@/lib/i18n";
 import { localeToBcp47 } from "@/lib/i18n/detect";
 import {
+  mergeProgressLog,
+  progressFromJob,
+  type JobProgress,
+} from "@/lib/jobLog";
+import {
   bakeImage,
   catalogAliasOptions,
   DEFAULT_IMAGE_TAG,
@@ -45,6 +50,7 @@ export function ImagesPage() {
   const [imageTag, setImageTag] = useState(DEFAULT_IMAGE_TAG);
   const [sealTarget, setSealTarget] = useState("");
   const [jobLines, setJobLines] = useState<ConsoleLine[]>([]);
+  const [jobMeter, setJobMeter] = useState<JobProgress | null>(null);
   const logCursor = useRef(0);
   const nextLineId = useRef(1);
 
@@ -68,27 +74,44 @@ export function ImagesPage() {
     logCursor.current = 0;
     nextLineId.current = 1;
     setJobLines([]);
+    setJobMeter(null);
   };
 
   const onJobUpdate = (job: JobResponse) => {
+    const meter = progressFromJob(job);
+    if (meter) setJobMeter(meter);
     const log = job.log ?? [];
     if (log.length < logCursor.current) {
       logCursor.current = 0;
       nextLineId.current = 1;
       setJobLines([]);
     }
-    if (log.length <= logCursor.current) return;
     const locale = useSettingsStore.getState().locale;
     const ts = new Date().toLocaleTimeString(localeToBcp47(locale), {
       hour12: false,
     });
-    const fresh = log.slice(logCursor.current).map((text) => {
-      const id = nextLineId.current;
-      nextLineId.current += 1;
-      return { id, ts, level: "info" as const, text };
-    });
+    if (log.length === logCursor.current && log.length > 0) {
+      const last = log[log.length - 1] ?? "";
+      setJobLines((prev) => {
+        if (prev.length === 0 || prev[prev.length - 1]?.text === last) {
+          return prev;
+        }
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...updated[updated.length - 1], text: last };
+        return updated;
+      });
+      return;
+    }
+    if (log.length <= logCursor.current) return;
+    const fresh = log.slice(logCursor.current);
     logCursor.current = log.length;
-    setJobLines((prev) => [...prev, ...fresh]);
+    setJobLines((prev) =>
+      mergeProgressLog(prev, fresh, (text) => {
+        const id = nextLineId.current;
+        nextLineId.current += 1;
+        return { id, ts, level: "info" as const, text };
+      }),
+    );
   };
 
   const jobOpts = { onUpdate: onJobUpdate };
@@ -188,7 +211,30 @@ export function ImagesPage() {
       {showJobLog ? (
         <div style={{ marginBottom: "1rem" }}>
           <h3 className="group-title">{t("images.jobLog.title")}</h3>
-          <ConsoleLog lines={jobLines} visible />
+          {jobMeter || jobPending ? (
+            <div className="job-meter">
+              <Muted>
+                {jobMeter?.label
+                  ? `${jobMeter.label} ${jobMeter.percent}%`
+                  : jobPending
+                    ? t("images.jobLog.working")
+                    : null}
+              </Muted>
+              <div
+                className="progress-bar"
+                aria-label={t("images.jobLog.progressAria")}
+                aria-valuenow={jobMeter?.percent ?? 0}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="progress-fill"
+                  style={{ width: `${jobMeter?.percent ?? 0}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+          <ConsoleLog lines={jobLines} visible compact />
         </div>
       ) : null}
 

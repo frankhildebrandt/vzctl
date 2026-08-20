@@ -341,6 +341,8 @@ export const deDE = {
   "images.refresh": "Aktualisieren",
   "images.busy": "Läuft: {alias} (kann Minuten dauern)…",
   "images.jobLog.title": "Job-Log",
+  "images.jobLog.working": "Läuft…",
+  "images.jobLog.progressAria": "Job-Fortschritt",
   "images.pullTitle": "Pull",
   "images.pullHint": "Alias aus dem Katalog laden und als Raw normalisieren.",
   "images.pullAlias": "Alias",

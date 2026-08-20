@@ -35,8 +35,9 @@ Wichtige Hinweise:
   und erinnert an die G0-Konvention: Host/DNS `.0`, Router `.2`, Gäste `.10+`.
 - `image.backend` prüft offline, ob lokales `virt-customize`/`qemu-img` oder
   eine gecachte Builder-Appliance unter `images/builder/` verfügbar ist.
-  Fehlender Cache ist WARN (First-Use-Download bzw.
-  `scripts/build-builder-appliance.sh`), kein FAIL.
+  Fehlender Cache ist WARN (First-Use-Download bzw. Auto-Provision aus
+  `debian-latest` beim ersten Bake/Seal), kein FAIL.
+  `qemu-img` für Pull kommt aus dem Vendor-Bundle (`make vendor-qemu-img`).
 - Ist der Supervisor erreichbar, meldet `doctor` WARN, sobald persistierte
   vmnet-Netze nach einem Restart nicht rekonstruiert werden konnten. Orphaned
   CIDRs entstehen nach unclean Exit von **`vz-net`** (nicht nach CP-Crash);

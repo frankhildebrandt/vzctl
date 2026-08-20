@@ -74,7 +74,8 @@ geladen.
 ## Normalisierung und Lifecycle
 
 - qcow2, VMDK und Archive mit qcow2/VMDK werden über `qemu-img convert -O raw`
-  normalisiert.
+  normalisiert. `qemu-img` kommt aus dem Vendor-Bundle
+  (`make vendor-qemu-img` → `libexec/qemu-img`); Override `VZCTL_QEMU_IMG`.
 - xz, zstd und bzip2 werden vor der Konvertierung entpackt.
 - Benötigte lokale Werkzeuge sind je nach Quelle `qemu-img`, `xz`, `zstd`,
   `bzip2`, `tar` oder `unzip`; ein fehlendes Werkzeug liefert Exit `12`.

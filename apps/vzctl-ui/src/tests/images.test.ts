@@ -7,6 +7,11 @@ import {
   type ImageCatalogEntry,
   type ImageListItem,
 } from "@/lib/images";
+import {
+  mergeProgressLog,
+  parseProgressLine,
+  progressFromJob,
+} from "@/lib/jobLog";
 
 function sampleImage(
   overrides: Partial<ImageListItem> = {},
@@ -69,5 +74,45 @@ describe("images helpers", () => {
 
   it("falls back to IMAGE_ALIAS_HINTS when catalog empty", () => {
     expect(catalogAliasOptions([])).toEqual([...IMAGE_ALIAS_HINTS]);
+  });
+});
+
+describe("job log progress", () => {
+  it("parses trailing percent meters", () => {
+    expect(parseProgressLine("Downloading image… 12%")).toEqual({
+      percent: 12,
+      label: "Downloading image…",
+    });
+    expect(parseProgressLine("no meter")).toBeNull();
+  });
+
+  it("replaces a trailing progress line instead of appending", () => {
+    const first = mergeProgressLog([], ["Downloading…", "Downloading… 10%"], (text) => ({
+      id: 1,
+      ts: "00:00:00",
+      level: "info",
+      text,
+    }));
+    expect(first.map((line) => line.text)).toEqual([
+      "Downloading…",
+      "Downloading… 10%",
+    ]);
+    const next = mergeProgressLog(first, ["Downloading… 40%"], (text) => ({
+      id: 2,
+      ts: "00:00:01",
+      level: "info",
+      text,
+    }));
+    expect(next.map((line) => line.text)).toEqual([
+      "Downloading…",
+      "Downloading… 40%",
+    ]);
+    expect(next).toHaveLength(2);
+  });
+
+  it("reads progress from job payload", () => {
+    expect(
+      progressFromJob({ progress: { percent: 42, label: "Normalizing" } }),
+    ).toEqual({ percent: 42, label: "Normalizing" });
   });
 });

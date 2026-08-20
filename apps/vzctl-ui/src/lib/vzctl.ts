@@ -105,6 +105,7 @@ export type JobResponse = {
   result?: unknown;
   error?: string;
   log?: string[];
+  progress?: { percent?: number; label?: string };
 };
 
 export type WaitForJobOptions = {

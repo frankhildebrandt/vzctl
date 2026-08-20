@@ -32,7 +32,8 @@ endet der Command kontrolliert mit Exit `12`.
 Ergebnis der Builder-VM erscheint als Serial-Marker
 `VZCTL_BUILDER_RESULT {…}`; Erfolg gilt erst nach `sync` und Guest-Shutdown.
 Override: `VZCTL_IMAGE_BACKEND=local|builder`, Appliance:
-`VZCTL_BUILDER_IMAGE` oder `images/builder/vzctl-builder.raw`.
+`VZCTL_BUILDER_IMAGE` oder `images/builder/vzctl-builder.raw`. Fehlt die Datei,
+provisioniert Bake/Seal sie einmalig aus `debian-latest`.
 
 ## Seal-Pipeline
 

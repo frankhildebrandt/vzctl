@@ -17,13 +17,15 @@ TAURI_APP := apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app
 
 CADDY_VENDOR := daemon/Vendor/caddy/caddy
 DEX_VENDOR := daemon/Vendor/dex/dex
+QEMU_IMG_VENDOR := daemon/Vendor/qemu-img/qemu-img
+QEMU_IMG_LIBEXEC := $(STATE_DIR)/libexec/qemu-img
 
 .DEFAULT_GOAL := help
 
 .PHONY: help build build-cli build-daemon build-agent ci release \
 	test test-cli test-daemon test-agent \
 	fmt fmt-check doctor doctor-json sign-helper \
-	vendor vendor-caddy vendor-dex install-vendor \
+	vendor vendor-caddy vendor-dex vendor-qemu-img install-vendor install-qemu-img \
 	validate validate-edge-dmz \
 	smoke-split-dns \
 	ui-install ui-dev ui-build package \
@@ -54,7 +56,7 @@ release: ## Release-Binaries bauen und ad-hoc signieren
 	codesign --force --sign - daemon/.build/release/vz-edge
 	codesign --force --sign - daemon/.build/release/vz-dns-bind
 
-vendor: vendor-caddy vendor-dex ## Caddy- und Dex-Binaries fetchen (v0.2)
+vendor: vendor-caddy vendor-dex vendor-qemu-img ## Caddy-, Dex- und qemu-img-Binaries fetchen
 
 vendor-caddy: ## Gepinntes Caddy-Binary nach daemon/Vendor/caddy/
 	./scripts/fetch-caddy.sh
@@ -62,7 +64,10 @@ vendor-caddy: ## Gepinntes Caddy-Binary nach daemon/Vendor/caddy/
 vendor-dex: ## Gepinntes Dex-Binary nach daemon/Vendor/dex/
 	./scripts/fetch-dex.sh
 
-install-vendor: ## Vendor-Binaries nach Application Support/vzctl/bin/ kopieren
+vendor-qemu-img: ## Relokierbares qemu-img nach daemon/Vendor/qemu-img/
+	./scripts/fetch-qemu-img.sh
+
+install-vendor: ## Vendor-Binaries nach Application Support/vzctl kopieren
 	@mkdir -p "$(RUNTIME_BIN)"
 	@if [ -x "$(CADDY_VENDOR)" ]; then \
 		install -m 755 "$(CADDY_VENDOR)" "$(RUNTIME_BIN)/caddy"; \
@@ -78,6 +83,16 @@ install-vendor: ## Vendor-Binaries nach Application Support/vzctl/bin/ kopieren
 		echo "missing $(DEX_VENDOR) — run: make vendor-dex" >&2; \
 		exit 3; \
 	fi
+	$(MAKE) install-qemu-img
+
+install-qemu-img: ## Vendored qemu-img nach Application Support/vzctl/libexec/ kopieren
+	@if [ ! -x "$(QEMU_IMG_VENDOR)" ]; then \
+		$(MAKE) vendor-qemu-img; \
+	fi
+	@test -x "$(QEMU_IMG_VENDOR)" || { echo "missing $(QEMU_IMG_VENDOR)" >&2; exit 3; }
+	@mkdir -p "$(QEMU_IMG_LIBEXEC)"
+	@ditto daemon/Vendor/qemu-img "$(QEMU_IMG_LIBEXEC)"
+	@echo "installed: $(QEMU_IMG_LIBEXEC)/qemu-img"
 
 install: release ui-build ## CLI, Daemons und Tauri-App installieren/aktualisieren
 	PREFIX="$(PREFIX)" BINDIR="$(BINDIR)" \
@@ -97,7 +112,8 @@ install: release ui-build ## CLI, Daemons und Tauri-App installieren/aktualisier
 	@if [ -x "$(CADDY_VENDOR)" ] && [ -x "$(DEX_VENDOR)" ]; then \
 		$(MAKE) install-vendor; \
 	else \
-		echo "note: skip install-vendor (run make vendor && make install-vendor for Ingress/OIDC)"; \
+		echo "note: skip Caddy/Dex vendor (run make vendor && make install-vendor for Ingress/OIDC)"; \
+		$(MAKE) install-qemu-img; \
 	fi
 	@test -d "$(TAURI_APP)" || { echo "missing Tauri app: $(TAURI_APP)" >&2; exit 3; }
 	@mkdir -p "$(APPLICATIONS_DIR)"

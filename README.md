@@ -37,6 +37,9 @@ atomar ersetzt und die LaunchAgents neu gestartet. Weil ein Neustart von
 graceful gestoppt. Ein anschließendes `vzctl up -C <stack>` startet sie wieder.
 Liegen Caddy/Dex unter `daemon/Vendor/` (`make vendor`), kopiert `install`
 sie zusätzlich nach `~/Library/Application Support/vzctl/bin/` für Ingress/OIDC.
+`qemu-img` wird immer mitvendored (`make vendor-qemu-img`) nach
+`~/Library/Application Support/vzctl/libexec/qemu-img/` — Image-Pull braucht
+kein Homebrew-QEMU.
 Falls `~/.local/bin` noch nicht im `PATH` liegt:
 
 ```bash
@@ -52,8 +55,8 @@ make install ACTIVATE=0
 v0.2 Ingress/OIDC-Vendor und UI:
 
 ```bash
-make vendor          # Caddy + Dex nach daemon/Vendor/
-make install-vendor  # → ~/Library/Application Support/vzctl/bin/
+make vendor          # Caddy + Dex + qemu-img nach daemon/Vendor/
+make install-vendor  # → Application Support/vzctl/{bin,libexec}/
 make validate        # examples/edge-dmz Schema
 make ui-install && make ui-dev
 ```
@@ -64,7 +67,7 @@ make ui-install && make ui-dev
 |---|---|
 | `crates/vzctl` | Rust CLI (`doctor`, stacks, certs, oidc, …) |
 | `daemon/` | Swift `vz-supervisor` + `vz-helper` (ADR 0002) |
-| `daemon/Vendor/` | Gepinnte Caddy/Dex-Binaries (`make vendor`) |
+| `daemon/Vendor/` | Gepinnte Caddy/Dex/qemu-img-Binaries (`make vendor`) |
 | `apps/vzctl-ui/` | Tauri 2 UI (CLI-Wrapper) |
 | `guest-agent/` | vsock Guest-Agent |
 | `docs/adr/` | Accepted ADRs (macOS 26, process ownership, apply) |

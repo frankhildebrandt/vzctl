@@ -41,14 +41,17 @@ State-Verzeichnis (Default):
 
 Override: `VZCTL_STATE_DIR`.
 
-## Vendor (Ingress / OIDC)
+## Vendor
 
-Für Caddy und Dex:
+Caddy/Dex für Ingress/OIDC, plus `qemu-img` für Image-Pull:
 
 ```bash
 make vendor
 make install-vendor
 ```
+
+`make install` holt `qemu-img` auch allein (`make install-qemu-img`), ohne Caddy/Dex.
+Das Bundle liegt unter `~/Library/Application Support/vzctl/libexec/qemu-img/`.
 
 ## UI (optional)
 

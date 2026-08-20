@@ -5,6 +5,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const EXIT_IMAGE_NETWORK: u8 = 21;
@@ -373,30 +374,40 @@ impl Fetcher for CurlFetcher {
 
     fn download(&self, url: &str, destination: &Path) -> Result<(), PullFailure> {
         let mut command = Command::new("curl");
-        command.arg("--fail").arg("--location");
+        command.arg("--fail").arg("--location").arg("--show-error");
         if self.progress {
             command.arg("--progress-bar");
         } else {
-            command.arg("--silent").arg("--show-error");
+            command.arg("--silent");
         }
-        let status = command
-            .arg("--output")
-            .arg(destination)
-            .arg(url)
-            .status()
-            .map_err(|error| {
+        command.arg("--output").arg(destination).arg(url);
+        let filename = destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        let label = format!("Downloading {filename}…");
+        if self.progress && !io::stderr().is_terminal() {
+            run_with_progress_relay(
+                &mut command,
+                &label,
+                EXIT_IMAGE_NETWORK,
+                &format!("download of {url}"),
+            )
+        } else {
+            let status = command.status().map_err(|error| {
                 PullFailure::new(
                     EXIT_IMAGE_NETWORK,
                     format!("cannot start curl for {url}: {error}"),
                 )
             })?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(PullFailure::new(
-                EXIT_IMAGE_NETWORK,
-                format!("download failed for {url}"),
-            ))
+            if status.success() {
+                Ok(())
+            } else {
+                Err(PullFailure::new(
+                    EXIT_IMAGE_NETWORK,
+                    format!("download failed for {url}"),
+                ))
+            }
         }
     }
 }
@@ -1159,15 +1170,28 @@ fn decode(program: &str, source: &Path, destination: &Path) -> Result<(), PullFa
 }
 
 fn qemu_convert(source: &Path, destination: &Path) -> Result<(), PullFailure> {
-    let mut command = Command::new("qemu-img");
+    let qemu = crate::hostbin::resolve("qemu-img").ok_or_else(|| {
+        PullFailure::new(
+            EXIT_UNAVAILABLE,
+            "qemu-img is required for image normalization; run make vendor-qemu-img (or set VZCTL_QEMU_IMG)",
+        )
+    })?;
+    let mut command = Command::new(qemu);
     command.arg("convert");
     if progress_enabled() {
         command.arg("-p");
     }
-    run_checked(
-        command.arg("-O").arg("raw").arg(source).arg(destination),
-        "qemu-img",
-    )
+    command.arg("-O").arg("raw").arg(source).arg(destination);
+    if progress_enabled() && !io::stderr().is_terminal() {
+        run_with_progress_relay(
+            &mut command,
+            "Normalizing image…",
+            EXIT_IMAGE_STATE,
+            "qemu-img convert",
+        )
+    } else {
+        run_checked(&mut command, "qemu-img")
+    }
 }
 
 fn run_checked(command: &mut Command, program: &str) -> Result<(), PullFailure> {
@@ -1185,6 +1209,102 @@ fn run_checked(command: &mut Command, program: &str) -> Result<(), PullFailure> 
             format!("{program} failed while normalizing the image"),
         ))
     }
+}
+
+/// Run a child with piped stderr and emit newline percent lines for job logs.
+///
+/// curl `--progress-bar` and `qemu-img -p` update a single TTY line with CR;
+/// supervisor job logs only see LF-delimited lines.
+fn run_with_progress_relay(
+    command: &mut Command,
+    label: &str,
+    fail_code: u8,
+    context: &str,
+) -> Result<(), PullFailure> {
+    command.stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        PullFailure::new(
+            EXIT_UNAVAILABLE,
+            format!("{context} failed to start: {error}"),
+        )
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        PullFailure::new(EXIT_IMAGE_STATE, format!("{context} missing stderr pipe"))
+    })?;
+    let label_for_thread = label.to_string();
+    let label_done = label.to_string();
+    let relay = thread::spawn(move || relay_cr_progress(&mut stderr, &label_for_thread));
+    let status = child.wait().map_err(|error| {
+        PullFailure::new(EXIT_IMAGE_STATE, format!("{context} failed: {error}"))
+    })?;
+    let last_percent = relay.join().ok().flatten();
+    if status.success() {
+        if last_percent.is_some_and(|percent| percent < 100) {
+            eprintln!("{label_done} 100%");
+        }
+        Ok(())
+    } else {
+        Err(PullFailure::new(fail_code, format!("{context} failed")))
+    }
+}
+
+fn relay_cr_progress(reader: &mut impl Read, label: &str) -> Option<u8> {
+    let mut buf = [0_u8; 512];
+    let mut current = Vec::new();
+    let mut last_percent: Option<u8> = None;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        for &byte in &buf[..n] {
+            if byte == b'\r' || byte == b'\n' {
+                emit_progress_line(label, &current, &mut last_percent);
+                current.clear();
+            } else {
+                current.push(byte);
+            }
+        }
+    }
+    emit_progress_line(label, &current, &mut last_percent);
+    last_percent
+}
+
+fn emit_progress_line(label: &str, raw: &[u8], last_percent: &mut Option<u8>) {
+    let line = String::from_utf8_lossy(raw);
+    let Some(percent) = parse_progress_percent(&line) else {
+        return;
+    };
+    if *last_percent == Some(percent) {
+        return;
+    }
+    *last_percent = Some(percent);
+    eprintln!("{label} {percent}%");
+}
+
+/// Parse curl `--progress-bar` (`12.4%`) and qemu-img `-p` (`(30.00/100%)`) meters.
+fn parse_progress_percent(line: &str) -> Option<u8> {
+    let trimmed = line.trim();
+    let percent_at = trimmed.rfind('%')?;
+    let before = trimmed[..percent_at].trim_end();
+    let number = if let Some((left, right)) = before.rsplit_once('/') {
+        if right.trim() == "100" {
+            numeric_token(left.trim())?
+        } else {
+            numeric_token(before)?
+        }
+    } else {
+        numeric_token(before)?
+    };
+    let value: f32 = number.parse().ok()?;
+    Some(value.clamp(0.0, 100.0) as u8)
+}
+
+fn numeric_token(before: &str) -> Option<&str> {
+    before
+        .rsplit(|character: char| !character.is_ascii_digit() && character != '.')
+        .find(|part| !part.is_empty())
 }
 
 fn find_file_with_extension(
@@ -2337,6 +2457,21 @@ mod tests {
             Some(value) => std::env::set_var("VZCTL_PROGRESS", value),
             None => std::env::remove_var("VZCTL_PROGRESS"),
         }
+    }
+
+    #[test]
+    fn parse_progress_percent_reads_curl_and_qemu_meters() {
+        assert_eq!(parse_progress_percent("#  12.4%"), Some(12));
+        assert_eq!(
+            parse_progress_percent(
+                "######################################################################## 100.0%"
+            ),
+            Some(100)
+        );
+        assert_eq!(parse_progress_percent("    (0.00/100%)"), Some(0));
+        assert_eq!(parse_progress_percent("    (30.00/100%)"), Some(30));
+        assert_eq!(parse_progress_percent("    (99.91/100%)"), Some(99));
+        assert_eq!(parse_progress_percent("no meter"), None);
     }
 
     #[test]

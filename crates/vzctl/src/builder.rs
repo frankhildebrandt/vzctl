@@ -64,7 +64,10 @@ pub fn virt_customize_available() -> bool {
 }
 
 pub fn qemu_img_available() -> bool {
-    Command::new("qemu-img")
+    let Some(path) = crate::hostbin::resolve("qemu-img") else {
+        return false;
+    };
+    Command::new(path)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -124,6 +127,75 @@ pub fn resolve_builder_image(images_dir: &Path) -> Result<PathBuf, BuilderFailur
             cached.display()
         ),
     ))
+}
+
+/// Return a cached appliance, or provision one from `debian-latest` on first use.
+pub fn ensure_builder_image(images_dir: &Path, progress: bool) -> Result<PathBuf, BuilderFailure> {
+    if std::env::var_os("VZCTL_BUILDER_IMAGE").is_some() {
+        return resolve_builder_image(images_dir);
+    }
+    if let Ok(path) = resolve_builder_image(images_dir) {
+        return Ok(path);
+    }
+    provision_builder_image(images_dir, progress)
+}
+
+fn provision_builder_image(images_dir: &Path, progress: bool) -> Result<PathBuf, BuilderFailure> {
+    if progress {
+        eprintln!("Provisioning builder appliance from debian-latest (one-time)…");
+    }
+    let pulled = crate::image::pull("debian-latest", images_dir).map_err(|failure| {
+        BuilderFailure::new(
+            failure.code,
+            format!(
+                "cannot pull debian-latest for builder appliance: {}",
+                failure.message
+            ),
+        )
+    })?;
+    let dest = builder_image_path(images_dir);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(io_err)?;
+    }
+    let tmp = dest.with_extension("provisioning.raw");
+    let _ = fs::remove_file(&tmp);
+    copy_or_clone(&pulled.image_path, &tmp)?;
+    resize_raw(&tmp, "12G")?;
+    if progress {
+        eprintln!("Installing libguestfs in builder VM…");
+    }
+    run_builder_bootstrap(&tmp, progress)?;
+    let _ = fs::remove_file(&dest);
+    fs::rename(&tmp, &dest).map_err(io_err)?;
+    if progress {
+        eprintln!("Builder appliance ready.");
+    }
+    Ok(dest)
+}
+
+fn resize_raw(path: &Path, size: &str) -> Result<(), BuilderFailure> {
+    let qemu = crate::hostbin::resolve("qemu-img").ok_or_else(|| {
+        BuilderFailure::new(
+            12,
+            "qemu-img is required to provision the builder appliance; run make vendor-qemu-img",
+        )
+    })?;
+    let status = Command::new(qemu)
+        .args(["resize", "-f", "raw"])
+        .arg(path)
+        .arg(size)
+        .status()
+        .map_err(|error| {
+            BuilderFailure::new(12, format!("cannot start qemu-img resize: {error}"))
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(BuilderFailure::new(
+            12,
+            "qemu-img resize failed for builder appliance",
+        ))
+    }
 }
 
 fn verify_cached_sha256(path: &Path) -> Result<(), BuilderFailure> {
@@ -347,6 +419,33 @@ poweroff",
     }
 }
 
+pub fn bootstrap_runbook() -> SealRunbook {
+    let body = [
+        "set -e",
+        "growpart /dev/vda 1 >/dev/hvc0 2>&1 || growpart /dev/sda 1 >/dev/hvc0 2>&1 || true",
+        "resize2fs /dev/vda1 >/dev/hvc0 2>&1 || resize2fs /dev/sda1 >/dev/hvc0 2>&1 || true",
+        "export DEBIAN_FRONTEND=noninteractive",
+        "apt-get update -qq",
+        "apt-get install -y -qq libguestfs-tools qemu-utils",
+        "command -v virt-customize >/dev/hvc0",
+        "command -v qemu-img >/dev/hvc0",
+        "printf 'vzctl-builder 1\\n' > /etc/vzctl-builder-release",
+        "cloud-init clean --logs --machine-id || true",
+        "truncate -s 0 /etc/machine-id",
+        "rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_* /var/lib/systemd/random-seed",
+        "printf '\\nVZCTL_BUILDER_RESULT {\"ok\":true,\"phase\":\"done\",\"exit\":0,\"op\":\"bootstrap\"}\\n' > /dev/hvc0",
+        "sync",
+        "poweroff",
+    ]
+    .join("; ");
+    SealRunbook {
+        op: "bootstrap",
+        commands: vec![format!(
+            "( {body} ) || {{ printf '\\nVZCTL_BUILDER_RESULT {{\"ok\":false,\"phase\":\"bootstrap\",\"exit\":13,\"message\":\"builder bootstrap failed\"}}\\n' > /dev/hvc0; sync; poweroff; exit 1; }}"
+        )],
+    }
+}
+
 fn resolve_target_root_script() -> &'static str {
     // Target image is always attached as the data disk (/dev/vdb). Never use
     // findfs across all disks — the builder appliance may share common labels
@@ -400,38 +499,49 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
     // Here we operate in-place on the provided target via hardlink/clone when possible.
     link_or_copy(options.target_raw, &data_disk)?;
 
-    write_seed(&seed, options.runbook, options.staging_dir)?;
+    write_seed(&seed, options.runbook, options.staging_dir, false)?;
 
     let cidata = bundle.join("cidata.iso");
     create_cidata_iso(&seed, &cidata)?;
 
     let helper = helper_path()?;
     let vm_id = format!("vzb-{token}");
+    let bundle_s = bundle
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder bundle path is not UTF-8"))?;
+    let disk_s = disk
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder disk path is not UTF-8"))?;
+    let data_s = data_disk
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder data-disk path is not UTF-8"))?;
+    let cidata_s = cidata
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder cidata path is not UTF-8"))?;
+    let sock_s = state
+        .join("missing.sock")
+        .to_str()
+        .unwrap_or("/tmp/vzb-missing.sock")
+        .to_string();
     let mut child = Command::new(&helper)
         .args([
             "run",
             "--vm-id",
             &vm_id,
             "--bundle",
-            bundle
-                .to_str()
-                .ok_or_else(|| BuilderFailure::new(12, "builder bundle path is not UTF-8"))?,
+            bundle_s,
             "--disk",
-            disk.to_str()
-                .ok_or_else(|| BuilderFailure::new(12, "builder disk path is not UTF-8"))?,
+            disk_s,
             "--data-disk",
-            data_disk
-                .to_str()
-                .ok_or_else(|| BuilderFailure::new(12, "builder data-disk path is not UTF-8"))?,
+            data_s,
             "--cidata",
-            cidata
-                .to_str()
-                .ok_or_else(|| BuilderFailure::new(12, "builder cidata path is not UTF-8"))?,
+            cidata_s,
             "--supervisor-sock",
-            state
-                .join("missing.sock")
-                .to_str()
-                .unwrap_or("/tmp/vzb-missing.sock"),
+            &sock_s,
+            "--cpus",
+            "2",
+            "--memory-mib",
+            "2048",
         ])
         .env("VZCTL_STATE_DIR", &state)
         .stdout(Stdio::piped())
@@ -471,6 +581,87 @@ pub fn run_builder_vm(options: BuilderRunOptions<'_>) -> Result<BuilderResult, B
                     result.phase.as_deref().unwrap_or("unknown")
                 )
             }),
+        ));
+    }
+    Ok(result)
+}
+
+fn run_builder_bootstrap(root_raw: &Path, progress: bool) -> Result<BuilderResult, BuilderFailure> {
+    let token = builder_run_token();
+    let work = PathBuf::from(format!("/tmp/vzb-{token}"));
+    let bundle = work.join("bundle");
+    let state = work.join("state");
+    let seed = work.join("seed");
+    fs::create_dir_all(&bundle).map_err(io_err)?;
+    fs::create_dir_all(&state).map_err(io_err)?;
+    fs::create_dir_all(&seed).map_err(io_err)?;
+
+    let runbook = bootstrap_runbook();
+    write_seed(&seed, &runbook, None, true)?;
+    let cidata = bundle.join("cidata.iso");
+    create_cidata_iso(&seed, &cidata)?;
+
+    let helper = helper_path()?;
+    let vm_id = format!("vzb-{token}");
+    let bundle_s = bundle
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder bundle path is not UTF-8"))?;
+    let disk_s = root_raw
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder disk path is not UTF-8"))?;
+    let cidata_s = cidata
+        .to_str()
+        .ok_or_else(|| BuilderFailure::new(12, "builder cidata path is not UTF-8"))?;
+    let sock_s = state
+        .join("missing.sock")
+        .to_str()
+        .unwrap_or("/tmp/vzb-missing.sock")
+        .to_string();
+    let mut child = Command::new(&helper)
+        .args([
+            "run",
+            "--vm-id",
+            &vm_id,
+            "--bundle",
+            bundle_s,
+            "--disk",
+            disk_s,
+            "--cidata",
+            cidata_s,
+            "--supervisor-sock",
+            &sock_s,
+            "--cpus",
+            "2",
+            "--memory-mib",
+            "2048",
+        ])
+        .env("VZCTL_STATE_DIR", &state)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| BuilderFailure::new(12, format!("cannot start vz-helper: {error}")))?;
+
+    let result = match wait_for_result(&mut child, &vm_id, Duration::from_secs(1_800), progress) {
+        Ok(result) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            result
+        }
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
+    };
+    let _ = fs::remove_dir_all(&work);
+    if !result.ok {
+        return Err(BuilderFailure::new(
+            result.exit,
+            result
+                .message
+                .clone()
+                .unwrap_or_else(|| "builder bootstrap failed".to_string()),
         ));
     }
     Ok(result)
@@ -592,11 +783,24 @@ fn should_emit_builder_serial_line(line: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    // Result marker becomes the envelope/error; skip noisy duplicates.
     if trimmed.contains(BUILDER_RESULT_PREFIX.trim_end()) {
         return false;
     }
-    true
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with('[') && lower.contains(']') {
+        // Kernel printk timestamps: `[    0.123456] ...`
+        return false;
+    }
+    lower.contains("cloud-init")
+        || lower.contains("virt-")
+        || lower.contains("guestfs")
+        || lower.contains("vzctl")
+        || lower.contains("error")
+        || lower.contains("fail")
+        || lower.contains("apt")
+        || lower.contains("unpacking")
+        || lower.contains("setting up")
+        || lower.starts_with("target root")
 }
 
 /// Read newly completed lines from `path` starting at `offset` (byte position).
@@ -752,6 +956,7 @@ fn write_seed(
     seed: &Path,
     runbook: &SealRunbook,
     staging: Option<&Path>,
+    dhcp: bool,
 ) -> Result<(), BuilderFailure> {
     let instance_id = format!(
         "vzctl-builder-{}",
@@ -802,10 +1007,18 @@ fn write_seed(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let user_data = format!("#cloud-config\nwrite_files:\n{write_files}runcmd:\n{runcmd}\n");
+    let user_data = if write_files.is_empty() {
+        format!("#cloud-config\nruncmd:\n{runcmd}\n")
+    } else {
+        format!("#cloud-config\nwrite_files:\n{write_files}runcmd:\n{runcmd}\n")
+    };
     fs::write(seed.join("user-data"), user_data).map_err(io_err)?;
-    // Empty network-config keeps cloud-init happy without DHCP waits when NAT is present.
-    fs::write(seed.join("network-config"), "version: 2\n").map_err(io_err)?;
+    let network = if dhcp {
+        "version: 2\nethernets:\n  id0:\n    dhcp4: true\n    optional: true\n"
+    } else {
+        "version: 2\n"
+    };
+    fs::write(seed.join("network-config"), network).map_err(io_err)?;
     Ok(())
 }
 
@@ -1017,6 +1230,20 @@ mod tests {
         assert!(should_emit_builder_serial_line(
             "cloud-init: running modules"
         ));
+        assert!(!should_emit_builder_serial_line(
+            "[    0.012345] Linux version 6.1.0"
+        ));
+        assert!(should_emit_builder_serial_line(
+            "Setting up qemu-utils (1:8.2)"
+        ));
+    }
+
+    #[test]
+    fn bootstrap_runbook_installs_libguestfs() {
+        let runbook = bootstrap_runbook();
+        assert_eq!(runbook.op, "bootstrap");
+        assert!(runbook.commands.join(" ").contains("libguestfs-tools"));
+        assert!(runbook.commands.join(" ").contains("virt-customize"));
     }
 
     #[test]

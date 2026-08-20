@@ -132,6 +132,11 @@ net_sock="$state_dir/net.sock"
 edge_sock="$state_dir/edge.sock"
 mkdir -p "$state_dir"
 chown "$console_user" "$state_dir" 2>/dev/null || true
+if [ -d /usr/local/libexec/vzctl/qemu-img ]; then
+  mkdir -p "$state_dir/libexec"
+  ditto /usr/local/libexec/vzctl/qemu-img "$state_dir/libexec/qemu-img"
+  chown -R "$console_user" "$state_dir/libexec" 2>/dev/null || true
+fi
 
 launchctl bootstrap "$domain" "$net_plist" 2>/dev/null || launchctl enable "$domain/$label_net" 2>/dev/null || true
 launchctl kickstart "$domain/$label_net" 2>/dev/null || true

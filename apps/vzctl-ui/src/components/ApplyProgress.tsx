@@ -382,9 +382,11 @@ export function ApplyProgress({
 export function ConsoleLog({
   lines,
   visible,
+  compact = false,
 }: {
   lines: ConsoleLine[];
   visible: boolean;
+  compact?: boolean;
 }) {
   const t = useT();
   const scroller = useRef<HTMLPreElement>(null);
@@ -402,7 +404,7 @@ export function ConsoleLog({
     <Card className="console-card">
       <pre
         ref={scroller}
-        className="text-console"
+        className={compact ? "text-console compact" : "text-console"}
         aria-label={t("apply.console.aria")}
         aria-live="polite"
         onScroll={(event) => {

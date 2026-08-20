@@ -75,6 +75,12 @@ cp "$cli" "$helper" "$supervisor" "$net" "$edge" "$dns_bind" "$tar_dir/"
 if [ -x "$oidc_simple" ]; then
   cp "$oidc_simple" "$tar_dir/"
 fi
+if [ -x "$root/daemon/Vendor/qemu-img/qemu-img" ]; then
+  mkdir -p "$tar_dir/libexec/qemu-img"
+  ditto "$root/daemon/Vendor/qemu-img" "$tar_dir/libexec/qemu-img"
+else
+  echo "package-macos: warning: missing vendored qemu-img (run make vendor-qemu-img)" >&2
+fi
 cp "$root/README.md" "$tar_dir/"
 tar -C "$dist" -czf "$dist/${name}.tar.gz" "$name"
 rm -rf "$tar_dir"
@@ -89,6 +95,10 @@ install -m 0755 "$helper" "$pkg_root/usr/local/bin/vz-helper"
 install -m 0755 "$dns_bind" "$pkg_root/usr/local/bin/vz-dns-bind"
 if [ -x "$oidc_simple" ]; then
   install -m 0755 "$oidc_simple" "$pkg_root/usr/local/bin/vzctl-oidc-simple"
+fi
+if [ -x "$root/daemon/Vendor/qemu-img/qemu-img" ]; then
+  mkdir -p "$pkg_root/usr/local/libexec/vzctl/qemu-img"
+  ditto "$root/daemon/Vendor/qemu-img" "$pkg_root/usr/local/libexec/vzctl/qemu-img"
 fi
 ditto "$tauri_app" "$pkg_root/Applications/vzctl.app"
 

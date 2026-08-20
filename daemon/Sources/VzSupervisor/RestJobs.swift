@@ -17,6 +17,8 @@ struct RestJob: Sendable {
     var result: JSONValue?
     var error: String?
     var log: [String]
+    var progressPercent: Int?
+    var progressLabel: String?
 }
 
 final class RestJobRunner: @unchecked Sendable {
@@ -52,7 +54,9 @@ final class RestJobRunner: @unchecked Sendable {
             updatedAt: now,
             result: nil,
             error: nil,
-            log: []
+            log: [],
+            progressPercent: nil,
+            progressLabel: nil
         )
         lock.withLock { jobs[id] = job }
 
@@ -223,9 +227,56 @@ final class RestJobRunner: @unchecked Sendable {
         let filtered = lines.filter { !$0.isEmpty }
         guard !filtered.isEmpty else { return }
         update(id) { job in
-            job.log = Self.cappedLogAppending(existing: job.log, lines: filtered)
+            for line in filtered {
+                Self.ingestLogLine(&job, line: line)
+            }
             job.updatedAt = isoNow()
         }
+    }
+
+    static func ingestLogLine(_ job: inout RestJob, line: String) {
+        if let percent = progressPercent(in: line) {
+            job.progressPercent = percent
+            job.progressLabel = progressLabel(in: line)
+            if let last = job.log.last, isProgressLine(last) {
+                job.log[job.log.count - 1] = line
+            } else {
+                job.log.append(line)
+            }
+        } else {
+            job.log.append(line)
+        }
+        if job.log.count > maxLogLines {
+            job.log = Array(job.log.suffix(maxLogLines))
+        }
+    }
+
+    static func isProgressLine(_ line: String) -> Bool {
+        progressPercent(in: line) != nil
+    }
+
+    static func progressPercent(in line: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: "(\\d{1,3})%\\s*$") else {
+            return nil
+        }
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        guard let match = regex.firstMatch(in: line, range: range),
+              let inner = Range(match.range(at: 1), in: line),
+              let value = Int(line[inner]),
+              value <= 100
+        else {
+            return nil
+        }
+        return value
+    }
+
+    static func progressLabel(in line: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "\\s*\\d{1,3}%\\s*$") else {
+            return line
+        }
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        return regex.stringByReplacingMatches(in: line, options: [], range: range, withTemplate: "")
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private func update(_ id: String, mutate: (inout RestJob) -> Void) {
@@ -296,12 +347,23 @@ final class RestJobRunner: @unchecked Sendable {
 }
 
 /// Accumulates pipe chunks into newline-delimited log lines.
+///
+/// curl `--progress-bar` and `qemu-img -p` rewrite a TTY meter with CR.
+/// Treat CR as a line break and throttle those updates so the job log
+/// shows live percent without overflowing the 500-line cap.
 final class LineAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var partial = ""
+    private var lastProgressAt: Date?
+    private var pendingProgress: String?
+    private let progressMinInterval: TimeInterval
     private let onLine: @Sendable (String) -> Void
 
-    init(onLine: @escaping @Sendable (String) -> Void) {
+    init(
+        progressMinInterval: TimeInterval = 0.4,
+        onLine: @escaping @Sendable (String) -> Void
+    ) {
+        self.progressMinInterval = progressMinInterval
         self.onLine = onLine
     }
 
@@ -309,25 +371,78 @@ final class LineAccumulator: @unchecked Sendable {
         guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
         lock.withLock {
             partial += text
-            while let range = partial.range(of: "\n") {
-                let line = String(partial[..<range.lowerBound])
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-                partial.removeSubrange(..<range.upperBound)
-                if !line.isEmpty {
-                    onLine(line)
-                }
-            }
+            drainLocked()
         }
     }
 
     func flush() {
         lock.withLock {
+            drainLocked()
+            emitPendingProgressLocked()
             let line = partial.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             partial = ""
             if !line.isEmpty {
                 onLine(line)
             }
         }
+    }
+
+    private func drainLocked() {
+        while let match = nextLineBreak(in: partial) {
+            let line = String(partial[..<match.start])
+            partial.removeSubrange(..<match.end)
+            if line.isEmpty {
+                continue
+            }
+            if match.kind == .cr {
+                emitProgressLocked(line)
+            } else {
+                emitPendingProgressLocked()
+                onLine(line)
+            }
+        }
+    }
+
+    private enum LineBreakKind {
+        case lf
+        case cr
+        case crlf
+    }
+
+    /// Split on scalars, not Swift `Character`s: CRLF is one grapheme cluster.
+    private func nextLineBreak(
+        in text: String
+    ) -> (start: String.Index, end: String.Index, kind: LineBreakKind)? {
+        let scalars = text.unicodeScalars
+        guard let start = scalars.firstIndex(where: { $0 == "\n" || $0 == "\r" }) else {
+            return nil
+        }
+        let after = scalars.index(after: start)
+        if scalars[start] == "\r" {
+            if after < scalars.endIndex, scalars[after] == "\n" {
+                return (start, scalars.index(after: after), .crlf)
+            }
+            return (start, after, .cr)
+        }
+        return (start, after, .lf)
+    }
+
+    private func emitProgressLocked(_ line: String) {
+        let now = Date()
+        if let last = lastProgressAt, now.timeIntervalSince(last) < progressMinInterval {
+            pendingProgress = line
+            return
+        }
+        pendingProgress = nil
+        lastProgressAt = now
+        onLine(line)
+    }
+
+    private func emitPendingProgressLocked() {
+        guard let pending = pendingProgress else { return }
+        pendingProgress = nil
+        lastProgressAt = Date()
+        onLine(pending)
     }
 }
 
@@ -360,6 +475,11 @@ extension RestJob {
         ]
         if let result { obj["result"] = result }
         if let error { obj["error"] = .string(error) }
+        if let percent = progressPercent {
+            var progress: [String: JSONValue] = ["percent": .number(Double(percent))]
+            if let progressLabel { progress["label"] = .string(progressLabel) }
+            obj["progress"] = .object(progress)
+        }
         return .object(obj)
     }
 }

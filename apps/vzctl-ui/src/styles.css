@@ -1618,24 +1618,16 @@ button.secondary:hover:not(:disabled) {
   padding: 0;
 }
 
-.text-console {
-  margin: 0;
-  padding: 0.85rem 1rem;
-  flex: 1 1 auto;
-  min-height: 12rem;
-  min-width: 0;
-  max-width: 100%;
-  width: 100%;
-  max-height: none;
-  overflow: auto;
-  border-radius: inherit;
-  background: #15221f;
-  color: #d7e8e2;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.45;
-  border: 0;
-  box-sizing: border-box;
+.text-console.compact {
+  max-height: 16rem;
+}
+
+.job-meter {
+  margin: 0 0 0.65rem;
+}
+
+.job-meter .progress-bar {
+  margin-top: 0.35rem;
 }
 
 .console-line {
