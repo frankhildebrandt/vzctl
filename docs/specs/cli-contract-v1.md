@@ -387,6 +387,9 @@ fehlendes/ungültiges Manifest `16`.
 ```bash
 vzctl vm inspect <id> [--format human|json]
 vzctl vm logs <id> [-f|--follow] [--tail N] [--format human|json]
+             [--source NAME|--list-sources] [--restart]
+             [--q QUERY] [--min-level L] [--group-field F] [--group-value V]
+             [--filter k=v]...
 vzctl vm exec <id> [-i|--interactive] [-t|--tty] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
 vzctl vm probe <id> --target HOST:PORT [--via dns|ip|both] [--format human|json]
 vzctl vm health <id> [--format human|json]
@@ -421,6 +424,16 @@ fehlt). `vm.logs` liest diesen Serial-Log (Alpha: kein Agent-Tail). Default ist
 `--follow`/`-f` streamt nach dem Tail weiter (nur `--format human`; mit JSON
 Exit `3`). Fehlendes Bundle liefert Exit `3`, fehlende Serial-Log-Datei Exit
 `10` („is the VM started?“).
+
+`--source serial` ist das heutige Serial-Verhalten (Default ohne `--source`).
+`--source <name>` liest die von `iwatch --listen --name` publizierte API
+(Filter `--q`, `--min-level`, `--group-field`/`--group-value`, wiederholbares
+`--filter k=v`). Unbekannter Name → Exit `18`, Helper fehlt → Exit `10`.
+Filter ohne `--source` (≠ serial) → Exit `3`. `--list-sources` listet
+Guest-Namen. `--restart` sendet `POST /api/restart` an die Quelle (neustartet
+den beobachteten Prozess, nicht die VM) und braucht `--source`; mit `-f`
+danach Follow. JSON-Snapshot: `source` plus `lines[]` im iwatch-`LineEvent`-
+Format. Follow+JSON bleibt Exit `3`.
 
 `exec` proxied über Supervisor `vm.exec`
 zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).

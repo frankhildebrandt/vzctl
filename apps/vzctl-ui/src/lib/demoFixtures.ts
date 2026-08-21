@@ -623,6 +623,18 @@ export async function mockApiRequest<T = unknown>(
         disk: { read_iops: 4.2, write_iops: 1.8 },
       } as T;
     }
+    if (action === "guest-services" && method === "GET") {
+      return {
+        services: [
+          {
+            name: "app",
+            kind: "iwatch",
+            url: "http://127.0.0.1:8787",
+            pid: 42,
+          },
+        ],
+      } as T;
+    }
     if (
       (action === "start" || action === "stop" || action === "restart") &&
       method === "POST"
@@ -635,6 +647,44 @@ export async function mockApiRequest<T = unknown>(
           { message: `VM ${id} ${state}`, vm_id: id, state },
         ),
       ) as T;
+    }
+  }
+  if (
+    segments[0] === "v1" &&
+    segments[1] === "vms" &&
+    segments[3] === "guest-services" &&
+    segments.length >= 6
+  ) {
+    const apiTail = segments.slice(5).join("/");
+    if (method === "POST" && apiTail === "api/restart") {
+      return { ok: "restarted" } as T;
+    }
+    if (method === "GET" && apiTail === "api/status") {
+      return {
+        observedFields: ["component", "msg"],
+        groupField: "component",
+        groupValues: ["api", "worker"],
+      } as T;
+    }
+    if (method === "GET" && apiTail.startsWith("api/logs")) {
+      return {
+        lines: [
+          {
+            index: 1,
+            source: "app",
+            text: "demo heartbeat ok",
+            level: "info",
+            fields: { component: "api" },
+          },
+          {
+            index: 2,
+            source: "app",
+            text: "demo request failed",
+            level: "error",
+            fields: { component: "api", msg: "fail" },
+          },
+        ],
+      } as T;
     }
   }
   if (segments[0] === "v1" && segments[1] === "vms" && segments.length === 3) {

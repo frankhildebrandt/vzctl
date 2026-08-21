@@ -367,11 +367,14 @@ pub fn bake_runbook(staging_mount_hint: &str) -> SealRunbook {
         "set -e; \
 lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS >/dev/hvc0 || true; \
 test -f /var/lib/vzctl-builder/staging/vzctl-agent; \
+test -f /var/lib/vzctl-builder/staging/iwatch; \
 {mount}; \
-mkdir -p /mnt/target/usr/lib/vzctl-agent /mnt/target/usr/local/sbin /mnt/target/etc/systemd/system /mnt/target/usr/lib/tmpfiles.d /mnt/target/etc/init.d /mnt/target/var/lib/vzctl; \
+mkdir -p /mnt/target/usr/lib/vzctl-agent /mnt/target/usr/local/sbin /mnt/target/usr/local/bin /mnt/target/etc/systemd/system /mnt/target/usr/lib/tmpfiles.d /mnt/target/etc/init.d /mnt/target/var/lib/vzctl; \
 cp /var/lib/vzctl-builder/staging/vzctl-agent /mnt/target/usr/local/sbin/vzctl-agent; \
+cp /var/lib/vzctl-builder/staging/iwatch /mnt/target/usr/local/bin/iwatch; \
 cp /var/lib/vzctl-builder/staging/image-metadata.json /mnt/target/usr/lib/vzctl-agent/image-metadata.json; \
 chmod 0755 /mnt/target/usr/local/sbin/vzctl-agent; \
+chmod 0755 /mnt/target/usr/local/bin/iwatch; \
 chmod 0644 /mnt/target/usr/lib/vzctl-agent/image-metadata.json; \
 if ! chroot /mnt/target /bin/sh -c 'id -u vzctl-agent >/dev/null 2>&1'; then \
   if chroot /mnt/target /bin/sh -c 'command -v useradd >/dev/null 2>&1'; then \
@@ -980,6 +983,7 @@ fn write_seed(
             "vzctl-agent-tmpfiles.conf",
             "vzctl-agent.openrc",
             "image-metadata.json",
+            "iwatch",
         ] {
             let path = staging.join(name);
             let bytes = fs::read(&path).map_err(|error| {
@@ -989,7 +993,7 @@ fn write_seed(
                 )
             })?;
             let b64 = base64_encode(&bytes);
-            let mode = if name == "vzctl-agent" {
+            let mode = if name == "vzctl-agent" || name == "iwatch" {
                 "0755"
             } else {
                 "0644"
@@ -1371,6 +1375,12 @@ mod tests {
                 .iter()
                 .any(|c| c.contains("vzctl-agent.openrc")),
             "bake must install OpenRC unit for Alpine"
+        );
+        assert!(
+            bake.commands.iter().any(|c| c.contains(
+                "cp /var/lib/vzctl-builder/staging/iwatch /mnt/target/usr/local/bin/iwatch"
+            )),
+            "bake must install iwatch into /usr/local/bin"
         );
     }
 }

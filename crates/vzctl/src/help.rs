@@ -255,7 +255,9 @@ vzctl vm — imperative VM lifecycle (prefer YAML + apply for stacks)
   stop <id> [--wait true|false]
   delete <id> [--force]
   modify <id> [--cpus N] [--memory SIZE]     (no hotplug; restart needed)
-  logs <id> [-f|--follow] [--tail N]
+  logs <id> [-f|--follow] [--tail N] [--source NAME] [--list-sources]
+       [--q QUERY] [--min-level L] [--group-field F] [--group-value V]
+       [--filter k=v]... [--restart]
   exec <id> [-it] [--cwd PATH] [--env K=V]... [--timeout-ms N] -- <cmd> [args...]
   transfer <id> <src> <dst>                  (max 256 KiB)
   attach <id>                                (detach: Ctrl-P Ctrl-Q)

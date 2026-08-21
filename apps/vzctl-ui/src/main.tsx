@@ -25,6 +25,7 @@ import {
   vmModifyRoute,
   vmMountRoute,
   vmOverviewRoute,
+  vmLogsRoute,
   vmReplaceRoute,
   vmShellRoute,
   vmsRoute,
@@ -46,6 +47,7 @@ const routeTree = rootRoute.addChildren([
   vmsRoute,
   vmDetailRoute.addChildren([
     vmOverviewRoute,
+    vmLogsRoute,
     vmShellRoute,
     vmConsoleRoute,
     vmModifyRoute,

@@ -23,6 +23,7 @@ mod help;
 mod hostbin;
 mod image;
 mod ingress;
+mod iwatch_bin;
 mod mounts;
 mod network;
 mod observability;

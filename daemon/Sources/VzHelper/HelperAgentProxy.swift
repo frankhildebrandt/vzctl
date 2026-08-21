@@ -18,6 +18,14 @@ enum HelperAgentRequest {
         let rows: Int
     }
 
+    struct ServicesHTTPParams: Equatable, Sendable {
+        let name: String
+        let method: String
+        let path: String
+        let headers: [String: String]
+        let body: Data?
+    }
+
     struct CAInjectParams: Equatable, Sendable {
         let pem: String
         let fingerprint: String
@@ -179,6 +187,43 @@ enum HelperAgentRequest {
         }
         return forwarded
     }
+
+    static func parseServicesHTTP(_ value: JSONValue?) throws -> ServicesHTTPParams {
+        guard case let .object(params)? = value else {
+            throw RouteApplyError.invalid("agent.services.http params must be an object")
+        }
+        guard case let .string(name)? = params["name"], !name.isEmpty else {
+            throw RouteApplyError.invalid("agent.services.http requires name")
+        }
+        guard case let .string(path)? = params["path"], path.hasPrefix("/") else {
+            throw RouteApplyError.invalid("agent.services.http requires a root-relative path")
+        }
+        let method: String
+        if case let .string(value)? = params["method"], !value.isEmpty {
+            method = value
+        } else {
+            method = "GET"
+        }
+        var headers: [String: String] = [:]
+        if case let .object(raw)? = params["headers"] {
+            for (key, value) in raw {
+                guard case let .string(string) = value else {
+                    throw RouteApplyError.invalid("agent.services.http headers must be strings")
+                }
+                headers[key] = string
+            }
+        }
+        let body: Data?
+        if case let .string(encoded)? = params["body_b64"] {
+            guard let data = Data(base64Encoded: encoded) else {
+                throw RouteApplyError.invalid("agent.services.http body_b64 is not valid base64")
+            }
+            body = data
+        } else {
+            body = nil
+        }
+        return ServicesHTTPParams(name: name, method: method, path: path, headers: headers, body: body)
+    }
 }
 
 enum HelperAgentProxy {
@@ -192,6 +237,9 @@ enum HelperAgentProxy {
         "agent.ca_inject",
         "agent.network_probe",
         "agent.stats",
+        "agent.services.list",
+        "agent.services.http",
+        "agent.services.stream",
     ]
 
     static func run(
@@ -209,6 +257,19 @@ enum HelperAgentProxy {
             let tty = try HelperAgentRequest.parseExecTTY(params)
             return try await HelperExecTTYBridge.start(
                 params: tty,
+                runtime: runtime,
+                token: token,
+                stateDirectory: stateDirectory,
+                vmID: vmID
+            )
+        }
+        if method == "agent.services.stream" {
+            guard let stateDirectory, let vmID else {
+                throw RouteApplyError.invalid("agent.services.stream requires helper state context")
+            }
+            let parsed = try HelperAgentRequest.parseServicesHTTP(params)
+            return try await HelperGuestServiceBridge.start(
+                params: parsed,
                 runtime: runtime,
                 token: token,
                 stateDirectory: stateDirectory,
@@ -295,6 +356,23 @@ enum HelperAgentProxy {
             )
         case "agent.stats":
             return JSONValue.fromAny(try client.stats())
+        case "agent.services.list":
+            return .object([
+                "services": .array(
+                    try client.servicesList().map { JSONValue.fromAny($0) }
+                )
+            ])
+        case "agent.services.http":
+            let parsed = try HelperAgentRequest.parseServicesHTTP(params)
+            return JSONValue.fromAny(
+                try client.servicesHTTP(
+                    name: parsed.name,
+                    method: parsed.method,
+                    path: parsed.path,
+                    headers: parsed.headers,
+                    body: parsed.body
+                )
+            )
         default:
             throw RouteApplyError.invalid("unknown agent method: \(method)")
         }

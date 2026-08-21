@@ -28,6 +28,21 @@ final class RestRouter: @unchecked Sendable {
             streamJobLog(jobId: segments[2], client: client)
             return true
         }
+        if segments.count >= 8,
+           segments[1] == "vms",
+           segments[3] == "guest-services",
+           segments[segments.count - 3] == "api",
+           segments[segments.count - 2] == "logs",
+           segments[segments.count - 1] == "sse"
+        {
+            streamGuestServiceLogs(
+                vmId: segments[2],
+                name: segments[4],
+                request: request,
+                client: client
+            )
+            return true
+        }
         return false
     }
 
@@ -312,6 +327,11 @@ final class RestRouter: @unchecked Sendable {
                     "vm.agent.stats",
                     params: .object(["vm_id": .string(vmId)])
                 )
+            case ("guest-services", "GET"):
+                return try rpcOK(
+                    "vm.agent.services.list",
+                    params: .object(["vm_id": .string(vmId)])
+                )
             case ("mounts", "GET"):
                 return try workerJSON(["vm", "mounts", vmId, "--format", "json"])
             case ("mounts", "POST"):
@@ -325,6 +345,16 @@ final class RestRouter: @unchecked Sendable {
             return try workerJSON([
                 "vm", "unmount", vmId, "--tag", rest[3], "--format", "json",
             ])
+        }
+
+        if rest.count >= 5, rest[2] == "guest-services" {
+            return try proxyGuestService(
+                vmId: vmId,
+                name: rest[3],
+                method: method,
+                rest: Array(rest.dropFirst(4)),
+                request: request
+            )
         }
 
         throw RestRouteError(404, .notFound, "vm sub-route")
@@ -729,6 +759,146 @@ final class RestRouter: @unchecked Sendable {
                 return
             }
             Thread.sleep(forTimeInterval: 0.25)
+        }
+    }
+
+    private func proxyGuestService(
+        vmId: String,
+        name: String,
+        method: String,
+        rest: [String],
+        request: RestHTTPRequest
+    ) throws -> RestHTTPResponse {
+        let path = guestServicePath(rest: rest, query: request.query)
+        var params: [String: JSONValue] = [
+            "vm_id": .string(vmId),
+            "name": .string(name),
+            "method": .string(method),
+            "path": .string(path),
+        ]
+        if !request.body.isEmpty {
+            params["body_b64"] = .string(request.body.base64EncodedString())
+        }
+        let result: JSONValue
+        do {
+            result = try rpcResult("vm.agent.services.http", params: .object(params))
+        } catch let error as RestRouteError where error.message.contains("service not found") {
+            throw RestRouteError(404, .notFound, error.message)
+        }
+        guard case let .object(obj) = result else {
+            throw RestRouteError(502, .internalError, "invalid guest service response")
+        }
+        let status: Int
+        if case let .number(value)? = obj["status"] {
+            status = Int(value)
+        } else {
+            status = 200
+        }
+        var headers: [String: String] = [:]
+        if case let .object(raw)? = obj["headers"] {
+            for (key, value) in raw {
+                if case let .string(string) = value {
+                    headers[key] = string
+                }
+            }
+        }
+        var body = Data()
+        if case let .string(encoded)? = obj["body_b64"], let decoded = Data(base64Encoded: encoded) {
+            body = decoded
+        }
+        return RestHTTPResponse(status: status, headers: headers, body: body)
+    }
+
+    private func streamGuestServiceLogs(
+        vmId: String,
+        name: String,
+        request: RestHTTPRequest,
+        client: Int32
+    ) {
+        let path = guestServicePath(rest: ["api", "logs", "sse"], query: request.query)
+        let params: JSONValue = .object([
+            "vm_id": .string(vmId),
+            "name": .string(name),
+            "method": .string("GET"),
+            "path": .string(path),
+        ])
+        let result: JSONValue
+        do {
+            result = try rpcResult("vm.agent.services.stream", params: params)
+        } catch {
+            let response = (try? RestHTTPResponse.error(
+                502,
+                code: .internalError,
+                message: String(describing: error)
+            )) ?? RestHTTPResponse.text(502, String(describing: error))
+            _ = writeData(RestHTTP.encodeResponse(response), to: client)
+            return
+        }
+        guard case let .object(obj) = result, case let .string(socket)? = obj["socket"] else {
+            let response = (try? RestHTTPResponse.error(
+                502,
+                code: .internalError,
+                message: "guest service stream missing socket"
+            )) ?? RestHTTPResponse.text(502, "guest service stream missing socket")
+            _ = writeData(RestHTTP.encodeResponse(response), to: client)
+            return
+        }
+        var contentType = "text/event-stream"
+        if case let .string(value)? = obj["content_type"], !value.isEmpty {
+            contentType = value
+        }
+        let preamble = Data(
+            """
+            HTTP/1.1 200 OK\r
+            Content-Type: \(contentType)\r
+            Cache-Control: no-cache\r
+            Connection: keep-alive\r
+            \r
+
+            """.utf8
+        )
+        guard writeData(preamble, to: client) else { return }
+        copyUnixSocket(path: socket, to: client)
+    }
+
+    private func guestServicePath(rest: [String], query: [String: String]) -> String {
+        var path = "/" + rest.joined(separator: "/")
+        if !query.isEmpty {
+            let encoded = query.keys.sorted().map { key in
+                let value = query[key] ?? ""
+                let escaped = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+                return "\(key)=\(escaped)"
+            }
+            path += "?" + encoded.joined(separator: "&")
+        }
+        return path
+    }
+
+    private func copyUnixSocket(path: String, to client: Int32) {
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        var address = sockaddr_un()
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else { return }
+        var buffer = [UInt8](repeating: 0, count: 32_768)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count <= 0 { return }
+            let chunk = Data(buffer[0..<count])
+            guard writeData(chunk, to: client) else { return }
         }
     }
 

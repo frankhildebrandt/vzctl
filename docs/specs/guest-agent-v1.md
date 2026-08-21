@@ -173,6 +173,9 @@ a `rotate_token` method are not part of v1.
 | `ca_inject` | `pem`, `fingerprint`, optional `name` | `installed: true`, `fingerprint` | 15 s / 60 s |
 | `network_probe` | `url` **or** `target` (+ optional `via`, `connect_ip`, `timeout_ms`) | URL: `classification`/`phase`/…; target: `resolved_ips`, `chosen_ip`, `connect_ms`, `error_stage`, `dns`/`ip` legs | 5 s / 30 s |
 | `stats` | `{}` | `cpu.percent`, `memory.{used_mib,total_mib,percent}`, `disk.{read_iops,write_iops}`, `load1`, `mem_used_pct`, optional `top_process` | 2 s / 10 s |
+| `services.list` | `{}` | `services[]` with `name`, `kind`, `url`, `pid` | 2 s / 10 s |
+| `services.http` | `name`, `path`, optional `method`, `headers`, `body_b64` | `status`, `headers`, `body_b64`, `truncated` | 15 s / 30 s |
+| `services.stream` | same as `services.http` | `upgraded: true` then mux stdout of the upstream body | until disconnect |
 
 Capability `fs_mount` advertises the virtiofs bind helpers. The agent invokes
 `/usr/local/lib/vzctl/virtiofs-bind` via `sudo -n` (installed by system
@@ -210,6 +213,23 @@ Memory comes from `MemTotal`/`MemAvailable`. IOPS sum whole disks (`vda`,
 
 Older agents without the capability return `unsupported`. Hosts should show
 n/a until `vzctl vm agent upgrade`.
+
+### Guest publish (`guest_publish`)
+
+Capability `guest_publish` lets guest processes advertise a **loopback HTTP
+API** under a DNS-label name. The agent listens on Unix socket
+`/run/vzctl/guest.sock` (mode `0660`):
+
+- `PUT /v1/services/{name}` body `{kind, url, pid?}` — `url` must be
+  `http(s)://127.0.0.1|localhost|::1:<port>`
+- `DELETE /v1/services/{name}`
+- `GET /v1/services`
+
+`iwatch --listen --name app` registers `kind: iwatch`. Dead PIDs are reaped on
+list. Hosts proxy through vsock `services.list`, `services.http` (256 KiB body
+cap) and `services.stream` (mux stdout after `{upgraded:true}`, like
+`exec_tty`). Paths must be root-relative (`/api/...`) and stay on the
+registered origin.
 
 ### `network_probe`
 
@@ -493,6 +513,7 @@ The host control plane may push a **guest utils bundle** to running VMs without
 rebaking the sealed base image. The bundle contains:
 
 - `/usr/local/sbin/vzctl-agent` (cross-built ARM64 binary)
+- `/usr/local/bin/iwatch` (GitHub Release `linux_arm64`, pin `guest-agent/IWATCH_VERSION`)
 - `/usr/local/lib/vzctl/{virtiofs-bind,router-apply,ca-inject}`
 - `/etc/sudoers.d/vzctl-{agent,virtiofs,router,ca}`
 - `/etc/systemd/system/vzctl-agent.service` (and OpenRC unit when present)
@@ -509,6 +530,7 @@ After a successful rollout the guest records:
 {
   "bundle_id": "0.1.3-deadbeef",
   "agent_version": "0.1.3",
+  "iwatch_version": "v0.1.0",
   "content_sha256": "...",
   "updated_at": "2026-08-07T12:00:00Z"
 }

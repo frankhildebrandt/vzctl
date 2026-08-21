@@ -376,6 +376,58 @@ final class GuestAgentClient: @unchecked Sendable {
         )
     }
 
+    func servicesList(timeout: TimeInterval = 2) throws -> [[String: Any]] {
+        let result = try request(method: "services.list", params: [:], timeout: timeout)
+        guard let services = result["services"] as? [[String: Any]] else {
+            throw GuestAgentError.protocolViolation("invalid services.list result")
+        }
+        return services
+    }
+
+    func servicesHTTP(
+        name: String,
+        method: String,
+        path: String,
+        headers: [String: String] = [:],
+        body: Data? = nil,
+        timeout: TimeInterval = 20
+    ) throws -> [String: Any] {
+        var params: [String: Any] = [
+            "name": name,
+            "method": method,
+            "path": path,
+        ]
+        if !headers.isEmpty { params["headers"] = headers }
+        if let body { params["body_b64"] = body.base64EncodedString() }
+        return try request(method: "services.http", params: params, timeout: timeout)
+    }
+
+    /// Negotiates a guest HTTP stream upgrade. After success, read mux stdout.
+    func upgradeServiceStream(
+        name: String,
+        method: String,
+        path: String,
+        headers: [String: String] = [:],
+        timeout: TimeInterval = 10
+    ) throws -> [String: Any] {
+        var params: [String: Any] = [
+            "name": name,
+            "method": method,
+            "path": path,
+        ]
+        if !headers.isEmpty { params["headers"] = headers }
+        let result = try request(
+            method: "services.stream",
+            params: params,
+            timeout: timeout,
+            allowCancel: false
+        )
+        guard result["upgraded"] as? Bool == true else {
+            throw GuestAgentError.protocolViolation("services.stream did not upgrade")
+        }
+        return result
+    }
+
     private func request(
         method: String,
         params: [String: Any],

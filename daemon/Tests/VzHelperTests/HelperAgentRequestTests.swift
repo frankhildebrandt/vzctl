@@ -64,6 +64,9 @@ import VzDaemonKit
     #expect(HelperAgentProxy.methods.contains("agent.ping"))
     #expect(HelperAgentProxy.methods.contains("agent.ca_inject"))
     #expect(HelperAgentProxy.methods.contains("agent.stats"))
+    #expect(HelperAgentProxy.methods.contains("agent.services.list"))
+    #expect(HelperAgentProxy.methods.contains("agent.services.http"))
+    #expect(HelperAgentProxy.methods.contains("agent.services.stream"))
 }
 
 @Test func agentCAInjectParsesRequiredParamsAndDefaultName() throws {
@@ -135,6 +138,43 @@ import VzDaemonKit
         )
     }
 }
+@Test func agentServicesHTTPParsesNamePathAndDefaults() throws {
+    let parsed = try HelperAgentRequest.parseServicesHTTP(
+        .object([
+            "name": .string("app"),
+            "path": .string("/api/logs?q=error"),
+        ])
+    )
+    #expect(parsed.name == "app")
+    #expect(parsed.method == "GET")
+    #expect(parsed.path == "/api/logs?q=error")
+    #expect(parsed.body == nil)
+}
+
+@Test func agentServicesHTTPParsesPostRestart() throws {
+    let parsed = try HelperAgentRequest.parseServicesHTTP(
+        .object([
+            "name": .string("app"),
+            "method": .string("POST"),
+            "path": .string("/api/restart"),
+        ])
+    )
+    #expect(parsed.name == "app")
+    #expect(parsed.method == "POST")
+    #expect(parsed.path == "/api/restart")
+}
+
+@Test func agentServicesHTTPRejectsRelativePath() {
+    #expect(throws: RouteApplyError.self) {
+        try HelperAgentRequest.parseServicesHTTP(
+            .object([
+                "name": .string("app"),
+                "path": .string("api/logs"),
+            ])
+        )
+    }
+}
+
 @Test func muxEncodeDecodeRoundTrip() throws {
     let payload = Data("pty-out".utf8)
     let encoded = try GuestAgentMux.encode(type: .stdout, payload: payload)

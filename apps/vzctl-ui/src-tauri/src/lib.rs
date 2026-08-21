@@ -109,6 +109,67 @@ fn subscribe_events(app: AppHandle, _bridge: State<'_, EventBridge>) -> Result<(
 }
 
 #[tauri::command]
+fn subscribe_guest_logs(
+    app: AppHandle,
+    path_and_query: String,
+    channel: String,
+) -> Result<(), String> {
+    if !channel.starts_with("vzctl-guest-log-")
+        || !channel
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/')
+    {
+        return Err("invalid guest log channel".into());
+    }
+    if !path_and_query.contains("/guest-services/") || !path_and_query.contains("/api/logs/sse") {
+        return Err("guest log path must be a guest-services SSE endpoint".into());
+    }
+    thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let stream = api_proxy::open_sse(&path_and_query)?;
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let mut event = String::new();
+            let mut data = String::new();
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .map_err(|e| format!("guest log sse read: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                if trimmed.is_empty() {
+                    if !data.is_empty() {
+                        let parsed: Value =
+                            serde_json::from_str(&data).unwrap_or(json!({ "text": data }));
+                        let _ = app.emit(&channel, json!({ "event": event, "data": parsed }));
+                    }
+                    event.clear();
+                    data.clear();
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("event:") {
+                    event = value.trim().to_string();
+                } else if let Some(payload) = trimmed.strip_prefix("data:") {
+                    let payload = payload.trim_start();
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(payload);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(err) = result {
+            eprintln!("vzctl guest logs sse: {err}");
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_vzctl(
     app: AppHandle,
     path: String,
@@ -1759,6 +1820,7 @@ pub fn run() {
             run_vzctl_argv,
             request_host_reboot,
             subscribe_events,
+            subscribe_guest_logs,
             open_url,
             read_text_file,
             write_text_file,

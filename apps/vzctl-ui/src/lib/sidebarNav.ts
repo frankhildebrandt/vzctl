@@ -49,6 +49,7 @@ export type SidebarNavModel = {
 
 export type VmSection =
   | "overview"
+  | "logs"
   | "shell"
   | "console"
   | "modify"
@@ -86,6 +87,7 @@ function parseVmSection(tail: string): {
     };
   }
   if (
+    parts[0] === "logs" ||
     parts[0] === "shell" ||
     parts[0] === "console" ||
     parts[0] === "modify" ||
@@ -284,6 +286,15 @@ function buildVm(
       params: { vmId: encoded },
       search: vmSearch,
       active: section === "overview",
+    },
+    {
+      id: "logs",
+      label: t("nav.logs"),
+      to: "/vms/$vmId/logs",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "logs",
+      disabled: !running,
     },
     {
       id: "shell",

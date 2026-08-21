@@ -9,6 +9,8 @@ P0 agent slice implements:
 - `ping`, `version`, `health` (`ok`|`degraded`|`down`), `exec`, `report_ip`,
   `stats` (incl. `load1`/`mem_used_pct`/`top_process`) and `network_probe`
   (HTTP `url` or connect `target`/`via` dns|ip|both);
+- `guest_publish`: Unix socket `/run/vzctl/guest.sock` plus vsock
+  `services.list` / `services.http` / `services.stream`;
 - concurrent in-flight requests plus `cancel`, process-group termination and
   helper/agent deadlines;
 - argv-only execution with 256 KiB stdin/stdout/stderr caps and truncation;

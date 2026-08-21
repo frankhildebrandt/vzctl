@@ -31,6 +31,9 @@ final class SupervisorServer: @unchecked Sendable {
         "vm.agent.ca_inject",
         "vm.agent.network_probe",
         "vm.agent.stats",
+        "vm.agent.services.list",
+        "vm.agent.services.http",
+        "vm.agent.services.stream",
     ]
 
     let socketPath: String
@@ -983,12 +986,15 @@ final class SupervisorServer: @unchecked Sendable {
                 let vmID = try requiredReconcileString("vm_id", from: params)
                 try requireRunningHelper(vmID: vmID)
                 let helperMethod = "agent." + String(method.dropFirst("vm.agent.".count))
+                let timeout = method == "vm.agent.ca_inject" ? 65
+                    : method == "vm.agent.services.stream" ? 20
+                    : 35
                 let result = try HelperAgentClient.run(
                     method: helperMethod,
                     params: request.params,
                     vmID: vmID,
                     stateDirectory: stateDirectory,
-                    timeoutSeconds: method == "vm.agent.ca_inject" ? 65 : 35
+                    timeoutSeconds: timeout
                 )
                 return JSONRPCResponse(result: result, id: request.id ?? .null)
             } catch {

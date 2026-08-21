@@ -103,6 +103,14 @@ enum Operation {
         id: String,
         follow: bool,
         tail: usize,
+        source: String,
+        list_sources: bool,
+        q: Option<String>,
+        min_level: Option<String>,
+        group_field: Option<String>,
+        group_value: Option<String>,
+        filters: Vec<(String, String)>,
+        restart: bool,
     },
     Mount {
         id: String,
@@ -751,6 +759,14 @@ fn parse_logs(args: Vec<String>) -> Result<Options, Failure> {
     let mut format = Format::Human;
     let mut follow = false;
     let mut tail = DEFAULT_LOG_TAIL;
+    let mut source = "serial".to_string();
+    let mut list_sources = false;
+    let mut q = None;
+    let mut min_level = None;
+    let mut group_field = None;
+    let mut group_value = None;
+    let mut filters = Vec::new();
+    let mut restart = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -778,6 +794,62 @@ fn parse_logs(args: Vec<String>) -> Result<Options, Failure> {
                 };
                 index += 2;
             }
+            "--source" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--source requires a name"))?;
+                source = value.clone();
+                index += 2;
+            }
+            "--list-sources" => {
+                list_sources = true;
+                index += 1;
+            }
+            "--restart" => {
+                restart = true;
+                index += 1;
+            }
+            "--q" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--q requires a query"))?;
+                q = Some(value.clone());
+                index += 2;
+            }
+            "--min-level" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--min-level requires a level"))?;
+                min_level = Some(value.clone());
+                index += 2;
+            }
+            "--group-field" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--group-field requires a field"))?;
+                group_field = Some(value.clone());
+                index += 2;
+            }
+            "--group-value" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--group-value requires a value"))?;
+                group_value = Some(value.clone());
+                index += 2;
+            }
+            "--filter" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--filter requires k=v"))?;
+                let (key, val) = value.split_once('=').ok_or_else(|| {
+                    usage(format!("invalid --filter {value}: expected k=v"))
+                })?;
+                if key.is_empty() {
+                    return Err(usage("invalid --filter: empty key"));
+                }
+                filters.push((key.to_string(), val.to_string()));
+                index += 2;
+            }
             other => {
                 return Err(usage(format!("unknown vm logs option: {other}")));
             }
@@ -789,8 +861,37 @@ fn parse_logs(args: Vec<String>) -> Result<Options, Failure> {
             "vm logs --follow supports only --format human",
         ));
     }
+    let iwatch_filters = q.is_some()
+        || min_level.is_some()
+        || group_field.is_some()
+        || group_value.is_some()
+        || !filters.is_empty();
+    if iwatch_filters && (source == "serial" && !list_sources) {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "iwatch filters require --source <name>",
+        ));
+    }
+    if restart && (source == "serial" || list_sources) {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "vm logs --restart requires --source <name>",
+        ));
+    }
     Ok(Options {
-        operation: Operation::Logs { id, follow, tail },
+        operation: Operation::Logs {
+            id,
+            follow,
+            tail,
+            source,
+            list_sources,
+            q,
+            min_level,
+            group_field,
+            group_value,
+            filters,
+            restart,
+        },
         format,
     })
 }
@@ -1125,7 +1226,22 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         Operation::Attach { id } => attach_vm(id),
         Operation::Services { id, action } => services_vm(id, action, socket_path),
         Operation::GuestPs { id } => guest_ps_vm(id, socket_path),
-        Operation::Logs { id, follow, tail } => logs_vm(id, *follow, *tail),
+        Operation::Logs { id, follow, tail, source, list_sources, q, min_level, group_field, group_value, filters, restart } => {
+            logs_vm(
+                id,
+                *follow,
+                *tail,
+                source,
+                *list_sources,
+                q.as_deref(),
+                min_level.as_deref(),
+                group_field.as_deref(),
+                group_value.as_deref(),
+                filters,
+                *restart,
+                socket_path,
+            )
+        }
         Operation::Mount {
             id,
             source,
@@ -2284,7 +2400,42 @@ fn attach_vm(id: &str) -> Result<Value, Failure> {
     }))
 }
 
-fn logs_vm(id: &str, follow: bool, tail: usize) -> Result<Value, Failure> {
+fn logs_vm(
+    id: &str,
+    follow: bool,
+    tail: usize,
+    source: &str,
+    list_sources: bool,
+    q: Option<&str>,
+    min_level: Option<&str>,
+    group_field: Option<&str>,
+    group_value: Option<&str>,
+    filters: &[(String, String)],
+    restart: bool,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    if list_sources {
+        return list_log_sources(id, socket_path);
+    }
+    if source != "serial" {
+        return guest_logs_vm(
+            id,
+            source,
+            follow,
+            tail,
+            q,
+            min_level,
+            group_field,
+            group_value,
+            filters,
+            restart,
+            socket_path,
+        );
+    }
+    logs_serial_vm(id, follow, tail)
+}
+
+fn logs_serial_vm(id: &str, follow: bool, tail: usize) -> Result<Value, Failure> {
     validate_vm_id(id)?;
     let bundle = bundle_path(id);
     if !bundle.join("vm.json").is_file() {
@@ -2420,6 +2571,327 @@ fn follow_serial_log(path: &Path) -> Result<(), Failure> {
             }
         }
     }
+}
+
+fn list_log_sources(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    validate_vm_id(id)?;
+    let result = rpc(
+        socket_path,
+        "vm.agent.services.list",
+        json!({ "vm_id": id }),
+    )?;
+    let sources = result
+        .get("services")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.logs",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": format!("log sources for {id}"),
+            "vm_id": id,
+        },
+        "sources": sources,
+    }))
+}
+
+/// POST iwatch `/api/restart` through the published guest service.
+fn restart_guest_log_source(id: &str, source: &str, socket_path: &Path) -> Result<(), Failure> {
+    let result = rpc(
+        socket_path,
+        "vm.agent.services.http",
+        json!({
+            "vm_id": id,
+            "name": source,
+            "method": "POST",
+            "path": "/api/restart",
+        }),
+    )?;
+    let status = result["status"].as_u64().unwrap_or(0);
+    if status == 404 {
+        return Err(Failure::new(
+            EXIT_GUEST,
+            format!("log source {source} not found"),
+        ));
+    }
+    if !(200..300).contains(&status) {
+        let body = decode_services_body(&result).unwrap_or_default();
+        let detail = String::from_utf8_lossy(&body);
+        let detail = detail.trim();
+        if detail.is_empty() {
+            return Err(Failure::new(
+                EXIT_GUEST,
+                format!("restart {source} failed (HTTP {status})"),
+            ));
+        }
+        return Err(Failure::new(
+            EXIT_GUEST,
+            format!("restart {source} failed (HTTP {status}): {detail}"),
+        ));
+    }
+    Ok(())
+}
+
+fn guest_logs_vm(
+    id: &str,
+    source: &str,
+    follow: bool,
+    tail: usize,
+    q: Option<&str>,
+    min_level: Option<&str>,
+    group_field: Option<&str>,
+    group_value: Option<&str>,
+    filters: &[(String, String)],
+    restart: bool,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    validate_vm_id(id)?;
+    if restart {
+        restart_guest_log_source(id, source, socket_path)?;
+        if !follow {
+            return Ok(json!({
+                "apiVersion": API_VERSION,
+                "command": "vm.logs",
+                "status": "ok",
+                "exit_code": 0,
+                "summary": {
+                    "message": format!("restarted {source} on {id}"),
+                    "vm_id": id,
+                    "source": source,
+                    "restarted": true,
+                },
+                "source": source,
+                "restarted": true,
+            }));
+        }
+    }
+    if follow {
+        follow_guest_logs(
+            id,
+            source,
+            tail,
+            q,
+            min_level,
+            group_field,
+            group_value,
+            filters,
+            socket_path,
+        )?;
+        return Ok(json!({
+            "apiVersion": API_VERSION,
+            "command": "vm.logs",
+            "status": "ok",
+            "exit_code": 0,
+            "summary": {
+                "message": format!("followed {source} logs for {id}"),
+                "vm_id": id,
+                "source": source,
+            },
+        }));
+    }
+
+    let path = iwatch_logs_path(
+        false,
+        tail,
+        q,
+        min_level,
+        group_field,
+        group_value,
+        filters,
+    );
+    let result = rpc(
+        socket_path,
+        "vm.agent.services.http",
+        json!({
+            "vm_id": id,
+            "name": source,
+            "method": "GET",
+            "path": path,
+        }),
+    )?;
+    let status = result["status"].as_u64().unwrap_or(0);
+    if status == 404 {
+        return Err(Failure::new(
+            EXIT_GUEST,
+            format!("log source {source} not found"),
+        ));
+    }
+    let body = decode_services_body(&result)?;
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+    let lines = parsed
+        .get("lines")
+        .cloned()
+        .or_else(|| parsed.get("items").cloned())
+        .unwrap_or(parsed);
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.logs",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": format!("{source} logs for {id}"),
+            "vm_id": id,
+            "source": source,
+        },
+        "source": source,
+        "lines": lines,
+    }))
+}
+
+fn follow_guest_logs(
+    id: &str,
+    source: &str,
+    tail: usize,
+    q: Option<&str>,
+    min_level: Option<&str>,
+    group_field: Option<&str>,
+    group_value: Option<&str>,
+    filters: &[(String, String)],
+    socket_path: &Path,
+) -> Result<(), Failure> {
+    let path = iwatch_logs_path(true, tail, q, min_level, group_field, group_value, filters);
+    let result = rpc(
+        socket_path,
+        "vm.agent.services.stream",
+        json!({
+            "vm_id": id,
+            "name": source,
+            "method": "GET",
+            "path": path,
+        }),
+    )?;
+    let helper_socket = result["socket"].as_str().ok_or_else(|| {
+        Failure::new(EXIT_GUEST, "guest log stream did not return a socket")
+    })?;
+    let stream = UnixStream::connect(helper_socket).map_err(|error| {
+        Failure::new(
+            EXIT_SUPERVISOR,
+            format!("guest log stream {helper_socket}: {error}"),
+        )
+    })?;
+    let _ = stream.set_read_timeout(None);
+    let mut reader = BufReader::new(stream);
+    let mut event = String::new();
+    let mut data = String::new();
+    loop {
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| Failure::new(EXIT_GUEST, format!("log stream read: {error}")))?;
+        if bytes == 0 {
+            return Ok(());
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            if event == "line" || event.is_empty() {
+                print_iwatch_line(&data);
+            }
+            event.clear();
+            data.clear();
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("event:") {
+            event = value.trim().to_string();
+        } else if let Some(value) = trimmed.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+}
+
+fn print_iwatch_line(data: &str) {
+    if data.is_empty() {
+        return;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(data) {
+        println!("{}", format_iwatch_line(&value));
+        return;
+    }
+    println!("{data}");
+}
+
+fn format_iwatch_line(line: &Value) -> String {
+    if let Some(text) = line.as_str() {
+        return text.to_string();
+    }
+    let text = line["text"].as_str().unwrap_or("");
+    let source = line["source"].as_str().unwrap_or("");
+    let level = line["level"].as_str().unwrap_or("");
+    match (source.is_empty(), level.is_empty()) {
+        (true, true) => text.to_string(),
+        (false, true) => format!("source={source} {text}"),
+        (true, false) => format!("level={level} {text}"),
+        (false, false) => format!("source={source} level={level} {text}"),
+    }
+}
+
+fn decode_services_body(result: &Value) -> Result<Vec<u8>, Failure> {
+    let encoded = result["body_b64"].as_str().unwrap_or("");
+    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).map_err(|error| {
+        Failure::new(EXIT_GUEST, format!("invalid guest log body: {error}"))
+    })
+}
+
+fn iwatch_logs_path(
+    sse: bool,
+    tail: usize,
+    q: Option<&str>,
+    min_level: Option<&str>,
+    group_field: Option<&str>,
+    group_value: Option<&str>,
+    filters: &[(String, String)],
+) -> String {
+    let mut path = if sse {
+        "/api/logs/sse".to_string()
+    } else {
+        "/api/logs".to_string()
+    };
+    let mut query = Vec::new();
+    if sse {
+        query.push(format!("tail={tail}"));
+    } else {
+        query.push(format!("limit={tail}"));
+    }
+    if let Some(value) = q {
+        query.push(format!("q={}", urlencoding_plus(value)));
+    }
+    if let Some(value) = min_level {
+        query.push(format!("minLevel={}", urlencoding_plus(value)));
+    }
+    if let Some(value) = group_field {
+        query.push(format!("groupField={}", urlencoding_plus(value)));
+    }
+    if let Some(value) = group_value {
+        query.push(format!("groupValue={}", urlencoding_plus(value)));
+    }
+    for (key, value) in filters {
+        query.push(format!(
+            "filter.{}={}",
+            urlencoding_plus(key),
+            urlencoding_plus(value)
+        ));
+    }
+    path.push('?');
+    path.push_str(&query.join("&"));
+    path
+}
+
+fn urlencoding_plus(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn redact_log_line(line: &str) -> (String, bool) {
@@ -3371,11 +3843,26 @@ fn print_human(command: &str, envelope: &Value) {
             }
         }
         "vm.logs" => {
+            if envelope["restarted"].as_bool() == Some(true) {
+                println!(
+                    "{}",
+                    envelope["summary"]["message"]
+                        .as_str()
+                        .unwrap_or("restarted")
+                );
+            }
+            if let Some(sources) = envelope["sources"].as_array() {
+                for source in sources {
+                    if let Some(name) = source["name"].as_str() {
+                        println!("{name}");
+                    } else if let Some(name) = source.as_str() {
+                        println!("{name}");
+                    }
+                }
+            }
             if let Some(lines) = envelope["lines"].as_array() {
                 for line in lines {
-                    if let Some(text) = line.as_str() {
-                        println!("{text}");
-                    }
+                    println!("{}", format_iwatch_line(line));
                 }
             }
             if let Some(redacted) = envelope["summary"]["redacted"].as_u64() {
@@ -4091,6 +4578,14 @@ mod tests {
                 id: "web".into(),
                 follow: false,
                 tail: 10,
+                source: "serial".into(),
+                list_sources: false,
+                q: None,
+                min_level: None,
+                group_field: None,
+                group_value: None,
+                filters: vec![],
+                restart: false,
             }
         );
         assert_eq!(options.format, Format::Json);
@@ -4119,6 +4614,86 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, EXIT_INVALID);
 
+        let filtered = parse(
+            [
+                "logs".into(),
+                "web".into(),
+                "--source".into(),
+                "app".into(),
+                "--q".into(),
+                "error".into(),
+                "--min-level".into(),
+                "warn".into(),
+                "--filter".into(),
+                "msg=fail".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            filtered.operation,
+            Operation::Logs {
+                source: ref name,
+                q: Some(ref query),
+                ..
+            } if name == "app" && query == "error"
+        ));
+
+        let serial_filter = parse(
+            [
+                "logs".into(),
+                "web".into(),
+                "--q".into(),
+                "error".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(serial_filter.code, EXIT_INVALID);
+
+        let listed = parse(
+            ["logs".into(), "web".into(), "--list-sources".into()].into_iter(),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            listed.operation,
+            Operation::Logs {
+                list_sources: true,
+                ..
+            }
+        ));
+
+        let restart = parse(
+            [
+                "logs".into(),
+                "web".into(),
+                "--source".into(),
+                "app".into(),
+                "--restart".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            restart.operation,
+            Operation::Logs {
+                restart: true,
+                source: ref name,
+                ..
+            } if name == "app"
+        ));
+
+        let serial_restart = parse(
+            ["logs".into(), "web".into(), "--restart".into()].into_iter(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(serial_restart.code, EXIT_INVALID);
+
         assert_eq!(redact_log_line("boot ok"), ("boot ok".into(), false));
         assert_eq!(
             redact_log_line("root_password: secret"),
@@ -4128,6 +4703,18 @@ mod tests {
             redact_log_line("chpasswd: list"),
             ("[redacted]".into(), true)
         );
+        assert!(iwatch_logs_path(
+            false,
+            50,
+            Some("error"),
+            Some("warn"),
+            None,
+            None,
+            &[("msg".into(), "fail".into())],
+        )
+        .starts_with("/api/logs?limit=50&q=error&minLevel=warn&filter.msg=fail"));
+        assert!(iwatch_logs_path(true, 400, None, None, None, None, &[])
+            .starts_with("/api/logs/sse?tail=400"));
     }
 
     #[test]
@@ -4142,7 +4729,21 @@ mod tests {
 
         std::env::set_var("VZCTL_STATE_DIR", &state);
         std::env::set_var("VZCTL_LOGS_DIR", &logs);
-        let envelope = logs_vm("web", false, 3).unwrap();
+        let envelope = logs_vm(
+            "web",
+            false,
+            3,
+            "serial",
+            false,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            false,
+            Path::new("/tmp/vzctl-missing.sock"),
+        )
+        .unwrap();
         std::env::remove_var("VZCTL_STATE_DIR");
         std::env::remove_var("VZCTL_LOGS_DIR");
         fs::remove_dir_all(&state).unwrap();

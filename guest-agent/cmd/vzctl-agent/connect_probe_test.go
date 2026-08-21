@@ -107,10 +107,10 @@ type discardConn struct{ net.Conn }
 
 func (discardConn) Close() error { return nil }
 
-func (discardConn) Read([]byte) (int, error)  { return 0, errors.New("unused") }
-func (discardConn) Write([]byte) (int, error) { return 0, errors.New("unused") }
-func (discardConn) LocalAddr() net.Addr       { return nil }
-func (discardConn) RemoteAddr() net.Addr      { return nil }
+func (discardConn) Read([]byte) (int, error)         { return 0, errors.New("unused") }
+func (discardConn) Write([]byte) (int, error)        { return 0, errors.New("unused") }
+func (discardConn) LocalAddr() net.Addr              { return nil }
+func (discardConn) RemoteAddr() net.Addr             { return nil }
 func (discardConn) SetDeadline(time.Time) error      { return nil }
 func (discardConn) SetReadDeadline(time.Time) error  { return nil }
 func (discardConn) SetWriteDeadline(time.Time) error { return nil }

@@ -117,6 +117,9 @@ pub fn guest_deploy_files() -> Vec<GuestFile> {
 pub fn content_fingerprint(agent_version: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(agent_version.as_bytes());
+    if let Ok(iwatch_version) = crate::iwatch_bin::iwatch_version_string() {
+        hasher.update(iwatch_version.as_bytes());
+    }
     for file in guest_deploy_files() {
         hasher.update(file.path.as_bytes());
         hasher.update(file.content.as_bytes());
@@ -187,6 +190,7 @@ pub fn build_agent_staging(agent_version: &str) -> Result<PathBuf, GuestUtilsErr
         format!("{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"),
     )
     .map_err(|error| GuestUtilsError::new(error.to_string()))?;
+    crate::iwatch_bin::stage_iwatch_binary(&staging.join("iwatch"))?;
     Ok(staging)
 }
 
@@ -217,6 +221,7 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
             "vzctl-agent-tmpfiles.conf",
             "vzctl-agent.openrc",
             "image-metadata.json",
+            "iwatch",
         ] {
             fs::copy(staging.join(name), cache_dir.join(name)).map_err(|error| {
                 GuestUtilsError::new(format!("populate guest-utils cache: {error}"))
@@ -309,12 +314,14 @@ where
     )?;
 
     deploy_agent_binary(vm_id, bundle, call)?;
+    deploy_iwatch_binary(vm_id, bundle, call)?;
     restart_agent(vm_id, call)?;
     wait_for_agent(vm_id, &bundle.agent_version, call)?;
 
     let manifest = json!({
         "bundle_id": bundle.bundle_id,
         "agent_version": bundle.agent_version,
+        "iwatch_version": crate::iwatch_bin::iwatch_version_string().ok(),
         "content_sha256": bundle.content_sha256,
         "updated_at": time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
@@ -497,6 +504,87 @@ mv -f \"$target.new\" \"$target\"\n",
     Ok(())
 }
 
+fn deploy_iwatch_binary<F>(
+    vm_id: &str,
+    bundle: &GuestUtilsBundle,
+    call: &mut F,
+) -> Result<(), GuestUtilsError>
+where
+    F: FnMut(&str, Value) -> Result<Value, String>,
+{
+    let binary_path = bundle.cache_dir.join("iwatch");
+    let bytes = fs::read(&binary_path)
+        .map_err(|error| GuestUtilsError::new(format!("read host iwatch binary: {error}")))?;
+    let expected = hex::encode(Sha256::digest(&bytes));
+    let staging = "/tmp/iwatch.staging";
+    guest_exec(
+        call,
+        vm_id,
+        vec![
+            "sudo".into(),
+            "-n".into(),
+            "sh".into(),
+            "-c".into(),
+            format!("rm -f {staging}"),
+        ],
+        None,
+        10_000,
+    )?;
+
+    for chunk in split_chunks(&bytes) {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+        let script = format!("cat >> {staging}");
+        let (exit, _, stderr, truncated) = guest_exec(
+            call,
+            vm_id,
+            vec!["sudo".into(), "-n".into(), "sh".into(), "-c".into(), script],
+            Some(encoded),
+            60_000,
+        )?;
+        if exit != 0 || truncated {
+            return Err(GuestUtilsError::new(format!(
+                "iwatch binary chunk upload failed (exit {exit}): {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    let install_script = format!(
+        "set -eu\n\
+staging={staging}\n\
+target={target}\n\
+expected={expected}\n\
+actual=$(sha256sum \"$staging\" | awk '{{print $1}}')\n\
+[ \"$actual\" = \"$expected\" ] || {{ echo \"sha256 mismatch: expected $expected got $actual\" >&2; exit 1; }}\n\
+chmod 0755 \"$staging\"\n\
+mv -f \"$staging\" \"$target.new\"\n\
+mv -f \"$target.new\" \"$target\"\n",
+        staging = sh_escape(staging),
+        target = sh_escape(crate::iwatch_bin::IWATCH_GUEST_PATH),
+        expected = expected,
+    );
+    let (exit, _, stderr, truncated) = guest_exec(
+        call,
+        vm_id,
+        vec![
+            "sudo".into(),
+            "-n".into(),
+            "sh".into(),
+            "-c".into(),
+            install_script,
+        ],
+        None,
+        60_000,
+    )?;
+    if exit != 0 || truncated {
+        return Err(GuestUtilsError::new(format!(
+            "iwatch binary install failed (exit {exit}): {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Restart the guest agent without waiting for the current vsock session to
 /// survive the service stop. Foreground `systemctl restart` kills the agent
 /// before the exec response can be written, which surfaces as "connection closed".
@@ -632,6 +720,12 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
 
     #[test]
     fn bundle_id_uses_version_and_hash_prefix() {
@@ -745,9 +839,24 @@ mod tests {
 
     #[test]
     fn content_fingerprint_is_stable() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("VZCTL_IWATCH_VERSION");
+        std::env::remove_var("VZCTL_IWATCH_BIN");
         let first = content_fingerprint("0.1.3");
         let second = content_fingerprint("0.1.3");
         assert_eq!(first, second);
         assert_ne!(first, content_fingerprint("0.1.4"));
+    }
+
+    #[test]
+    fn content_fingerprint_changes_with_iwatch_pin() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("VZCTL_IWATCH_BIN");
+        std::env::set_var("VZCTL_IWATCH_VERSION", "v1.0.0");
+        let first = content_fingerprint("0.1.7");
+        std::env::set_var("VZCTL_IWATCH_VERSION", "v1.0.1");
+        let second = content_fingerprint("0.1.7");
+        std::env::remove_var("VZCTL_IWATCH_VERSION");
+        assert_ne!(first, second);
     }
 }

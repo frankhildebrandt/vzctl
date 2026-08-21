@@ -44,6 +44,7 @@ import { ContainersPage } from "@/components/ContainersPage";
 import { ImagesPage } from "@/components/ImagesPage";
 import { NetworksPage } from "@/components/NetworksPage";
 import { VmDetailLayout } from "@/components/VmDetailLayout";
+import { VmLogsPage } from "@/components/VmLogsPage";
 import {
   VmModifyPage,
   VmMountPage,
@@ -155,6 +156,23 @@ export const vmOverviewRoute = createRoute({
   component: function VmOverviewRoute() {
     const { vmId: rawVmId } = vmDetailRoute.useParams();
     return <VmOverviewPage vmId={decodeVmIdParam(rawVmId)} />;
+  },
+});
+
+export const vmLogsRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "logs",
+  validateSearch: (search: Record<string, unknown>) => ({
+    ...vmStackSearch(search),
+    source:
+      typeof search.source === "string" && search.source.length > 0
+        ? search.source
+        : undefined,
+  }),
+  component: function VmLogsRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { source } = vmLogsRoute.useSearch();
+    return <VmLogsPage vmId={decodeVmIdParam(rawVmId)} source={source} />;
   },
 });
 

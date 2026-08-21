@@ -47,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject", "network_probe", "stats"}
+var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject", "network_probe", "stats", "guest_publish"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -75,6 +75,7 @@ type server struct {
 	timeHint timeHintPolicy
 	stats    *statsCollector
 	health   *healthTracker
+	services *serviceRegistry
 }
 
 type timeHintPolicy struct {
@@ -168,8 +169,16 @@ func main() {
 			now:         time.Now,
 			step:        setSystemClock,
 		},
-		stats:  newStatsCollector(),
-		health: newHealthTracker(),
+		stats:    newStatsCollector(),
+		health:   newHealthTracker(),
+		services: newServiceRegistry(),
+	}
+	publishServer, err := startPublishHTTP(s.services, guestPublishSocket)
+	if err != nil {
+		log.Printf("guest publish socket unavailable: %v", err)
+	} else {
+		defer publishServer.Close()
+		log.Printf("guest publish listening on %s", guestPublishSocket)
 	}
 	var connectionID atomic.Uint64
 	for {
@@ -285,6 +294,44 @@ func (s *server) serveConn(conn net.Conn) error {
 			continue
 		}
 
+		if req.Method == "services.stream" {
+			inflightMu.Lock()
+			if _, exists := inflight[req.ID]; exists {
+				inflightMu.Unlock()
+				if err := writer.write(errorResponse(req.ID, "proto", "request id is already in flight", nil)); err != nil {
+					return err
+				}
+				continue
+			}
+			requestContext, cancelRequest := context.WithCancel(connectionContext)
+			inflight[req.ID] = cancelRequest
+			inflightMu.Unlock()
+			response, httpResp := prepareServiceStream(requestContext, req, s.services)
+			if err := writer.write(response); err != nil {
+				if httpResp != nil {
+					_ = httpResp.Body.Close()
+				}
+				cancelRequest()
+				inflightMu.Lock()
+				delete(inflight, req.ID)
+				inflightMu.Unlock()
+				return err
+			}
+			if httpResp == nil {
+				cancelRequest()
+				inflightMu.Lock()
+				delete(inflight, req.ID)
+				inflightMu.Unlock()
+				continue
+			}
+			err := pipeHTTPStream(writer, httpResp)
+			cancelRequest()
+			inflightMu.Lock()
+			delete(inflight, req.ID)
+			inflightMu.Unlock()
+			return err
+		}
+
 		if req.Method == "exec" {
 			var peek execParams
 			if err := decodeParams(req.Params, &peek); err == nil && peek.TTY {
@@ -341,7 +388,7 @@ func (s *server) serveConn(conn net.Conn) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			response := handleRequestWithPolicy(requestContext, req, s.timeHint, s.collector(), s.tracker())
+			response := handleRequestWithPolicy(requestContext, req, s.timeHint, s.collector(), s.tracker(), s.services)
 			inflightMu.Lock()
 			_ = writer.write(response)
 			delete(inflight, req.ID)
@@ -419,10 +466,10 @@ func (s *server) tracker() *healthTracker {
 }
 
 func handleRequest(ctx context.Context, req request) response {
-	return handleRequestWithPolicy(ctx, req, timeHintPolicy{}, nil, nil)
+	return handleRequestWithPolicy(ctx, req, timeHintPolicy{}, nil, nil, nil)
 }
 
-func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy, stats *statsCollector, health *healthTracker) response {
+func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy, stats *statsCollector, health *healthTracker, services *serviceRegistry) response {
 	if req.V != protocolVersion {
 		return errorResponse(req.ID, "proto", "unsupported protocol version", map[string]any{
 			"supported_versions": []int{protocolVersion},
@@ -484,6 +531,10 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 			return errorResponse(req.ID, "internal", "cannot sample guest stats", nil)
 		}
 		return successResponse(req.ID, result)
+	case "services.list":
+		return handleServicesList(req, services)
+	case "services.http":
+		return handleServicesHTTP(ctx, req, services)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,

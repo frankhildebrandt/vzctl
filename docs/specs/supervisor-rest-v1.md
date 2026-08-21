@@ -104,6 +104,8 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 | `POST` | `/v1/vms/{id}/stop` | Stop |
 | `POST` | `/v1/vms/{id}/restart` | Restart (`stop --wait` + `start`) |
 | `GET` | `/v1/vms/{id}/stats` | Guest-Agent CPU/RAM/IOPS (`vm.agent.stats`) |
+| `GET` | `/v1/vms/{id}/guest-services` | Named guest publishers (`vm.agent.services.list`) |
+| `*` | `/v1/vms/{id}/guest-services/{name}/api/...` | Proxy onto the published loopback API (`services.http`; SSE via `services.stream`). Includes iwatch `POST /api/restart`. |
 | `DELETE` | `/v1/vms/{id}?force=` | Delete/purge |
 | `PATCH` | `/v1/vms/{id}` | Modify resources |
 | `GET` | `/v1/vms/{id}/mounts` | Mounts |

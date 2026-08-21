@@ -33,7 +33,10 @@ Artifact-Pins; mehrere Tags dürfen parallel existieren.
 Gleiches Backend wie Seal: lokales `virt-customize` oder Builder-VM.
 Agent-Binary wird per Go cross-build (`GOOS=linux GOARCH=arm64`) aus
 `guest-agent/` erzeugt; Version aus `guest-agent/VERSION` bzw.
-`VZCTL_AGENT_VERSION`.
+`VZCTL_AGENT_VERSION`. `iwatch` kommt von GitHub Releases
+(`linux_arm64`, Pin `guest-agent/IWATCH_VERSION`, Override
+`VZCTL_IWATCH_VERSION` / lokal `VZCTL_IWATCH_BIN`) nach
+`/usr/local/bin/iwatch`. Fehlender Download/Checksum → Exit `12`.
 
 ## CLI-/JSON-Vertrag
 
