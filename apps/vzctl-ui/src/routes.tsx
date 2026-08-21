@@ -12,8 +12,10 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { TerminalSessionRoot } from "@/components/TerminalDock";
 import { ApplyProgress, ConsoleLog, useApplyProgress } from "@/components/ApplyProgress";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { ChromeCrumbs } from "@/components/Chrome";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   VmnetOrphanDialog,
@@ -41,7 +43,13 @@ import { ContainerDetailPage } from "@/components/ContainerDetailPage";
 import { ContainersPage } from "@/components/ContainersPage";
 import { ImagesPage } from "@/components/ImagesPage";
 import { NetworksPage } from "@/components/NetworksPage";
-import { VmDetailPage } from "@/components/VmDetailPage";
+import { VmDetailLayout } from "@/components/VmDetailLayout";
+import {
+  VmModifyPage,
+  VmMountPage,
+  VmOverviewPage,
+  VmReplacePage,
+} from "@/components/VmDetailPage";
 import { VmListPage } from "@/components/VmListPage";
 import {
   Alert,
@@ -91,9 +99,11 @@ export const rootRoute = createRootRoute({
 
 function RootLayout() {
   return (
-    <AppShell>
-      <Outlet />
-    </AppShell>
+    <TerminalSessionRoot>
+      <AppShell>
+        <Outlet />
+      </AppShell>
+    </TerminalSessionRoot>
   );
 }
 
@@ -114,27 +124,6 @@ export const vmsRoute = createRoute({
   component: VmListPage,
 });
 
-export const vmDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/vms/$vmId",
-  validateSearch: (search: Record<string, unknown>): { stackPath?: string } => ({
-    stackPath:
-      typeof search.stackPath === "string" && search.stackPath.length > 0
-        ? search.stackPath
-        : undefined,
-  }),
-  component: function VmDetailRoute() {
-    const { vmId: rawVmId } = vmDetailRoute.useParams();
-    const { stackPath } = vmDetailRoute.useSearch();
-    return (
-      <VmDetailPage
-        vmId={decodeVmIdParam(rawVmId)}
-        stackPath={stackPath}
-      />
-    );
-  },
-});
-
 function vmStackSearch(search: Record<string, unknown>): { stackPath?: string } {
   return {
     stackPath:
@@ -144,13 +133,89 @@ function vmStackSearch(search: Record<string, unknown>): { stackPath?: string } 
   };
 }
 
-export const vmContainersRoute = createRoute({
+export const vmDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/vms/$vmId/containers",
+  path: "/vms/$vmId",
   validateSearch: vmStackSearch,
+  component: function VmDetailLayoutRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { stackPath } = vmDetailRoute.useSearch();
+    return (
+      <VmDetailLayout
+        vmId={decodeVmIdParam(rawVmId)}
+        stackPath={stackPath}
+      />
+    );
+  },
+});
+
+export const vmOverviewRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "/",
+  component: function VmOverviewRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    return <VmOverviewPage vmId={decodeVmIdParam(rawVmId)} />;
+  },
+});
+
+export const vmShellRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "shell",
+  component: function VmShellRoute() {
+    return null;
+  },
+});
+
+export const vmConsoleRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "console",
+  component: function VmConsoleRoute() {
+    return null;
+  },
+});
+
+export const vmModifyRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "modify",
+  component: function VmModifyRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { stackPath } = vmDetailRoute.useSearch();
+    return (
+      <VmModifyPage vmId={decodeVmIdParam(rawVmId)} stackPath={stackPath} />
+    );
+  },
+});
+
+export const vmMountRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "mount",
+  component: function VmMountRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { stackPath } = vmDetailRoute.useSearch();
+    return (
+      <VmMountPage vmId={decodeVmIdParam(rawVmId)} stackPath={stackPath} />
+    );
+  },
+});
+
+export const vmReplaceRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "replace",
+  component: function VmReplaceRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { stackPath } = vmDetailRoute.useSearch();
+    return (
+      <VmReplacePage vmId={decodeVmIdParam(rawVmId)} stackPath={stackPath} />
+    );
+  },
+});
+
+export const vmContainersRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "containers",
   component: function VmContainersRoute() {
-    const { vmId: rawVmId } = vmContainersRoute.useParams();
-    const { stackPath } = vmContainersRoute.useSearch();
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    const { stackPath } = vmDetailRoute.useSearch();
     return (
       <ContainersPage
         vmId={decodeVmIdParam(rawVmId)}
@@ -161,9 +226,8 @@ export const vmContainersRoute = createRoute({
 });
 
 export const vmContainerDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/vms/$vmId/containers/$containerId",
-  validateSearch: vmStackSearch,
+  getParentRoute: () => vmDetailRoute,
+  path: "containers/$containerId",
   component: function VmContainerDetailRoute() {
     const { vmId: rawVmId, containerId: rawContainerId } =
       vmContainerDetailRoute.useParams();
@@ -744,21 +808,23 @@ function ProjectDetailPage() {
 
   return (
     <section className={`detail${tab === "topology" ? " detail-topology" : ""}`}>
+      <ChromeCrumbs>
+        <Breadcrumbs
+          items={[
+            {
+              label: t("projects.title"),
+              node: (
+                <Link to="/projects" className="crumb-link">
+                  {t("projects.title")}
+                </Link>
+              ),
+            },
+            { label: title },
+          ]}
+        />
+      </ChromeCrumbs>
       <header className="detail-header">
         <div className="detail-heading">
-          <Breadcrumbs
-            items={[
-              {
-                label: t("projects.title"),
-                node: (
-                  <Link to="/projects" className="crumb-link">
-                    {t("projects.title")}
-                  </Link>
-                ),
-              },
-              { label: title },
-            ]}
-          />
           {tab === "topology" ? (
             <>
               <h2 className="detail-title">{title}</h2>

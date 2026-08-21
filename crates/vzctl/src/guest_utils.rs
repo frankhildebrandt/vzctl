@@ -439,8 +439,11 @@ where
     )?;
 
     for chunk in split_chunks(&bytes) {
+        // stdin_b64 is already decoded to raw bytes by the agent; write them
+        // with cat. A second `base64 -d` treats ELF as text and fails with
+        // "invalid input".
         let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
-        let script = format!("base64 -d >> {staging}");
+        let script = format!("cat >> {staging}");
         let (exit, _, stderr, truncated) = guest_exec(
             call,
             vm_id,
@@ -494,22 +497,29 @@ mv -f \"$target.new\" \"$target\"\n",
     Ok(())
 }
 
-fn restart_agent<F>(vm_id: &str, call: &mut F) -> Result<(), GuestUtilsError>
-where
-    F: FnMut(&str, Value) -> Result<Value, String>,
-{
-    let script = r"set -eu
-if [ -x /etc/init.d/vzctl-agent ]; then
-  /etc/init.d/vzctl-agent restart
-elif command -v systemctl >/dev/null 2>&1; then
+/// Restart the guest agent without waiting for the current vsock session to
+/// survive the service stop. Foreground `systemctl restart` kills the agent
+/// before the exec response can be written, which surfaces as "connection closed".
+fn agent_restart_script() -> &'static str {
+    r"set -eu
+if [ -d /run/systemd/system ]; then
   systemctl daemon-reload
-  systemctl restart vzctl-agent.service
+  ( systemctl restart vzctl-agent.service >/dev/null 2>&1 & )
+elif [ -x /sbin/openrc-run ] && [ -x /etc/init.d/vzctl-agent ]; then
+  ( /etc/init.d/vzctl-agent restart >/dev/null 2>&1 & )
 else
   echo 'no supported init for vzctl-agent restart' >&2
   exit 1
 fi
-";
-    let (exit, _, stderr, truncated) = guest_exec(
+"
+}
+
+fn restart_agent<F>(vm_id: &str, call: &mut F) -> Result<(), GuestUtilsError>
+where
+    F: FnMut(&str, Value) -> Result<Value, String>,
+{
+    let script = agent_restart_script();
+    match guest_exec(
         call,
         vm_id,
         vec![
@@ -521,14 +531,19 @@ fi
         ],
         None,
         60_000,
-    )?;
-    if exit != 0 || truncated {
-        return Err(GuestUtilsError::new(format!(
-            "agent restart failed (exit {exit}): {}",
-            stderr.trim()
-        )));
+    ) {
+        Ok((exit, _, stderr, truncated)) => {
+            if exit != 0 || truncated {
+                return Err(GuestUtilsError::new(format!(
+                    "agent restart failed (exit {exit}): {}",
+                    stderr.trim()
+                )));
+            }
+            Ok(())
+        }
+        Err(error) if error.message.contains("connection closed") => Ok(()),
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 fn wait_for_agent<F>(
@@ -667,6 +682,58 @@ mod tests {
         assert_eq!(chunks[0].len(), CHUNK_SIZE);
         assert_eq!(chunks[1].len(), CHUNK_SIZE);
         assert_eq!(chunks[2].len(), 10);
+    }
+
+    #[test]
+    fn agent_restart_prefers_systemd_over_openrc_initd() {
+        let script = agent_restart_script();
+        let systemd_at = script.find("/run/systemd/system").expect("systemd probe");
+        let openrc_at = script
+            .find("/etc/init.d/vzctl-agent")
+            .expect("openrc fallback");
+        assert!(systemd_at < openrc_at);
+        assert!(script.contains("( systemctl restart vzctl-agent.service >/dev/null 2>&1 & )"));
+        assert!(script.contains("( /etc/init.d/vzctl-agent restart >/dev/null 2>&1 & )"));
+    }
+
+    #[test]
+    fn agent_binary_upload_pipes_raw_stdin_through_cat() {
+        let dir = std::env::temp_dir().join(format!(
+            "vzctl-agent-upload-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("vzctl-agent"), b"\x7fELFpayload").unwrap();
+        let bundle = GuestUtilsBundle {
+            bundle_id: "0.1.4-test".into(),
+            agent_version: "0.1.4".into(),
+            content_sha256: "abc".into(),
+            binary_sha256: "def".into(),
+            cache_dir: dir.clone(),
+        };
+        let mut scripts = Vec::new();
+        let _ = deploy_agent_binary("web", &bundle, &mut |_method, params| {
+            if let Some(cmd) = params["cmd"].as_array() {
+                if let Some(script) = cmd.last().and_then(Value::as_str) {
+                    scripts.push(script.to_string());
+                }
+            }
+            Ok(json!({
+                "exit": 0,
+                "stdout": "",
+                "stderr": "",
+                "truncated": false,
+            }))
+        });
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            scripts.iter().any(|script| script.contains("cat >>")),
+            "expected cat append, got {scripts:?}"
+        );
+        assert!(
+            scripts.iter().all(|script| !script.contains("base64 -d")),
+            "stdin_b64 is already decoded; base64 -d would fail, got {scripts:?}"
+        );
     }
 
     #[test]

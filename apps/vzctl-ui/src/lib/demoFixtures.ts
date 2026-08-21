@@ -613,6 +613,30 @@ export async function mockApiRequest<T = unknown>(
   if (path === "/v1/vms" && method === "GET") {
     return JSON.parse(await mockRunVzctlArgv(["vm", "list"])) as T;
   }
+  if (segments[0] === "v1" && segments[1] === "vms" && segments.length === 4) {
+    const action = segments[3];
+    const id = decodeURIComponent(segments[2] ?? "");
+    if (action === "stats" && method === "GET") {
+      return {
+        cpu: { percent: 18.5 },
+        memory: { used_mib: 512, total_mib: 1024, percent: 50 },
+        disk: { read_iops: 4.2, write_iops: 1.8 },
+      } as T;
+    }
+    if (
+      (action === "start" || action === "stop" || action === "restart") &&
+      method === "POST"
+    ) {
+      const state = action === "stop" ? "stopped" : "running";
+      return JSON.parse(
+        ok(
+          `vm.${action}`,
+          { vm: { id, state } },
+          { message: `VM ${id} ${state}`, vm_id: id, state },
+        ),
+      ) as T;
+    }
+  }
   if (segments[0] === "v1" && segments[1] === "vms" && segments.length === 3) {
     return JSON.parse(await mockRunVzctlArgv(["vm", "inspect", decodeURIComponent(segments[2])])) as T;
   }

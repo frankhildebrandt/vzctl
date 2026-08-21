@@ -36,6 +36,15 @@ export function IconStop(props: IconProps) {
   );
 }
 
+export function IconRestart(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20 12a8 8 0 1 1-2.2-5.5" />
+      <path d="M20 4v6h-6" />
+    </Icon>
+  );
+}
+
 export function IconDiff(props: IconProps) {
   return (
     <Icon {...props}>

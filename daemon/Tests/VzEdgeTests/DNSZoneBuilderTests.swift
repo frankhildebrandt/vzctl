@@ -34,6 +34,114 @@ import VzDaemonKit
     #expect(health.upstream == "system")
 }
 
+@Test func dnsServerSurvivesRepeatedReload() throws {
+    let configuration = DNSConfiguration(
+        hostAddress: "127.0.0.1",
+        hostPort: 18_356,
+        guestPort: 18_357,
+        ttl: 15,
+        upstream: "system"
+    )
+    let server = DNSServer(configuration: configuration)
+    defer { server.shutdown() }
+    server.setHostServices(["web.svc.edge-dmz.vz.test"])
+    let snapshot = NetworkSnapshot(networks: [], attachments: [])
+
+    #expect(server.reload(snapshot: snapshot).ok)
+    #expect(server.reload(snapshot: snapshot).ok)
+
+    let query = dnsQuery("web.svc.edge-dmz.vz.test")
+    let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    guard descriptor >= 0 else {
+        Issue.record("probe socket failed")
+        return
+    }
+    defer { Darwin.close(descriptor) }
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = UInt16(18_356).bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    #expect(connected == 0)
+    let sent = query.withUnsafeBytes { bytes in
+        Darwin.send(descriptor, bytes.baseAddress, query.count, 0)
+    }
+    #expect(sent == query.count)
+
+    var timeout = timeval(tv_sec: 1, tv_usec: 0)
+    setsockopt(
+        descriptor,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        &timeout,
+        socklen_t(MemoryLayout<timeval>.size)
+    )
+    var buffer = [UInt8](repeating: 0, count: 512)
+    let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+    #expect(count >= 12)
+    #expect(aRecords(in: Data(buffer.prefix(count))) == ["127.0.0.1"])
+}
+
+@Test func dnsServerRespondsToBurstyHostQueries() throws {
+    let configuration = DNSConfiguration(
+        hostAddress: "127.0.0.1",
+        hostPort: 18_358,
+        guestPort: 18_359,
+        ttl: 15,
+        upstream: "system"
+    )
+    let server = DNSServer(configuration: configuration)
+    defer { server.shutdown() }
+    server.setHostServices(["web.svc.edge-dmz.vz.test"])
+    #expect(server.reload(snapshot: NetworkSnapshot(networks: [], attachments: [])).ok)
+
+    let query = dnsQuery("web.svc.edge-dmz.vz.test")
+    let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    guard descriptor >= 0 else {
+        Issue.record("probe socket failed")
+        return
+    }
+    defer { Darwin.close(descriptor) }
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = UInt16(18_358).bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    #expect(connected == 0)
+
+    var timeout = timeval(tv_sec: 1, tv_usec: 0)
+    setsockopt(
+        descriptor,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        &timeout,
+        socklen_t(MemoryLayout<timeval>.size)
+    )
+
+    for _ in 0 ..< 20 {
+        let sent = query.withUnsafeBytes { bytes in
+            Darwin.send(descriptor, bytes.baseAddress, query.count, 0)
+        }
+        #expect(sent == query.count)
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+        #expect(count >= 12)
+        #expect(aRecords(in: Data(buffer.prefix(count))) == ["127.0.0.1"])
+    }
+}
+
 @Test func dnsConfigurationRedirectsOnlyPrivilegedGuestPortByDefault() {
     let production = DNSConfiguration.environment(["VZCTL_DNS_GUEST_PORT": "53"])
     let development = DNSConfiguration.environment(["VZCTL_DNS_GUEST_PORT": "15353"])

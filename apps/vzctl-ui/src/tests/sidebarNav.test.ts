@@ -47,8 +47,28 @@ describe("resolveSidebarNav", () => {
     );
     expect(nav.context).toBe("vm");
     expect(nav.back?.to).toBe("/env");
-    expect(nav.items.map((i) => i.id)).toEqual(["overview", "containers"]);
+    expect(nav.items.map((i) => i.id)).toEqual([
+      "overview",
+      "shell",
+      "console",
+      "modify",
+      "mount",
+      "replace",
+      "containers",
+      "delete",
+    ]);
     expect(nav.items.find((i) => i.id === "overview")?.active).toBe(true);
+    expect(nav.items.find((i) => i.id === "delete")?.kind).toBe("action");
+  });
+
+  it("marks shell active and enables it when running", () => {
+    const nav = resolveSidebarNav(
+      { pathname: "/vms/plain/shell", search: {} },
+      { running: true, t },
+    );
+    expect(nav.items.find((i) => i.id === "shell")?.active).toBe(true);
+    expect(nav.items.find((i) => i.id === "shell")?.disabled).toBe(false);
+    expect(nav.items.find((i) => i.id === "overview")?.active).toBe(false);
   });
 
   it("builds container list back to vm overview", () => {
@@ -68,7 +88,10 @@ describe("resolveSidebarNav", () => {
       { pathname: "/vms/plain", search: {} },
       { hasDockerRole: false, t },
     );
-    expect(nav.items.map((i) => i.id)).toEqual(["overview"]);
+    expect(nav.items.map((i) => i.id)).not.toContain("containers");
+    expect(nav.items.map((i) => i.id)).toContain("overview");
+    expect(nav.items.map((i) => i.id)).toContain("delete");
+    expect(nav.items.find((i) => i.id === "shell")?.disabled).toBe(true);
   });
 
   it("builds settings with dashboard escape and no redundant back", () => {

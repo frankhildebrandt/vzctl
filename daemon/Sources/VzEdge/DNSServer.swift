@@ -350,6 +350,11 @@ struct DNSHealth: Sendable {
     }
 }
 
+private struct DNSPeer: Sendable {
+    let storage: sockaddr_storage
+    let length: socklen_t
+}
+
 private struct DNSListener {
     let descriptor: Int32
     let source: DispatchSourceRead
@@ -371,7 +376,8 @@ final class DNSServer: @unchecked Sendable {
     private let configuration: DNSConfiguration
     private let systemResolve: SystemResolve
     private let lock = NSLock()
-    private let queue = DispatchQueue(label: "dev.vzctl.dns", attributes: .concurrent)
+    private let queue = DispatchQueue(label: "dev.vzctl.dns")
+    private let resolveQueue = DispatchQueue(label: "dev.vzctl.dns.resolve", attributes: .concurrent)
     private var zone: DNSZone
     private var listeners: [String: DNSListener] = [:]
     private var desiredListeners: Set<String> = []
@@ -439,44 +445,92 @@ final class DNSServer: @unchecked Sendable {
         desired[endpoint(configuration.hostAddress, configuration.hostPort)] = .host
         let desiredKeys = Set(desired.keys)
 
-        lock.withLock {
-            guard !stopped else { return }
+        let plan = lock.withLock { () -> (retired: [DNSListener], toRebind: [String: DNSHorizon]) in
+            guard !stopped else { return ([], [:]) }
             zone = nextZone
             desiredListeners = desiredKeys
             guestContexts = contexts.sorted { $0.network < $1.network }
             lastError = nil
 
+            var retired: [DNSListener] = []
             for key in listeners.keys where !desiredKeys.contains(key) {
-                removeListenerLocked(key)
+                guard let listener = listeners.removeValue(forKey: key) else { continue }
+                listener.source.cancel()
+                retired.append(listener)
             }
-            for key in desired.keys.sorted() {
-                if let existing = listeners[key], existing.horizon == desired[key] { continue }
-                removeListenerLocked(key)
-                do {
-                    listeners[key] = try makeListener(endpoint: key, horizon: desired[key]!)
-                } catch {
-                    lastError = [lastError, "\(key): \(error)"]
-                        .compactMap { $0 }
-                        .joined(separator: "; ")
+            var toRebind: [String: DNSHorizon] = [:]
+            for (key, horizon) in desired {
+                if let existing = listeners[key], existing.horizon == horizon {
+                    continue
                 }
+                if let existing = listeners.removeValue(forKey: key) {
+                    existing.source.cancel()
+                    retired.append(existing)
+                }
+                toRebind[key] = horizon
+            }
+            return (retired, toRebind)
+        }
+        for listener in plan.retired {
+            Darwin.close(listener.descriptor)
+        }
+
+        // Bind outside the zone lock: dns-bind RPC must not block in-flight UDP handlers.
+        var created: [String: DNSListener] = [:]
+        var bindErrors: [String] = []
+        for key in plan.toRebind.keys.sorted() {
+            guard let horizon = plan.toRebind[key] else { continue }
+            do {
+                created[key] = try makeListener(endpoint: key, horizon: horizon)
+            } catch {
+                bindErrors.append("\(key): \(error)")
+            }
+        }
+        lock.withLock {
+            guard !stopped else {
+                for listener in created.values {
+                    listener.source.cancel()
+                    Darwin.close(listener.descriptor)
+                }
+                return
+            }
+            for (key, listener) in created {
+                listeners[key] = listener
+            }
+            if !bindErrors.isEmpty {
+                lastError = bindErrors.joined(separator: "; ")
             }
         }
         return health()
     }
 
     func health() -> DNSHealth {
-        lock.withLock {
-            let active = listeners.keys.sorted()
-            return DNSHealth(
-                ok: !stopped && Set(active) == desiredListeners && lastError == nil,
-                listeners: active,
-                records: zone.records.values.reduce(0) { $0 + $1.count },
-                zones: zone.zones.count,
-                ttl: zone.ttl,
-                upstream: configuration.upstream,
-                lastError: lastError
+        let snapshot = lock.withLock {
+            (
+                listeners.keys.sorted(),
+                desiredListeners,
+                zone.records.values.reduce(0) { $0 + $1.count },
+                zone.zones.count,
+                zone.ttl,
+                lastError
             )
         }
+        let hostEndpoint = endpoint(configuration.hostAddress, configuration.hostPort)
+        let probeError = snapshot.0.contains(hostEndpoint) ? probeHostListener() : nil
+        let combinedError = [snapshot.5, probeError]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "; ")
+        let lastErrorValue = combinedError.isEmpty ? nil : combinedError
+        return DNSHealth(
+            ok: !stopped && Set(snapshot.0) == snapshot.1 && lastErrorValue == nil,
+            listeners: snapshot.0,
+            records: snapshot.2,
+            zones: snapshot.3,
+            ttl: snapshot.4,
+            upstream: configuration.upstream,
+            lastError: lastErrorValue
+        )
     }
 
     /// Debug/resolve helper: return A-addresses for both horizons from the live zone.
@@ -506,6 +560,70 @@ final class DNSServer: @unchecked Sendable {
             listener.source.cancel()
             Darwin.close(listener.descriptor)
         }
+    }
+
+    /// Verify the host DNS listener responds on the wire (catches stale UDP sockets).
+    private func probeHostListener() -> String? {
+        var lastError: String?
+        for attempt in 0 ..< 3 {
+            if let error = probeHostListenerOnce() {
+                lastError = error
+                if attempt < 2 {
+                    usleep(100_000)
+                }
+                continue
+            }
+            return nil
+        }
+        return lastError
+    }
+
+    private func probeHostListenerOnce() -> String? {
+        let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard descriptor >= 0 else {
+            return "host DNS probe socket: \(String(cString: strerror(errno)))"
+        }
+        defer { Darwin.close(descriptor) }
+
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        )
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = configuration.hostPort.bigEndian
+        guard inet_pton(AF_INET, configuration.hostAddress, &address.sin_addr) == 1 else {
+            return "host DNS probe address is invalid"
+        }
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else {
+            return "host DNS probe connect: \(String(cString: strerror(errno)))"
+        }
+
+        let request = dnsProbeQuery()
+        let sent = request.withUnsafeBytes { bytes in
+            Darwin.send(descriptor, bytes.baseAddress, request.count, 0)
+        }
+        guard sent == request.count else {
+            return "host DNS probe send: \(String(cString: strerror(errno)))"
+        }
+
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+        guard count >= dnsHeaderLength else {
+            return "host DNS probe receive: \(String(cString: strerror(errno)))"
+        }
+        return nil
     }
 
     private func makeListener(endpoint value: String, horizon: DNSHorizon) throws -> DNSListener {
@@ -573,12 +691,13 @@ final class DNSServer: @unchecked Sendable {
     }
 
     private func adoptListener(horizon: DNSHorizon, descriptor: Int32) throws -> DNSListener {
+        try setNonBlocking(descriptor)
         let source = DispatchSource.makeReadSource(
             fileDescriptor: descriptor,
             queue: queue
         )
         // Capture horizon by value on the listener; do not re-derive from endpoint
-        // strings inside the concurrent handler.
+        // strings inside the handler.
         source.setEventHandler { [weak self, horizon, descriptor] in
             self?.receive(on: descriptor, horizon: horizon)
         }
@@ -586,27 +705,45 @@ final class DNSServer: @unchecked Sendable {
         return DNSListener(descriptor: descriptor, source: source, horizon: horizon)
     }
 
-    private func removeListenerLocked(_ key: String) {
-        guard let listener = listeners.removeValue(forKey: key) else { return }
-        listener.source.cancel()
-        Darwin.close(listener.descriptor)
-    }
-
     private func receive(on descriptor: Int32, horizon: DNSHorizon) {
-        var buffer = [UInt8](repeating: 0, count: 65_535)
-        var peer = sockaddr_storage()
-        var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
-        let count = withUnsafeMutablePointer(to: &peer) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.recvfrom(descriptor, &buffer, buffer.count, 0, $0, &peerLength)
+        while true {
+            var buffer = [UInt8](repeating: 0, count: 65_535)
+            var peer = sockaddr_storage()
+            var peerLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let count = withUnsafeMutablePointer(to: &peer) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.recvfrom(descriptor, &buffer, buffer.count, 0, $0, &peerLength)
+                }
+            }
+            if count < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { break }
+                return
+            }
+            guard count > 0 else { break }
+            let request = Data(buffer.prefix(Int(count)))
+            let peerCopy = DNSPeer(storage: peer, length: peerLength)
+            if requiresUpstream(request, horizon: horizon) {
+                resolveQueue.async { [weak self] in
+                    self?.reply(to: peerCopy, on: descriptor, request: request, horizon: horizon)
+                }
+            } else {
+                reply(to: peerCopy, on: descriptor, request: request, horizon: horizon)
             }
         }
-        guard count > 0 else { return }
-        let request = Data(buffer.prefix(Int(count)))
+    }
+
+    private func reply(
+        to peer: DNSPeer,
+        on descriptor: Int32,
+        request: Data,
+        horizon: DNSHorizon
+    ) {
         let responseData = makeResponse(for: request, horizon: horizon)
         guard !responseData.isEmpty else { return }
+        var peerStorage = peer.storage
+        var peerLength = peer.length
         _ = responseData.withUnsafeBytes { bytes in
-            withUnsafePointer(to: &peer) { pointer in
+            withUnsafePointer(to: &peerStorage) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     Darwin.sendto(
                         descriptor,
@@ -618,6 +755,20 @@ final class DNSServer: @unchecked Sendable {
                     )
                 }
             }
+        }
+    }
+
+    private func requiresUpstream(_ request: Data, horizon: DNSHorizon) -> Bool {
+        guard let question = parseQuestion(request) else { return false }
+        let snapshot = lock.withLock { zone }
+        return !snapshot.isAuthoritative(for: question.name, horizon: horizon)
+    }
+
+    private func setNonBlocking(_ descriptor: Int32) throws {
+        let flags = fcntl(descriptor, F_GETFL, 0)
+        guard flags >= 0 else { throw DNSError.system("fcntl F_GETFL", errno) }
+        guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw DNSError.system("fcntl O_NONBLOCK", errno)
         }
     }
 
@@ -738,6 +889,17 @@ private enum DNSError: Error, CustomStringConvertible {
 
 private func endpoint(_ address: String, _ port: UInt16) -> String {
     "\(address):\(port)"
+}
+
+private func dnsProbeQuery() -> Data {
+    var packet = Data([0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+    for label in "vz.test".split(separator: ".") {
+        packet.append(UInt8(label.utf8.count))
+        packet.append(contentsOf: label.utf8)
+    }
+    packet.append(0)
+    packet.append(contentsOf: [0, 1, 0, 1])
+    return packet
 }
 
 private func parseEndpoint(_ value: String) -> (address: String, port: UInt16)? {

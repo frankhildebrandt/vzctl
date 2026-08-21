@@ -7,6 +7,7 @@ import {
   decodeVmIdParam,
   encodeVmIdParam,
   inspectVm,
+  isRunning,
   vmKeys,
 } from "@/lib/vms";
 
@@ -21,6 +22,9 @@ export type SidebarNavItem = {
   exact?: boolean;
   /** Explicit active (for search-param tabs); when set, overrides Link matching. */
   active?: boolean;
+  kind?: "link" | "action";
+  tone?: "danger";
+  disabled?: boolean;
 };
 
 export type SidebarBack = {
@@ -43,6 +47,15 @@ export type SidebarNavModel = {
   showSettingsBottom: boolean;
 };
 
+export type VmSection =
+  | "overview"
+  | "shell"
+  | "console"
+  | "modify"
+  | "mount"
+  | "replace"
+  | "containers";
+
 export type SidebarLocationInput = {
   pathname: string;
   search: Record<string, unknown>;
@@ -56,10 +69,39 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function vmTail(pathname: string): string {
+  const match = pathname.match(/^\/vms\/[^/]+(?:\/(.*))?$/);
+  return match?.[1] ?? "";
+}
+
+function parseVmSection(tail: string): {
+  section: VmSection;
+  containerLevel?: "list" | "detail";
+} {
+  const parts = tail.split("/").filter(Boolean);
+  if (parts[0] === "containers") {
+    return {
+      section: "containers",
+      containerLevel: parts.length >= 2 ? "detail" : "list",
+    };
+  }
+  if (
+    parts[0] === "shell" ||
+    parts[0] === "console" ||
+    parts[0] === "modify" ||
+    parts[0] === "mount" ||
+    parts[0] === "replace"
+  ) {
+    return { section: parts[0] };
+  }
+  return { section: "overview" };
+}
+
 function parseLocation(input: SidebarLocationInput): {
   kind: "root" | "stack" | "vm" | "settings";
   vmId?: string;
   containerLevel?: "list" | "detail";
+  section?: VmSection;
   stackPath?: string;
   envPath?: string;
   tab?: "ops" | "topology" | "config";
@@ -83,46 +125,25 @@ function parseLocation(input: SidebarLocationInput): {
   }
 
   if (input.routeVmId) {
-    let containerLevel: "list" | "detail" | undefined;
-    if (input.onContainers) {
-      containerLevel = pathname.includes("/containers/") ? "detail" : "list";
-    }
+    const parsed = parseVmSection(vmTail(pathname));
     return {
       kind: "vm",
       vmId: input.routeVmId,
-      containerLevel,
+      containerLevel: parsed.containerLevel,
+      section: parsed.section,
       stackPath: asString(search.stackPath),
     };
   }
 
   // Fallback for pure resolveSidebarNav callers (tests / no matches).
-  const containerDetail = pathname.match(
-    /^\/vms\/([^/]+)\/containers\/([^/]+)/,
-  );
-  if (containerDetail) {
+  const vmMatch = pathname.match(/^\/vms\/([^/]+)(?:\/(.*))?$/);
+  if (vmMatch) {
+    const parsed = parseVmSection(vmMatch[2] ?? "");
     return {
       kind: "vm",
-      vmId: decodeVmIdParam(containerDetail[1]),
-      containerLevel: "detail",
-      stackPath: asString(search.stackPath),
-    };
-  }
-
-  const containers = pathname.match(/^\/vms\/([^/]+)\/containers\/?$/);
-  if (containers) {
-    return {
-      kind: "vm",
-      vmId: decodeVmIdParam(containers[1]),
-      containerLevel: "list",
-      stackPath: asString(search.stackPath),
-    };
-  }
-
-  const vmOnly = pathname.match(/^\/vms\/([^/]+)$/);
-  if (vmOnly) {
-    return {
-      kind: "vm",
-      vmId: decodeVmIdParam(vmOnly[1]),
+      vmId: decodeVmIdParam(vmMatch[1]),
+      containerLevel: parsed.containerLevel,
+      section: parsed.section,
       stackPath: asString(search.stackPath),
     };
   }
@@ -224,11 +245,14 @@ function buildVm(
   opts: {
     vmId: string;
     stackPath?: string;
+    section: VmSection;
     containerLevel?: "list" | "detail";
     showContainers: boolean;
+    running: boolean;
   },
 ): SidebarNavModel {
-  const { vmId, stackPath, containerLevel, showContainers } = opts;
+  const { vmId, stackPath, section, containerLevel, showContainers, running } =
+    opts;
   const encoded = encodeVmIdParam(vmId);
   const vmSearch = stackPath ? { stackPath } : {};
   const onContainers = containerLevel != null;
@@ -259,7 +283,49 @@ function buildVm(
       to: "/vms/$vmId",
       params: { vmId: encoded },
       search: vmSearch,
-      active: !onContainers,
+      active: section === "overview",
+    },
+    {
+      id: "shell",
+      label: t("vmDetail.shell"),
+      to: "/vms/$vmId/shell",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "shell",
+      disabled: !running,
+    },
+    {
+      id: "console",
+      label: t("vmDetail.attach"),
+      to: "/vms/$vmId/console",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "console",
+      disabled: !running,
+    },
+    {
+      id: "modify",
+      label: t("vmDetail.modify"),
+      to: "/vms/$vmId/modify",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "modify",
+    },
+    {
+      id: "mount",
+      label: t("vmDetail.mount"),
+      to: "/vms/$vmId/mount",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "mount",
+    },
+    {
+      id: "replace",
+      label: t("vmDetail.replace"),
+      to: "/vms/$vmId/replace",
+      params: { vmId: encoded },
+      search: vmSearch,
+      active: section === "replace",
     },
   ];
 
@@ -273,6 +339,16 @@ function buildVm(
       active: onContainers,
     });
   }
+
+  items.push({
+    id: "delete",
+    label: t("vmDetail.delete"),
+    to: "/vms/$vmId",
+    params: { vmId: encoded },
+    search: vmSearch,
+    kind: "action",
+    tone: "danger",
+  });
 
   return {
     context: "vm",
@@ -289,6 +365,7 @@ export function resolveSidebarNav(
   location: SidebarLocationInput,
   opts?: {
     hasDockerRole?: boolean;
+    running?: boolean;
     stackTitle?: string | null;
     t?: TFunction;
   },
@@ -307,8 +384,10 @@ export function resolveSidebarNav(
     return buildVm(t, {
       vmId: parsed.vmId,
       stackPath: parsed.stackPath,
+      section: parsed.section ?? "overview",
       containerLevel: parsed.containerLevel,
       showContainers,
+      running: opts?.running === true,
     });
   }
   return buildRoot(t);
@@ -321,20 +400,13 @@ function pickVmFromMatches(
   let onContainers = false;
   for (const match of matches) {
     const id = match.routeId;
-    if (
-      id === "/vms/$vmId" ||
-      id === "/vms/$vmId/containers" ||
-      id === "/vms/$vmId/containers/$containerId"
-    ) {
+    if (id === "/vms/$vmId" || id.startsWith("/vms/$vmId/")) {
       const raw = match.params.vmId;
       if (typeof raw === "string" && raw.length > 0) {
         routeVmId = decodeVmIdParam(raw);
       }
     }
-    if (
-      id === "/vms/$vmId/containers" ||
-      id === "/vms/$vmId/containers/$containerId"
-    ) {
+    if (id.includes("/containers")) {
       onContainers = true;
     }
   }
@@ -371,18 +443,24 @@ export function useSidebarNav(): SidebarNavModel {
   const inspectQuery = useQuery({
     queryKey: vmKeys.detail(vmId ?? ""),
     queryFn: () => inspectVm(vmId!),
-    enabled: Boolean(vmId) && !onContainers,
+    enabled: Boolean(vmId),
     staleTime: 30_000,
   });
 
   const hasDockerRole =
     onContainers ||
     inspectQuery.data?.vm.roles?.includes("docker") === true;
+  const running = isRunning(inspectQuery.data?.vm.state);
 
   let stackTitle: string | null | undefined;
   if (parsed.kind === "stack" && parsed.envPath) {
     stackTitle = getProject(parsed.envPath)?.name ?? basename(parsed.envPath);
   }
 
-  return resolveSidebarNav(location, { hasDockerRole, stackTitle, t });
+  return resolveSidebarNav(location, {
+    hasDockerRole,
+    running,
+    stackTitle,
+    t,
+  });
 }

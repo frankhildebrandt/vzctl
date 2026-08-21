@@ -328,11 +328,7 @@ final class NetworkRegistry: @unchecked Sendable {
                         created: false
                     )
                 }
-                guard let configured = try database.defaultNetwork() else {
-                    throw NetworkRegistryError.notFound(
-                        "default network is not configured; run vzctl net default set <name> --cidr <CIDR>"
-                    )
-                }
+                let configured = try resolveDefaultNetworkRecord()
                 network = try ensureDefaultNetworkLocked(
                     name: configured.name,
                     cidr: configured.cidr
@@ -593,6 +589,29 @@ final class NetworkRegistry: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    /// Returns configured default or infers one from a sole shared network / `default` name.
+    private func resolveDefaultNetworkRecord() throws -> DefaultNetworkRecord {
+        if let configured = try database.defaultNetwork() {
+            return configured
+        }
+        let shared = try database.networks().filter { $0.mode == "shared" }
+        let inferred: DefaultNetworkRecord?
+        if shared.count == 1 {
+            inferred = DefaultNetworkRecord(name: shared[0].name, cidr: shared[0].cidr)
+        } else if let named = shared.first(where: { $0.name == "default" }) {
+            inferred = DefaultNetworkRecord(name: named.name, cidr: named.cidr)
+        } else {
+            inferred = nil
+        }
+        guard let record = inferred else {
+            throw NetworkRegistryError.notFound(
+                "default network is not configured; run vzctl net default set <name> --cidr <CIDR>"
+            )
+        }
+        try database.setDefaultNetwork(record)
+        return record
     }
 
     private func ensureDefaultNetworkLocked(name: String, cidr: String) throws -> NetworkRecord {

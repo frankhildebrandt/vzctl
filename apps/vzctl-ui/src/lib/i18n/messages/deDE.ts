@@ -333,6 +333,9 @@ export const deDE = {
   "doctor.caInstallFail": "CA-Installation fehlgeschlagen",
   "doctor.caInitFail": "CA-Init fehlgeschlagen",
   "doctor.bindInstallFail": "DNS-Bind-Helper-Installation fehlgeschlagen",
+  "doctor.edgeRestart": "vz-edge neu starten",
+  "doctor.edgeRestartOk": "vz-edge neu gestartet. Doctor erneut ausführen, falls DNS/Ingress noch warnen.",
+  "doctor.edgeRestartFail": "vz-edge-Neustart fehlgeschlagen",
 
   "images.title": "Images",
   "images.subtitle":
@@ -451,6 +454,8 @@ export const deDE = {
   "vmDetail.startBusy": "Start…",
   "vmDetail.stop": "Stop",
   "vmDetail.stopBusy": "Stop…",
+  "vmDetail.restart": "Restart",
+  "vmDetail.restartBusy": "Restart…",
   "vmDetail.modify": "Modify",
   "vmDetail.mount": "Mount",
   "vmDetail.attach": "Attach",
@@ -460,6 +465,7 @@ export const deDE = {
   "vmDetail.delete": "Delete",
   "vmDetail.started": "VM gestartet",
   "vmDetail.stopped": "VM gestoppt",
+  "vmDetail.restarted": "VM neu gestartet",
   "vmDetail.replaced": "VM ersetzt",
   "vmDetail.inspectFailed": "Inspect fehlgeschlagen",
   "vmDetail.modifyTitle": "Ressourcen ändern",
@@ -489,6 +495,12 @@ export const deDE = {
   "vmDetail.replaceConfirm": "Ersetzen",
   "vmDetail.resourcesSaved": "Ressourcen gespeichert (nächster Start)",
   "vmDetail.resourcesRestart": "Ressourcen gespeichert — Restart nötig",
+  "vmDetail.metricsCpu": "CPU",
+  "vmDetail.metricsRam": "RAM",
+  "vmDetail.metricsIops": "IOPS",
+  "vmDetail.metricsUnavailable": "Keine Live-Metriken",
+  "vmDetail.agentUpgradeHint":
+    "Agent zu alt für Stats — `vzctl vm agent upgrade` ausführen.",
 
   "containers.title": "Containers",
   "containers.noProject": "Docker-Context braucht eine Projekt-VM (`project/vm`).",
@@ -646,6 +658,11 @@ export const deDE = {
 
   "terminal.sessionClosed": "session closed",
   "terminal.exit": "exit {code}",
+  "terminal.reconnect": "Neu verbinden",
+  "terminal.reconnecting": "verbinde neu",
+  "terminal.newTab": "Neuer Tab",
+  "terminal.closeTab": "Tab schließen",
+  "terminal.tab": "Shell {n}",
 
   "projects.title": "Stacks",
   "projects.subtitle":

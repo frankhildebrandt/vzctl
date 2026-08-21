@@ -2,6 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { ChromeCrumbs } from "@/components/Chrome";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   ActionRow,
@@ -238,9 +239,11 @@ export function ContainersPage({
   if (project == null) {
     return (
       <section>
+        <ChromeCrumbs>
+          <Breadcrumbs items={crumbs} />
+        </ChromeCrumbs>
         <PageHeader
           layout="detail"
-          breadcrumbs={<Breadcrumbs items={crumbs} />}
           title={t("containers.title")}
         />
         <Alert title={t("common.error")}>{t("containers.noProject")}</Alert>
@@ -250,8 +253,10 @@ export function ContainersPage({
 
   return (
     <section>
+      <ChromeCrumbs>
+        <Breadcrumbs items={crumbs} />
+      </ChromeCrumbs>
       <PageHeader
-        breadcrumbs={<Breadcrumbs items={crumbs} />}
         title={t("containers.title")}
         subtitle={
           <>

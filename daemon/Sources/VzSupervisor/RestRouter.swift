@@ -89,6 +89,9 @@ final class RestRouter: @unchecked Sendable {
         if rest.first == "doctor", rest.count == 1, method == "GET" {
             return try workerJSON(["doctor", "--format", "json"])
         }
+        if rest == ["services", "edge", "restart"], method == "POST" {
+            return try workerJSON(["services", "restart", "edge", "--format", "json"])
+        }
         if rest.first == "certs" {
             return try routeCerts(method: method, rest: rest)
         }

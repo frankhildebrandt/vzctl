@@ -285,6 +285,21 @@ button.secondary:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+.sidebar-notice:empty {
+  display: none;
+}
+
+.sidebar-hint {
+  margin: 0.35rem 0.55rem 0.45rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, #c4a35a 55%, var(--sidebar-muted));
+  background: color-mix(in srgb, #c4a35a 16%, transparent);
+  color: var(--sidebar-text);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 .sidebar-link {
   color: var(--sidebar-text);
   text-decoration: none;
@@ -301,6 +316,29 @@ button.secondary:hover:not(:disabled) {
 .sidebar-link.active {
   background: var(--sidebar-active);
   color: var(--sidebar-text);
+}
+
+.sidebar-link.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+button.sidebar-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.sidebar-link.tone-danger {
+  color: var(--danger);
+}
+
+button.sidebar-link.tone-danger:hover:not(:disabled) {
+  background: var(--hover);
 }
 
 .sidebar-back {
@@ -336,11 +374,54 @@ button.secondary:hover:not(:disabled) {
   position: relative;
 }
 
-.content-drag {
-  height: 36px;
+.content-chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 36px;
+  padding: 0.15rem var(--content-pad);
   flex-shrink: 0;
   cursor: default;
   user-select: none;
+}
+
+.chrome-back {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.9rem;
+  text-decoration: none;
+  padding: 0.15rem 0.35rem;
+  border-radius: var(--radius);
+}
+
+.chrome-back:hover {
+  color: var(--ink);
+  background: var(--hover);
+  text-decoration: none;
+}
+
+.chrome-crumbs {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.chrome-crumbs .crumb {
+  margin-bottom: 0;
+}
+
+.chrome-spacer {
+  flex: 1 1 auto;
+  min-width: 0.5rem;
+  align-self: stretch;
+}
+
+.chrome-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
 }
 
 .demo-watermark {
@@ -1737,8 +1818,9 @@ button.secondary:hover:not(:disabled) {
     display: none;
   }
 
-  .content-drag {
-    display: none;
+  .content-chrome {
+    min-height: 0;
+    padding-top: 0.35rem;
   }
 
   .content {
@@ -1936,6 +2018,255 @@ button.secondary:hover:not(:disabled) {
   border-radius: 8px;
   overflow: hidden;
   background: #14201c;
+}
+
+.terminal-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.shell-stage .terminal-frame .terminal-host,
+.vm-pane .terminal-frame .terminal-host {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  border-radius: 0;
+}
+
+.terminal-reconnect {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 0.65rem;
+  background: color-mix(in srgb, #14201c 72%, transparent);
+  color: #d7e8e2;
+  text-align: center;
+  padding: 1rem;
+}
+
+.terminal-reconnect p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #9bb8ae;
+}
+
+.terminal-hold {
+  position: fixed;
+  width: 40rem;
+  height: 24rem;
+  left: -80rem;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.terminal-dock-slot {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.shell-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.shell-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex: 0 0 auto;
+  background: #0f1a17;
+  border-bottom: 1px solid #1e332c;
+}
+
+.shell-tab {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: #8aa89c;
+  border-right: 1px solid #1e332c;
+}
+
+.shell-tab.is-active {
+  background: #14201c;
+  color: #d7e8e2;
+}
+
+.shell-tab-label,
+.shell-tab-close,
+.shell-tab-add {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.shell-tab-label:hover:not(:disabled),
+.shell-tab-close:hover:not(:disabled),
+.shell-tab-add:hover:not(:disabled) {
+  background: color-mix(in srgb, #d7e8e2 8%, transparent);
+}
+
+.shell-tab-label {
+  padding: 0.4rem 0.55rem 0.4rem 0.75rem;
+  font-size: 0.78rem;
+}
+
+.shell-tab-close {
+  padding: 0.35rem 0.5rem 0.35rem 0.15rem;
+  font-size: 0.95rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.shell-tab-close:hover,
+.shell-tab-add:hover:not(:disabled) {
+  color: #fff;
+  opacity: 1;
+}
+
+.shell-tab-add {
+  padding: 0.35rem 0.7rem;
+  font-size: 1rem;
+  line-height: 1;
+  color: #8aa89c;
+}
+
+.shell-tab-add:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: none;
+}
+
+.shell-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #14201c;
+}
+
+.vm-detail {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.vm-detail-heading {
+  flex: 0 0 auto;
+  margin-bottom: 0.5rem;
+}
+
+.vm-detail-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 1rem;
+  min-width: 0;
+}
+
+.vm-detail-title-row .section-title {
+  margin: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vm-detail-status {
+  margin: 0.2rem 0 0;
+}
+
+.vm-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.vm-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.vm-pane.is-hidden,
+.vm-page.is-hidden {
+  display: none;
+}
+
+.vm-pane .terminal-host,
+.shell-stage .terminal-dock-slot,
+.shell-stage .terminal-frame {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
+.vm-metrics {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0 auto;
+  flex: 1 1 12rem;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.vm-metric {
+  flex: 0 1 5.5rem;
+  min-width: 4.25rem;
+  max-width: 7rem;
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+.vm-metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.05rem;
+}
+
+.vm-metric-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.vm-metric-value {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.vm-sparkline {
+  display: block;
+  width: 100%;
+  height: 16px;
+  color: var(--accent, #2f6f56);
 }
 
 button.danger {

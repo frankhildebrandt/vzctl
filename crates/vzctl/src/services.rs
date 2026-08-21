@@ -836,13 +836,16 @@ fn restart_target(target: ServiceId) -> Result<Vec<ServiceChange>, Failure> {
             }
             Ok(changes)
         }
-        ServiceId::Edge | ServiceId::Supervisor => {
-            let spec = if target == ServiceId::Edge {
-                SERVICE_EDGE
-            } else {
-                SERVICE_SUPERVISOR
-            };
-            restart_one(spec)
+        ServiceId::Edge => restart_one(SERVICE_EDGE),
+        ServiceId::Supervisor => {
+            let mut changes = Vec::new();
+            for spec in [SERVICE_EDGE, SERVICE_SUPERVISOR] {
+                changes.extend(restart_one(spec)?);
+            }
+            for change in &mut changes {
+                change.action = Action::Restart;
+            }
+            Ok(changes)
         }
     }
 }

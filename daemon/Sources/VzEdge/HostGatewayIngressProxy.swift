@@ -36,18 +36,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var active: [Binding] = []
         var skipped: [(Binding, String)] = []
         for binding in desired {
-            if let existing = listeners[binding.key] {
-                if existing.matches(binding) {
-                    active.append(binding)
-                    continue
-                }
-                // Same listen address — only backend changed; keep privileged bind.
-                if existing.sameListen(as: binding) {
-                    existing.retarget(binding)
-                    active.append(binding)
-                    continue
-                }
-            }
+            // Always reopen: dns-bind accept streams die when the helper restarts.
             listeners.removeValue(forKey: binding.key)?.close()
             do {
                 let listener = try openListener(binding)
@@ -130,18 +119,6 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             queue.async { [self] in
                 self.acceptLoop()
             }
-        }
-
-        func matches(_ other: Binding) -> Bool {
-            binding == other
-        }
-
-        func sameListen(as other: Binding) -> Bool {
-            binding.gatewayIP == other.gatewayIP && binding.port == other.port
-        }
-
-        func retarget(_ other: Binding) {
-            binding = other
         }
 
         private static func bindLocally(address: String, port: UInt16) throws -> Int32 {

@@ -1,9 +1,7 @@
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { useNavigate } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState, type FormEvent } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { Terminal } from "@/components/Terminal";
 import { VmForm } from "@/components/VmForm";
 import { VmMountForm } from "@/components/VmMountForm";
 import {
@@ -19,12 +17,8 @@ import {
   FormGrid,
   LoadingState,
   Mono,
-  PageHeader,
-  StatusPill,
-  Toolbar,
 } from "@/components/ui";
 import { useT } from "@/lib/i18n";
-import { getProject } from "@/lib/projects";
 import {
   createVm,
   deleteVm,
@@ -33,51 +27,28 @@ import {
   isRunning,
   listMounts,
   modifyVm,
-  startVm,
   stopVm,
   unmountVm,
   vmKeys,
   type CreateVmInput,
   type VmMount,
 } from "@/lib/vms";
-import { basename } from "@/lib/vzctl";
 
-type Panel =
-  | null
-  | "modify"
-  | "mount"
-  | "replace"
-  | "console"
-  | "shell";
+function vmOverviewSearch(stackPath?: string) {
+  return stackPath ? { stackPath } : {};
+}
 
 type PendingConfirm =
-  | { kind: "delete" }
   | { kind: "unmount"; mount: VmMount }
   | { kind: "replace"; input: CreateVmInput }
   | null;
 
-export function VmDetailPage({
-  vmId,
-  stackPath,
-}: {
-  vmId: string;
-  stackPath?: string;
-}) {
+export function VmOverviewPage({ vmId }: { vmId: string }) {
   const t = useT();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const [panel, setPanel] = useState<Panel>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [cpus, setCpus] = useState(2);
-  const [memory, setMemory] = useState("1024");
+  const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingConfirm>(null);
-
-  const stackName = useMemo(() => {
-    if (!stackPath) return null;
-    return getProject(stackPath)?.name ?? basename(stackPath);
-  }, [stackPath]);
 
   const detailQuery = useQuery({
     queryKey: vmKeys.detail(vmId),
@@ -90,95 +61,13 @@ export function VmDetailPage({
     queryFn: () => listMounts(vmId),
   });
 
-  useEffect(() => {
-    const resources = detailQuery.data?.resources;
-    if (resources) {
-      setCpus(resources.cpus);
-      setMemory(String(resources.memory_mib));
-    }
-  }, [detailQuery.data?.resources]);
+  const inspect = detailQuery.data;
+  const vm = inspect?.vm;
+  const mounts = mountsQuery.data ?? [];
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: vmKeys.detail(vmId) });
     await queryClient.invalidateQueries({ queryKey: vmKeys.mounts(vmId) });
-    await queryClient.invalidateQueries({ queryKey: vmKeys.list() });
-  }
-
-  const startMutation = useMutation({
-    mutationFn: () => startVm(vmId),
-    onMutate: () => {
-      setBusy("start");
-      setError(null);
-    },
-    onSuccess: () => setMessage(t("vmDetail.started")),
-    onError: (err) => setError(String(err)),
-    onSettled: async () => {
-      setBusy(null);
-      await refresh();
-    },
-  });
-
-  const stopMutation = useMutation({
-    mutationFn: () => stopVm(vmId),
-    onMutate: () => {
-      setBusy("stop");
-      setError(null);
-    },
-    onSuccess: () => setMessage(t("vmDetail.stopped")),
-    onError: (err) => setError(String(err)),
-    onSettled: async () => {
-      setBusy(null);
-      await refresh();
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteVm(vmId, true),
-    onMutate: () => {
-      setBusy("delete");
-      setError(null);
-    },
-    onSuccess: () => {
-      setPending(null);
-      if (stackPath) {
-        void navigate({ to: "/env", search: { path: stackPath, tab: "ops" } });
-      } else {
-        void navigate({ to: "/vms" });
-      }
-    },
-    onError: (err) => setError(String(err)),
-    onSettled: () => setBusy(null),
-  });
-
-  const inspect = detailQuery.data;
-  const vm = inspect?.vm;
-  const running = isRunning(vm?.state);
-  const mounts = mountsQuery.data ?? [];
-
-  async function submitModify(event: FormEvent) {
-    event.preventDefault();
-    setBusy("modify");
-    setError(null);
-    setMessage(null);
-    try {
-      const envelope = await modifyVm({
-        id: vmId,
-        cpus,
-        memory: memory.trim(),
-      });
-      const restart = envelope.restart_required === true;
-      setMessage(
-        restart
-          ? t("vmDetail.resourcesRestart")
-          : t("vmDetail.resourcesSaved"),
-      );
-      setPanel(null);
-      await refresh();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(null);
-    }
   }
 
   async function removeMount(mount: VmMount) {
@@ -195,258 +84,9 @@ export function VmDetailPage({
     }
   }
 
-  async function replaceVm(input: CreateVmInput) {
-    setBusy("replace");
-    setError(null);
-    try {
-      if (running) {
-        await stopVm(vmId);
-      }
-      await deleteVm(vmId, true);
-      await createVm(input);
-      setPending(null);
-      setPanel(null);
-      setMessage(t("vmDetail.replaced"));
-      await refresh();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const crumbs =
-    stackPath && stackName
-      ? [
-          {
-            label: t("crumb.stacks"),
-            node: (
-              <Link to="/projects" className="crumb-link">
-                {t("crumb.stacks")}
-              </Link>
-            ),
-          },
-          {
-            label: stackName,
-            node: (
-              <Link
-                to="/env"
-                search={{ path: stackPath, tab: "ops" as const }}
-                className="crumb-link"
-              >
-                {stackName}
-              </Link>
-            ),
-          },
-          { label: vmId },
-        ]
-      : [
-          {
-            label: t("crumb.vms"),
-            node: (
-              <Link to="/vms" className="crumb-link">
-                {t("crumb.vms")}
-              </Link>
-            ),
-          },
-          { label: vmId },
-        ];
-
   return (
-    <section>
-      <PageHeader
-        breadcrumbs={<Breadcrumbs items={crumbs} />}
-        title={vmId}
-        subtitle={
-          vm ? (
-            <>
-              <StatusPill state={vm.state} />
-              {vm.pid != null ? ` · pid ${vm.pid}` : null}
-              {inspect?.resources
-                ? ` · ${inspect.resources.cpus} CPU / ${inspect.resources.memory_mib} MiB`
-                : null}
-            </>
-          ) : null
-        }
-        actions={
-          <Toolbar>
-          {running ? (
-            <Button
-              tone="secondary"
-              disabled={busy != null}
-              onClick={() => stopMutation.mutate()}
-            >
-              {busy === "stop" ? t("vmDetail.stopBusy") : t("vmDetail.stop")}
-            </Button>
-          ) : (
-            <Button
-              disabled={busy != null}
-              onClick={() => startMutation.mutate()}
-            >
-              {busy === "start" ? t("vmDetail.startBusy") : t("vmDetail.start")}
-            </Button>
-          )}
-          <Button
-            tone="secondary"
-            disabled={busy != null}
-            onClick={() => setPanel(panel === "modify" ? null : "modify")}
-          >
-            {t("vmDetail.modify")}
-          </Button>
-          <Button
-            tone="secondary"
-            disabled={busy != null}
-            onClick={() => setPanel(panel === "mount" ? null : "mount")}
-          >
-            {t("vmDetail.mount")}
-          </Button>
-          <Button
-            tone="secondary"
-            disabled={!running || busy != null}
-            onClick={() => setPanel(panel === "console" ? null : "console")}
-          >
-            {t("vmDetail.attach")}
-          </Button>
-          <Button
-            tone="secondary"
-            disabled={!running || busy != null}
-            onClick={() => setPanel(panel === "shell" ? null : "shell")}
-          >
-            {t("vmDetail.shell")}
-          </Button>
-          {vm?.roles?.includes("docker") ? (
-            <Button
-              tone="secondary"
-              disabled={!running || busy != null}
-              onClick={() =>
-                void navigate({
-                  to: "/vms/$vmId/containers",
-                  params: { vmId: encodeVmIdParam(vmId) },
-                  search: stackPath ? { stackPath } : {},
-                })
-              }
-            >
-              {t("vmDetail.containers")}
-            </Button>
-          ) : null}
-          <Button
-            tone="secondary"
-            disabled={busy != null}
-            onClick={() => setPanel(panel === "replace" ? null : "replace")}
-          >
-            {t("vmDetail.replace")}
-          </Button>
-          <Button
-            tone="secondary"
-            disabled={busy != null}
-            onClick={() => setPending({ kind: "delete" })}
-          >
-            {t("vmDetail.delete")}
-          </Button>
-          </Toolbar>
-        }
-      />
-
-      {message ? <p className="ok-banner">{message}</p> : null}
-      {error ? (
-        <Alert title={t("common.error")}>{error}</Alert>
-      ) : null}
-      {detailQuery.isError ? (
-        <Alert title={t("vmDetail.inspectFailed")}>{String(detailQuery.error)}</Alert>
-      ) : null}
-
-      {panel === "modify" ? (
-        <Card
-          as="form"
-          className="vm-form"
-          title={t("vmDetail.modifyTitle")}
-          titleAs="h3"
-          subtitle={t("vmDetail.modifyHint")}
-          onSubmit={(e) => void submitModify(e)}
-        >
-          <FormGrid>
-            <FormField label={t("vmForm.cpus")}>
-              <input
-                type="number"
-                min={1}
-                value={cpus}
-                disabled={busy != null}
-                onChange={(e) => setCpus(Number(e.target.value))}
-              />
-            </FormField>
-            <FormField label={t("vmDetail.memory")}>
-              <input
-                value={memory}
-                disabled={busy != null}
-                onChange={(e) => setMemory(e.target.value)}
-              />
-            </FormField>
-          </FormGrid>
-          <FormActions
-            busy={busy != null}
-            submitLabel={busy === "modify" ? t("common.saveBusy") : t("common.save")}
-            cancelLabel={t("common.cancel")}
-            onCancel={() => setPanel(null)}
-          />
-        </Card>
-      ) : null}
-
-      {panel === "mount" ? (
-        <VmMountForm
-          vmId={vmId}
-          onDone={async () => {
-            setPanel(null);
-            await refresh();
-          }}
-          onCancel={() => setPanel(null)}
-        />
-      ) : null}
-
-      {panel === "replace" ? (
-        <VmForm
-          mode="replace"
-          initial={{
-            id: vmId,
-            from: "ubuntu",
-            diskGib: 8,
-            cpus: inspect?.resources?.cpus,
-            memory: inspect?.resources
-              ? String(inspect.resources.memory_mib)
-              : undefined,
-          }}
-          onSubmitReplace={async (input) => {
-            setPending({ kind: "replace", input });
-          }}
-          onDone={() => {
-            /* replace completes via ConfirmDialog */
-          }}
-          onCancel={() => setPanel(null)}
-        />
-      ) : null}
-
-      {panel === "console" ? (
-        <Card className="terminal-card">
-          <ActionRow align="between">
-            <h3>{t("vmDetail.consoleTitle")}</h3>
-            <Button tone="secondary" onClick={() => setPanel(null)}>
-              {t("common.close")}
-            </Button>
-          </ActionRow>
-          <Terminal mode="attach" vmId={vmId} />
-        </Card>
-      ) : null}
-
-      {panel === "shell" ? (
-        <Card className="terminal-card">
-          <ActionRow align="between">
-            <h3>{t("vmDetail.shellTitle")}</h3>
-            <Button tone="secondary" onClick={() => setPanel(null)}>
-              {t("common.close")}
-            </Button>
-          </ActionRow>
-          <Terminal mode="exec" vmId={vmId} cmd={["/bin/bash"]} />
-        </Card>
-      ) : null}
+    <>
+      {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
 
       <div className="dash-grid">
         <Card title={t("vmDetail.overview")} titleAs="h3">
@@ -549,25 +189,6 @@ export function VmDetailPage({
       ) : null}
 
       <ConfirmDialog
-        open={pending?.kind === "delete"}
-        title={t("vmDetail.deleteTitle")}
-        message={t("vmDetail.deleteMessage", { id: vmId })}
-        confirmLabel={t("dialog.delete")}
-        busy={busy === "delete"}
-        error={pending?.kind === "delete" ? error : null}
-        onCancel={() => {
-          if (busy !== "delete") {
-            setPending(null);
-            setError(null);
-          }
-        }}
-        onConfirm={() => {
-          setError(null);
-          deleteMutation.mutate();
-        }}
-      />
-
-      <ConfirmDialog
         open={pending?.kind === "unmount"}
         title={t("vmDetail.unmountTitle")}
         message={
@@ -587,20 +208,230 @@ export function VmDetailPage({
           if (pending?.kind === "unmount") void removeMount(pending.mount);
         }}
       />
+    </>
+  );
+}
 
+export function VmModifyPage({
+  vmId,
+  stackPath,
+}: {
+  vmId: string;
+  stackPath?: string;
+}) {
+  const t = useT();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [cpus, setCpus] = useState(2);
+  const [memory, setMemory] = useState("1024");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const detailQuery = useQuery({
+    queryKey: vmKeys.detail(vmId),
+    queryFn: () => inspectVm(vmId),
+  });
+
+  useEffect(() => {
+    const resources = detailQuery.data?.resources;
+    if (resources) {
+      setCpus(resources.cpus);
+      setMemory(String(resources.memory_mib));
+    }
+  }, [detailQuery.data?.resources]);
+
+  async function submitModify(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const envelope = await modifyVm({
+        id: vmId,
+        cpus,
+        memory: memory.trim(),
+      });
+      const restart = envelope.restart_required === true;
+      setMessage(
+        restart
+          ? t("vmDetail.resourcesRestart")
+          : t("vmDetail.resourcesSaved"),
+      );
+      await queryClient.invalidateQueries({ queryKey: vmKeys.detail(vmId) });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {message ? <p className="ok-banner">{message}</p> : null}
+      {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
+      <Card
+        as="form"
+        className="vm-form"
+        title={t("vmDetail.modifyTitle")}
+        titleAs="h3"
+        subtitle={t("vmDetail.modifyHint")}
+        onSubmit={(e) => void submitModify(e)}
+      >
+        <FormGrid>
+          <FormField label={t("vmForm.cpus")}>
+            <input
+              type="number"
+              min={1}
+              value={cpus}
+              disabled={busy}
+              onChange={(e) => setCpus(Number(e.target.value))}
+            />
+          </FormField>
+          <FormField label={t("vmDetail.memory")}>
+            <input
+              value={memory}
+              disabled={busy}
+              onChange={(e) => setMemory(e.target.value)}
+            />
+          </FormField>
+        </FormGrid>
+        <FormActions
+          busy={busy}
+          submitLabel={busy ? t("common.saveBusy") : t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onCancel={() =>
+            void navigate({
+              to: "/vms/$vmId",
+              params: { vmId: encodeVmIdParam(vmId) },
+              search: vmOverviewSearch(stackPath),
+            })
+          }
+        />
+      </Card>
+    </>
+  );
+}
+
+export function VmMountPage({
+  vmId,
+  stackPath,
+}: {
+  vmId: string;
+  stackPath?: string;
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  return (
+    <VmMountForm
+      vmId={vmId}
+      onDone={async () => {
+        await queryClient.invalidateQueries({ queryKey: vmKeys.mounts(vmId) });
+        await navigate({
+          to: "/vms/$vmId",
+          params: { vmId: encodeVmIdParam(vmId) },
+          search: vmOverviewSearch(stackPath),
+        });
+      }}
+      onCancel={() =>
+        void navigate({
+          to: "/vms/$vmId",
+          params: { vmId: encodeVmIdParam(vmId) },
+          search: vmOverviewSearch(stackPath),
+        })
+      }
+    />
+  );
+}
+
+export function VmReplacePage({
+  vmId,
+  stackPath,
+}: {
+  vmId: string;
+  stackPath?: string;
+}) {
+  const t = useT();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingConfirm>(null);
+
+  const detailQuery = useQuery({
+    queryKey: vmKeys.detail(vmId),
+    queryFn: () => inspectVm(vmId),
+  });
+
+  const inspect = detailQuery.data;
+  const running = isRunning(inspect?.vm?.state);
+
+  async function replaceVm(input: CreateVmInput) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (running) {
+        await stopVm(vmId);
+      }
+      await deleteVm(vmId, true);
+      await createVm(input);
+      setPending(null);
+      await queryClient.invalidateQueries({ queryKey: vmKeys.detail(vmId) });
+      await queryClient.invalidateQueries({ queryKey: vmKeys.list() });
+      await navigate({
+        to: "/vms/$vmId",
+        params: { vmId: encodeVmIdParam(vmId) },
+        search: vmOverviewSearch(stackPath),
+      });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
+      <VmForm
+        mode="replace"
+        initial={{
+          id: vmId,
+          from: "ubuntu",
+          diskGib: 8,
+          cpus: inspect?.resources?.cpus,
+          memory: inspect?.resources
+            ? String(inspect.resources.memory_mib)
+            : undefined,
+        }}
+        onSubmitReplace={async (input) => {
+          setPending({ kind: "replace", input });
+        }}
+        onDone={() => {
+          /* replace completes via ConfirmDialog */
+        }}
+        onCancel={() =>
+          void navigate({
+            to: "/vms/$vmId",
+            params: { vmId: encodeVmIdParam(vmId) },
+            search: vmOverviewSearch(stackPath),
+          })
+        }
+      />
       <ConfirmDialog
         open={pending?.kind === "replace"}
         title={t("vmDetail.replaceTitle")}
         message={t("vmDetail.replaceMessage", { id: vmId })}
         confirmLabel={t("vmDetail.replaceConfirm")}
-        busy={busy === "replace"}
+        busy={busy}
         onCancel={() => {
-          if (busy !== "replace") setPending(null);
+          if (!busy) setPending(null);
         }}
         onConfirm={() => {
           if (pending?.kind === "replace") void replaceVm(pending.input);
         }}
       />
-    </section>
+    </>
   );
 }

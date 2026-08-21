@@ -145,6 +145,7 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 | Method | Path | Beschreibung |
 |---|---|---|
 | `GET` | `/v1/doctor` | Doctor report |
+| `POST` | `/v1/services/edge/restart` | Restart `com.vzctl.edge` LaunchAgent |
 | `POST` | `/v1/certs/ca/init` | Init CA |
 | `POST` | `/v1/certs/ca/install` | Install into Keychain (elevated path) |
 | `GET` | `/v1/certs/fingerprint` | CA fingerprint |

@@ -1257,6 +1257,32 @@ fn images_dir() -> PathBuf {
         .unwrap_or_else(|| state_dir().join("images"))
 }
 
+fn resolve_vm_image_input(input: &str, images_dir: &Path) -> Result<PathBuf, SealFailure> {
+    let direct = PathBuf::from(input);
+    if direct.is_absolute() || direct.components().count() > 1 {
+        return resolve_image_input(input, images_dir);
+    }
+    if let Some(path) = image::resolve_alias_for_vm(images_dir, input)
+        .map_err(|error| SealFailure::new(EXIT_IMAGE_STATE_FAILED, error))?
+    {
+        return Ok(path);
+    }
+    let resolved = resolve_image_input(input, images_dir)?;
+    if resolved
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .is_some_and(|name| name == "objects")
+    {
+        return Err(SealFailure::new(
+            EXIT_IMAGE_STATE_FAILED,
+            format!(
+                "image alias {input} is pulled but not sealed; run `vzctl image bake {input} --tag v1` and `vzctl image seal {input} --tag v1` first",
+            ),
+        ));
+    }
+    Ok(resolved)
+}
+
 fn resolve_image_input(input: &str, images_dir: &Path) -> Result<PathBuf, SealFailure> {
     let direct = PathBuf::from(input);
     if direct.exists() {
@@ -1971,7 +1997,7 @@ fn create_vm_bundle_in_dirs(
     vms_directory: &Path,
 ) -> Result<VmCreateResult, VmCreateFailure> {
     let source_path =
-        resolve_image_input(&options.from, images_directory).map_err(vm_failure_from_seal)?;
+        resolve_vm_image_input(&options.from, images_directory).map_err(vm_failure_from_seal)?;
     let source_path = fs::canonicalize(&source_path).map_err(|error| {
         VmCreateFailure::new(
             EXIT_INVALID_INPUT,
@@ -4436,11 +4462,18 @@ fn check_supervisor() -> Check {
         );
     }
     if !vz_edge_ok {
+        let mut edge_details = details;
+        if let Some(obj) = edge_details.as_object_mut() {
+            obj.insert(
+                "remediation".to_string(),
+                supervisor_edge_remediation(),
+            );
+        }
         return Check::new(
             "supervisor.health",
             CheckStatus::Warn,
             "supervisor is up, but vz-edge is unavailable or degraded (edge.sock); DNS, ports and ingress need com.vzctl.edge",
-            details,
+            edge_details,
         );
     }
     if network_orphans > 0 {
@@ -4477,6 +4510,17 @@ fn check_supervisor() -> Check {
         ),
         details,
     )
+}
+
+fn supervisor_edge_remediation() -> Value {
+    json!({
+        "edge": {
+            "action": "restart",
+            "service": "edge",
+            "label": "com.vzctl.edge",
+            "cli": "vzctl services restart edge",
+        }
+    })
 }
 
 fn resilience_doctor_status(state: &str, internal_ok: bool) -> Option<(CheckStatus, String)> {
@@ -4623,6 +4667,15 @@ mod tests {
         let expected: Value =
             serde_json::from_str(include_str!("../tests/golden/doctor.json")).unwrap();
         assert_eq!(doctor_json(&checks, 0), expected);
+    }
+
+    #[test]
+    fn supervisor_edge_remediation_includes_restart_action() {
+        let remediation = supervisor_edge_remediation();
+        assert_eq!(remediation["edge"]["action"], "restart");
+        assert_eq!(remediation["edge"]["service"], "edge");
+        assert_eq!(remediation["edge"]["label"], "com.vzctl.edge");
+        assert_eq!(remediation["edge"]["cli"], "vzctl services restart edge");
     }
 
     #[test]

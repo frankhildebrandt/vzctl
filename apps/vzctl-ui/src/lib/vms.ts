@@ -29,6 +29,19 @@ export type VmResources = {
   memory_mib: number;
 };
 
+export type VmStats = {
+  cpu: { percent: number | null };
+  memory: {
+    used_mib: number;
+    total_mib: number;
+    percent: number;
+  };
+  disk: {
+    read_iops: number | null;
+    write_iops: number | null;
+  };
+};
+
 export type VmMount = {
   name: string;
   source: string;
@@ -85,6 +98,7 @@ export const vmKeys = {
   list: () => [...vmKeys.all, "list"] as const,
   detail: (id: string) => [...vmKeys.all, "detail", id] as const,
   mounts: (id: string) => [...vmKeys.all, "mounts", id] as const,
+  stats: (id: string) => [...vmKeys.all, "stats", id] as const,
 };
 
 function asStringArray(value: unknown): string[] {
@@ -229,6 +243,14 @@ export async function stopVm(id: string): Promise<VzctlEnvelope> {
   return envelope;
 }
 
+export async function restartVm(id: string): Promise<VzctlEnvelope> {
+  const envelope = parseEnvelope(
+    await api.post(`/v1/vms/${encodeId(id)}/restart`),
+  );
+  assertEnvelopeOk(envelope, `vm restart ${id} failed`);
+  return envelope;
+}
+
 export async function deleteVm(id: string, force = false): Promise<VzctlEnvelope> {
   const qs = force ? "?force=1" : "";
   const envelope = parseEnvelope(await api.delete(`/v1/vms/${encodeId(id)}${qs}`));
@@ -317,6 +339,36 @@ export async function unmountVm(
 export async function listMounts(id: string): Promise<VmMount[]> {
   const envelope = parseEnvelope(await api.get(`/v1/vms/${encodeId(id)}/mounts`));
   return asMounts(envelope.mounts);
+}
+
+function asNullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+export async function fetchVmStats(id: string): Promise<VmStats> {
+  const raw = (await api.get(`/v1/vms/${encodeId(id)}/stats`)) as Record<
+    string,
+    unknown
+  >;
+  const cpu = (raw.cpu ?? {}) as Record<string, unknown>;
+  const memory = (raw.memory ?? {}) as Record<string, unknown>;
+  const disk = (raw.disk ?? {}) as Record<string, unknown>;
+  return {
+    cpu: { percent: asNullableNumber(cpu.percent) },
+    memory: {
+      used_mib: asNumber(memory.used_mib),
+      total_mib: asNumber(memory.total_mib),
+      percent: asNumber(memory.percent),
+    },
+    disk: {
+      read_iops: asNullableNumber(disk.read_iops),
+      write_iops: asNullableNumber(disk.write_iops),
+    },
+  };
 }
 
 export function isRunning(state: string | undefined): boolean {

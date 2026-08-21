@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { ChromeCrumbs } from "@/components/Chrome";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Terminal } from "@/components/Terminal";
 import {
@@ -216,9 +217,11 @@ export function ContainerDetailPage({
   if (project == null) {
     return (
       <section>
+        <ChromeCrumbs>
+          <Breadcrumbs items={crumbs} />
+        </ChromeCrumbs>
         <PageHeader
           layout="detail"
-          breadcrumbs={<Breadcrumbs items={crumbs} />}
           title={displayName}
         />
         <Alert title={t("common.error")}>{t("containers.noProject")}</Alert>
@@ -228,8 +231,10 @@ export function ContainerDetailPage({
 
   return (
     <section>
+      <ChromeCrumbs>
+        <Breadcrumbs items={crumbs} />
+      </ChromeCrumbs>
       <PageHeader
-        breadcrumbs={<Breadcrumbs items={crumbs} />}
         title={displayName}
         subtitle={
           <>

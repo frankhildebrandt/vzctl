@@ -82,6 +82,21 @@ export function DoctorPage() {
     },
   });
 
+  const restartEdge = useMutation({
+    mutationFn: async () => {
+      const envelope = parseEnvelope(await api.post("/v1/services/edge/restart"));
+      assertEnvelopeOk(envelope, getT()("doctor.edgeRestartFail"));
+      return envelope;
+    },
+    onSuccess: () => {
+      setActionMsg(t("doctor.edgeRestartOk"));
+      void queryClient.invalidateQueries({ queryKey: doctorKeys.all });
+    },
+    onError: (err) => {
+      setActionMsg(String(err));
+    },
+  });
+
   const checks = doctorQuery.data?.checks ?? [];
   const summary = doctorQuery.data?.summary;
   const hostTrust = useMemo(
@@ -103,6 +118,7 @@ export function DoctorPage() {
     installCa.isPending ||
     initCa.isPending ||
     installBindHelper.isPending ||
+    restartEdge.isPending ||
     doctorQuery.isFetching;
 
   return (
@@ -279,6 +295,10 @@ export function DoctorPage() {
                 setActionMsg(null);
                 installBindHelper.mutate();
               }}
+              onRestartEdge={() => {
+                setActionMsg(null);
+                restartEdge.mutate();
+              }}
             />
           ))
         )}
@@ -292,14 +312,18 @@ function DoctorCheckRow({
   busy,
   onInstallCa,
   onInstallBindHelper,
+  onRestartEdge,
 }: {
   check: DoctorCheck;
   busy: boolean;
   onInstallCa: () => void;
   onInstallBindHelper: () => void;
+  onRestartEdge: () => void;
 }) {
   const t = useT();
   const details = asRecord(check.details);
+  const remediation = asRecord(details?.remediation);
+  const edgeRemediation = asRecord(remediation?.edge);
   const showInstallCa =
     check.id === "certs.host_trust" &&
     Boolean(details?.present) &&
@@ -308,6 +332,10 @@ function DoctorCheckRow({
     check.id === "dns.bind_helper" &&
     Boolean(details?.requires_helper) &&
     check.status !== "ok";
+  const showRestartEdge =
+    check.id === "supervisor.health" &&
+    details?.vz_edge_ok === false &&
+    edgeRemediation?.action === "restart";
 
   return (
     <Card className="doctor-check">
@@ -324,6 +352,11 @@ function DoctorCheckRow({
       {showInstallBind ? (
         <Button disabled={busy} onClick={onInstallBindHelper}>
           {t("doctor.bindInstall")}
+        </Button>
+      ) : null}
+      {showRestartEdge ? (
+        <Button disabled={busy} onClick={onRestartEdge}>
+          {t("doctor.edgeRestart")}
         </Button>
       ) : null}
     </Card>

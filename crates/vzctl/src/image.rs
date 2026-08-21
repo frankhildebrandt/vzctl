@@ -1557,8 +1557,37 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<(), PullFailure> {
     fs::rename(&temporary, path).map_err(state_error)
 }
 
+pub const DEFAULT_IMAGE_TAG: &str = "v1";
+
 pub fn resolve_alias(images_dir: &Path, alias: &str) -> Result<Option<PathBuf>, String> {
     resolve_alias_pulled(images_dir, alias)
+}
+
+/// Prefer a tagged sealed image for VM create (`vm create --from <alias>`).
+pub fn resolve_alias_for_vm(
+    images_dir: &Path,
+    alias: &str,
+) -> Result<Option<PathBuf>, String> {
+    if tagged_seal_ready(images_dir, alias, DEFAULT_IMAGE_TAG)? {
+        return resolve_alias_tag(images_dir, alias, DEFAULT_IMAGE_TAG);
+    }
+    let Some(manifest) = read_alias_manifest(images_dir, alias)? else {
+        return Ok(None);
+    };
+    let Some(tags) = manifest.get("tags").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let mut tag_names: Vec<_> = tags.keys().cloned().collect();
+    tag_names.sort();
+    for tag in tag_names {
+        if tag == DEFAULT_IMAGE_TAG {
+            continue;
+        }
+        if tagged_seal_ready(images_dir, alias, &tag)? {
+            return resolve_alias_tag(images_dir, alias, &tag);
+        }
+    }
+    Ok(None)
 }
 
 /// Resolve the content-addressed pull object for an alias (ignores tags).
@@ -2095,7 +2124,7 @@ fn is_safe_alias(alias: &str) -> bool {
     !alias.is_empty()
         && alias
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
 }
 
 fn state_error(error: io::Error) -> PullFailure {
@@ -2187,6 +2216,11 @@ mod tests {
 
     #[test]
     fn versioned_ubuntu_and_debian_aliases_resolve_static_urls() {
+        assert!(is_safe_alias("ubuntu-24.04"));
+        assert!(is_safe_alias("debian-12"));
+        assert!(!is_safe_alias("../escape"));
+        assert!(!is_safe_alias(""));
+
         let ubuntu = catalog_entry("ubuntu-24.04").unwrap();
         assert_eq!(ubuntu.distribution, "Ubuntu");
         assert_eq!(ubuntu.release, "24.04 LTS");
@@ -2204,6 +2238,65 @@ mod tests {
         };
         assert!(url.contains("/bookworm/"));
         assert!(filename.contains("debian-12"));
+    }
+
+    #[test]
+    fn resolve_alias_for_vm_prefers_sealed_tag_over_pulled_object() {
+        let directory = temporary_directory("vm-alias-resolve");
+        fs::create_dir_all(directory.join("objects")).unwrap();
+        fs::create_dir_all(directory.join("aliases")).unwrap();
+        fs::create_dir_all(directory.join("sealed")).unwrap();
+        let object_digest = hash_file_from_bytes(b"pulled");
+        let relative_object = format!("objects/{object_digest}.raw");
+        fs::write(directory.join(&relative_object), b"pulled").unwrap();
+        let sealed = directory.join("sealed/ubuntu-24.04@v1.raw");
+        fs::write(&sealed, b"sealed").unwrap();
+        let marker = directory.join("ubuntu-24.04-v1.sealed.json");
+        fs::write(&marker, b"{}").unwrap();
+        write_json_atomic(
+            &directory.join("aliases/ubuntu-24.04.json"),
+            &json!({
+                "apiVersion": "vzctl.dev/image-alias/v1",
+                "canonical_alias": "ubuntu-24.04",
+                "aliases": ["ubuntu-24.04"],
+                "distribution": "Ubuntu",
+                "release": "24.04 LTS",
+                "architecture": "arm64",
+                "sealed": true,
+                "source": {
+                    "url": "https://example.test/ubuntu.img",
+                    "filename": "ubuntu.img",
+                    "format": "qcow2",
+                    "algorithm": "sha256",
+                    "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                },
+                "image": {
+                    "path": relative_object,
+                    "format": "raw",
+                    "sha256": object_digest,
+                },
+                "tags": {
+                    "v1": {
+                        "baked": true,
+                        "sealed": true,
+                        "sealed_image": {
+                            "path": "sealed/ubuntu-24.04@v1.raw",
+                            "format": "raw",
+                            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                            "marker": marker,
+                        }
+                    }
+                },
+            }),
+        )
+        .unwrap();
+
+        let resolved = resolve_alias_for_vm(&directory, "ubuntu-24.04")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, sealed);
+        assert_ne!(resolved, directory.join(relative_object));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2571,6 +2664,49 @@ mod tests {
             "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         );
         assert!(!result.catalog.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn list_reads_dotted_version_alias_manifests() {
+        let directory = std::env::temp_dir().join(format!(
+            "vzctl-image-list-dotted-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let aliases = directory.join("aliases");
+        fs::create_dir_all(&aliases).unwrap();
+        write_json_atomic(
+            &aliases.join("ubuntu-24.04.json"),
+            &json!({
+                "apiVersion": "vzctl.dev/image-alias/v1",
+                "canonical_alias": "ubuntu-24.04",
+                "aliases": ["ubuntu-24.04"],
+                "distribution": "Ubuntu",
+                "release": "24.04 LTS",
+                "architecture": "arm64",
+                "sealed": false,
+                "source": {
+                    "url": "https://example.test/ubuntu.img",
+                    "filename": "ubuntu.img",
+                    "format": "qcow2",
+                    "algorithm": "sha256",
+                    "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                },
+                "image": {
+                    "path": "objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.raw",
+                    "format": "raw",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                },
+            }),
+        )
+        .unwrap();
+
+        let result = list(&directory).unwrap();
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].alias, "ubuntu-24.04");
         fs::remove_dir_all(directory).unwrap();
     }
 

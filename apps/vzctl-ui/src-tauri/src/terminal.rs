@@ -96,6 +96,7 @@ pub fn terminal_open_exec(
             "cmd": cmd,
             "cols": cols,
             "rows": rows,
+            "env": { "TERM": "xterm-256color" },
         }),
     )?;
     let path = result["socket"]
