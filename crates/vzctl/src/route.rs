@@ -87,6 +87,19 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
             ExitCode::SUCCESS
         }
         Err(failure) => {
+            let failure = if options.action == Action::Status
+                && failure.message.contains("no active vzctl nftables")
+            {
+                Failure::new(
+                    failure.code,
+                    format!(
+                        "{}; empty nftables can also mean policy-drop with no extra allows — check route plan --format json",
+                        failure.message
+                    ),
+                )
+            } else {
+                failure
+            };
             emit_failure(options.format, options.action.command(), &failure);
             ExitCode::from(failure.code)
         }
@@ -338,7 +351,7 @@ fn print_human(envelope: &Value) {
     );
     for router in envelope["routers"].as_array().into_iter().flatten() {
         println!(
-            "  {}: default {}, {} allow rule(s), {}",
+            "  {}: default {}, {} allow rule(s), {}{}",
             router["vm_id"].as_str().unwrap_or("?"),
             router["forward_policy"].as_str().unwrap_or("drop"),
             router["rules"].as_array().map(Vec::len).unwrap_or(0),
@@ -346,6 +359,11 @@ fn print_human(envelope: &Value) {
                 "changed"
             } else {
                 "unchanged"
+            },
+            if router["rules"].as_array().map(Vec::len).unwrap_or(0) == 0 {
+                " (no extra allows; policy-drop may still be active)"
+            } else {
+                ""
             }
         );
         for change in router["policy_changes"].as_array().into_iter().flatten() {

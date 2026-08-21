@@ -18,6 +18,8 @@ vzctl up -C ./examples/edge-dmz
 vzctl apply -C ./examples/edge-dmz
 vzctl down -C ./examples/edge-dmz
 vzctl adopt -C ./examples/edge-dmz
+vzctl stack status -C ./examples/edge-dmz
+vzctl stack watch -C ./examples/edge-dmz --interval 5
 ```
 
 ## VMs
@@ -26,10 +28,14 @@ vzctl adopt -C ./examples/edge-dmz
 vzctl vm list
 vzctl vm start <id>
 vzctl vm stop <id>
+vzctl vm restart <id>
 vzctl vm delete <id>
 vzctl vm ps
 vzctl vm inspect <id>
 vzctl vm exec <id> -- <cmd>
+vzctl vm probe <id> --target HOST:PORT [--via dns|ip|both]
+vzctl vm health <id>
+vzctl vm stats <id>
 vzctl vm attach <id>
 vzctl vm logs <id>
 vzctl vm mount|unmount|mounts …
@@ -48,7 +54,7 @@ vzctl dns status|query|install-resolver|uninstall-resolver|install-bind-helper
 vzctl docker -- ps|inspect|start|stop|restart|run
 vzctl port list
 vzctl oidc status
-vzctl doctor
+vzctl doctor [--stack|-C dir]
 vzctl events subscribe --filter 'vm.*,apply.*'
 ```
 

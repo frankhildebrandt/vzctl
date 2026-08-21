@@ -24,7 +24,7 @@ struct Failure {
     message: String,
 }
 
-pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
+pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
     let args = args.collect::<Vec<_>>();
     let requested_format = requested_format(&args);
     let subcommand = args.first().map(String::as_str);
@@ -74,6 +74,8 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
         Some("net") => net_command(&args[1..], requested_format),
         Some("volume") => volume_command(&args[1..], requested_format),
         Some("mount") => mount_command(&args[1..], requested_format),
+        Some("status") => crate::observability::stack_status_command(&args[1..], socket_path),
+        Some("watch") => crate::observability::stack_watch_command(&args[1..], socket_path),
         Some(other) => {
             emit_failure(
                 requested_format,
@@ -1232,7 +1234,7 @@ fn emit_failure(format: Format, command: &str, failure: &Failure) {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl stack init [DIR] --name <project> [--cidr CIDR] [--force] [-C path] [--format human|json]"
+    "usage: vzctl stack init|status|watch|vm|net|volume|mount …"
 }
 
 fn vm_usage() -> &'static str {

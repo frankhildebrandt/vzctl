@@ -302,6 +302,13 @@ final class RestRouter: @unchecked Sendable {
                 return try workerJSON(["vm", "start", vmId, "--format", "json"])
             case ("stop", "POST"):
                 return try workerJSON(["vm", "stop", vmId, "--format", "json"])
+            case ("restart", "POST"):
+                return try workerJSON(["vm", "restart", vmId, "--format", "json"])
+            case ("stats", "GET"):
+                return try rpcOK(
+                    "vm.agent.stats",
+                    params: .object(["vm_id": .string(vmId)])
+                )
             case ("mounts", "GET"):
                 return try workerJSON(["vm", "mounts", vmId, "--format", "json"])
             case ("mounts", "POST"):

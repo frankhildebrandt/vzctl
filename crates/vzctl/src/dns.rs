@@ -552,6 +552,7 @@ fn status_command(options: &Options, socket_path: &Path) -> ExitCode {
                         .unwrap_or("listeners or zone unhealthy")
                 )
             };
+            let sections = crate::observability::dns_sections(&dns);
             let envelope = json!({
                 "apiVersion": API_VERSION,
                 "command": "dns.status",
@@ -562,11 +563,32 @@ fn status_command(options: &Options, socket_path: &Path) -> ExitCode {
                     "ok": ok,
                 },
                 "dns": dns,
+                "host_resolver": sections["host_resolver"],
+                "bridge_dns": sections["bridge_dns"],
+                "upstream": sections["upstream"],
+                "last_probe": sections["last_probe"],
             });
             match options.format {
                 Format::Json => println!("{envelope}"),
                 Format::Human => {
                     println!("{message}");
+                    println!(
+                        "  host_resolver: {}",
+                        if sections["host_resolver"]["ok"] == true {
+                            "OK"
+                        } else {
+                            "FAIL"
+                        }
+                    );
+                    println!(
+                        "  bridge_dns: {}",
+                        if sections["bridge_dns"]["ok"] == true {
+                            "OK"
+                        } else {
+                            "FAIL"
+                        }
+                    );
+                    println!("  upstream: {}", sections["upstream"]["name"]);
                     if let Some(listeners) = dns["listeners"].as_array() {
                         for listener in listeners {
                             if let Some(value) = listener.as_str() {
@@ -640,6 +662,20 @@ fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure
         .get("result")
         .cloned()
         .ok_or_else(|| Failure::new(EXIT_SUPERVISOR, "supervisor response has no result"))
+}
+
+/// Resolve A records via the host listener. Empty vec means NXDOMAIN/no answers.
+pub(crate) fn lookup_a_addresses(name: &str) -> Result<Vec<String>, String> {
+    match execute_query(name, QueryType::A, DEFAULT_DNS_SERVER) {
+        Ok(response) if response.rcode == 0 && !response.truncated => Ok(response
+            .answers
+            .into_iter()
+            .filter(|answer| answer.record_type == "A")
+            .map(|answer| answer.data)
+            .collect()),
+        Ok(_) => Err(format!("host DNS lookup for {name} failed")),
+        Err(failure) => Err(failure.message),
+    }
 }
 
 fn execute_query(
@@ -1679,6 +1715,80 @@ fn usage() -> &'static str {
     "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA|PTR] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
 }
 
+pub(crate) struct DoctorHostListenerCheck {
+    pub(crate) id: &'static str,
+    pub(crate) ok: bool,
+    pub(crate) message: String,
+    pub(crate) details: Value,
+}
+
+/// Live UDP probe for the host DNS listener (catches stale :15353 sockets).
+pub(crate) fn doctor_host_listener_check(port: u16, port_in_use: bool) -> DoctorHostListenerCheck {
+    let server = format!("127.0.0.1:{port}");
+    let details = json!({
+        "server": server,
+        "port_in_use": port_in_use,
+    });
+    if !port_in_use {
+        return DoctorHostListenerCheck {
+            id: "dns.host_probe",
+            ok: true,
+            message: format!("host DNS probe skipped; {server} is not in use"),
+            details,
+        };
+    }
+    match probe_host_listener(&server) {
+        Ok(()) => DoctorHostListenerCheck {
+            id: "dns.host_probe",
+            ok: true,
+            message: format!("host DNS responds on {server}"),
+            details,
+        },
+        Err(error) => DoctorHostListenerCheck {
+            id: "dns.host_probe",
+            ok: false,
+            message: format!("host DNS on {server} does not respond ({error})"),
+            details: json!({
+                "server": server,
+                "port_in_use": port_in_use,
+                "error": error,
+            }),
+        },
+    }
+}
+
+fn probe_host_listener(server: &str) -> Result<(), String> {
+    let address = server.parse::<SocketAddr>().map_err(|_| {
+        format!("invalid DNS server {server}; expected IP:port")
+    })?;
+    let transaction_id = transaction_id();
+    let request = build_query(transaction_id, "vz.test", QueryType::A);
+    let bind_address = match address.ip() {
+        IpAddr::V4(_) => "0.0.0.0:0",
+        IpAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_address)
+        .map_err(|error| format!("create UDP socket: {error}"))?;
+    socket
+        .set_read_timeout(Some(DNS_TIMEOUT))
+        .map_err(|error| format!("set UDP timeout: {error}"))?;
+    socket
+        .connect(address)
+        .map_err(|error| format!("connect UDP socket: {error}"))?;
+    socket
+        .send(&request)
+        .map_err(|error| format!("send UDP query: {error}"))?;
+    let mut buffer = [0_u8; 512];
+    let count = socket
+        .recv(&mut buffer)
+        .map_err(|error| format!("receive UDP response: {error}"))?;
+    if count >= DNS_HEADER_LENGTH {
+        Ok(())
+    } else {
+        Err("response is shorter than DNS header".into())
+    }
+}
+
 pub(crate) struct DoctorBindHelperCheck {
     pub(crate) id: &'static str,
     pub(crate) ok: bool,
@@ -1809,6 +1919,14 @@ mod tests {
             project: "edge-dmz".to_string(),
             owner: owner.to_string(),
         }
+    }
+
+    #[test]
+    fn doctor_host_listener_probe_skips_when_port_is_free() {
+        let check = doctor_host_listener_check(15353, false);
+        assert!(check.ok);
+        assert_eq!(check.id, "dns.host_probe");
+        assert!(check.message.contains("skipped"));
     }
 
     #[test]

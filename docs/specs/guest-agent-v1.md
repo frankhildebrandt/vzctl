@@ -166,12 +166,13 @@ a `rotate_token` method are not part of v1.
 | `version` | `{}` | `agent_version`, `v`, `capabilities` | 1 s / 5 s |
 | `exec` | `cmd`, optional `cwd`, `env`, `stdin_b64`, `timeout_ms`, `tty`, `cols`, `rows` | one-shot: `exit`/`stdout`/`stderr`/`truncated`; tty: `upgraded: true` then mux | 30 s / 600 s (one-shot); tty until exit/disconnect |
 | `report_ip` | `{}` | `interfaces` array | 2 s / 10 s |
-| `health` | `{}` | `status`, `uptime_ms`, `checks` | 2 s / 10 s |
+| `health` | `{}` | `status` (`ok`\|`degraded`\|`down`), `uptime_ms`, `queue_depth`, `p99_exec_ms`, `checks`, optional `last_error` | 2 s / 10 s |
 | `time_hint` | `host_unix_ms`, `reason` | `observed_guest_unix_ms`, `offset_ms`, `action` | 2 s / 5 s |
 | `fs.mount` | `name`, `target`, optional `read_only` | `mounted: true`, `name`, `target` | 10 s / 30 s |
 | `fs.unmount` | `name` and/or `target` | `mounted: false`, `name`, `target` | 10 s / 30 s |
 | `ca_inject` | `pem`, `fingerprint`, optional `name` | `installed: true`, `fingerprint` | 15 s / 60 s |
-| `network_probe` | `url`, optional `timeout_ms` | `classification`, `phase`, `status_code`, `latency_ms`, `redirected`, `error_code` | 5 s / 30 s |
+| `network_probe` | `url` **or** `target` (+ optional `via`, `connect_ip`, `timeout_ms`) | URL: `classification`/`phase`/…; target: `resolved_ips`, `chosen_ip`, `connect_ms`, `error_stage`, `dns`/`ip` legs | 5 s / 30 s |
+| `stats` | `{}` | `cpu.percent`, `memory.{used_mib,total_mib,percent}`, `disk.{read_iops,write_iops}`, `load1`, `mem_used_pct`, optional `top_process` | 2 s / 10 s |
 
 Capability `fs_mount` advertises the virtiofs bind helpers. The agent invokes
 `/usr/local/lib/vzctl/virtiofs-bind` via `sudo -n` (installed by system
@@ -191,12 +192,42 @@ All time values are integer milliseconds. A caller may choose a shorter
 deadline. Values above the maximum return `proto`; zero and negative values are
 invalid.
 
+### `stats`
+
+Capability `stats` samples guest CPU, memory and disk IOPS from `/proc`.
+The agent keeps the previous `/proc/stat` and `/proc/diskstats` snapshot;
+`cpu.percent` and `disk.*_iops` are deltas and `null` on the first call.
+Memory comes from `MemTotal`/`MemAvailable`. IOPS sum whole disks (`vda`,
+`nvme0n1`) and skip partitions plus loop/ram/zram devices.
+
+```json
+{
+  "cpu": { "percent": 12.4 },
+  "memory": { "used_mib": 512, "total_mib": 1024, "percent": 50.0 },
+  "disk": { "read_iops": 3.2, "write_iops": 1.1 }
+}
+```
+
+Older agents without the capability return `unsupported`. Hosts should show
+n/a until `vzctl vm agent upgrade`.
+
 ### `network_probe`
 
-Die optionale Capability trennt DNS-, TCP-, TLS- und HTTP-Phase und
-klassifiziert `online`, `captive` oder `offline`. Redirects werden nicht
-verfolgt. Die URL muss HTTP(S) sein und darf keine Credentials enthalten.
-Logs und Fehler enthalten weder URL/Query noch öffentliche IP oder Secrets.
+Die optionale Capability trennt DNS-, TCP-, TLS- und HTTP-Phase.
+
+Zwei Parameter-Modi (genau einer Pflicht):
+
+- **HTTP** (`url`): klassifiziert `online`, `captive` oder `offline`. Redirects
+  werden nicht verfolgt. Die URL muss HTTP(S) sein und darf keine Credentials
+  enthalten. Logs und Fehler enthalten weder URL/Query noch öffentliche IP oder
+  Secrets.
+- **Connect** (`target` = `host:port`): Guest-DNS plus TCP-Connect. `via` ist
+  `dns`, `ip` oder `both` (Default `both`). Bei `via=ip`/`both` darf der Host
+  `connect_ip` setzen (vom Host-Resolver aufgelöst), damit Guest-DNS-Ausfälle
+  den TCP-Pfad nicht blockieren. Antwort enthält `resolved_ips`, `chosen_ip`,
+  `connect_ms`, `error_stage` (`dns`|`tcp`|`timeout`) und bei `both` die Legs
+  `dns`/`ip` mit `ok`.
+
 Fehlt die Capability bei einem alten Agent, gilt das Ergebnis als `unknown`
 und degradiert das interne Netz nicht.
 
@@ -258,7 +289,8 @@ Interactive sessions negotiate a connection upgrade. The helper must open a
 - **no** `stdin_b64` (invalid with `tty`).
 
 Agents advertise capability `exec_tty`. Without it, `tty: true` returns
-`unsupported`.
+`unsupported`. When `env.TERM` is omitted, the agent defaults
+`TERM=xterm-256color` so ncurses tools can initialize.
 
 Success response:
 
@@ -325,9 +357,11 @@ must not be accepted as a guest address.
 
 ### `health`
 
-`status` is `ok` or `degraded`. `checks` is an object whose values contain at
-least `ok: boolean` and may include a diagnostic `message`. Health must not
-expose secrets, arbitrary files or process environments.
+`status` is `ok`, `degraded`, or `down`. `down` is reserved for missing/untrusted
+token or handshake failure. `degraded` is set when in-flight RPCs (`queue_depth`)
+are at least 2 or p99 exec latency exceeds 5s. `checks` is an object whose values
+contain at least `ok: boolean` and may include a diagnostic `message`. Health must
+not expose secrets, arbitrary files or process environments.
 
 ### `time_hint`
 

@@ -74,8 +74,9 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 
 | Code | Bedeutung | Quelle/Beispiel |
 |---|---|---|
-| `0` | Erfolg; WARN erlaubt | global, `doctor` |
-| `2` | Usage oder unbekannter Command/Flag | aktuelle CLI |
+| `0` | Erfolg; WARN erlaubt | global, `doctor`, `stack.status` healthy |
+| `1` | Stack degraded | `stack.status` — CI soll JSON `summary.health` lesen |
+| `2` | Usage, unbekannter Command/Flag, oder Stack critical | CLI Usage; `stack.status` |
 | `3` | ungültige Eingabe oder Validierung | `doctor`-Optionen |
 | `5` | unvollständiges Apply-Journal; Resume/Abort nötig | ADR 0003 |
 | `6` | Apply-Lease wird von anderem Holder gehalten | ADR 0003 |
@@ -111,6 +112,10 @@ Payload: `version.cli`. Erfolg ist `status=ok`, Exit `0`.
 
 Payload: `checks[]` mit stabilen Check-IDs. Die Summary enthält `ok`,
 `warnings` und `failures`. Exitcodes: `0`, `3`, `10`, `11`.
+
+`vzctl doctor --stack|-C <dir>` erweitert die Checks um Stack-Observability
+(VMs running, Agent health, Guest-DNS-Probe, deklarative YAML-Probes).
+Hints sind actionable (z. B. `vm agent upgrade`, Resolver installieren).
 
 ### `vzctl plan|diff|up|apply|down|adopt`
 
@@ -206,6 +211,26 @@ JSON-Payloads: `stack.init` → `path`, `name`, `project`; `stack.vm.add` →
 `path`, `vm`, `ip`; Remove-Commands → `path` plus entfernter Key (`vm`,
 `network`, `volume`); Mount-Commands → `path`, `vm`, `source`, `target`,
 optional `readOnly`. Exitcodes: `0`, `2`, `3`.
+
+### `vzctl stack status|watch`
+
+```bash
+vzctl stack status [-C dir] [--format human|json] [--verbose]
+vzctl stack watch [-C dir] [--filter glob] [--interval sec]
+vzctl status -C dir
+```
+
+`stack.status` aggregiert VM-Laufzustand, Agent health/stats, Guest-DNS-Probe
+gegen Peer-FQDNs (`{vm}.{net}.{project}.vz.test:22`) und deklarative
+`spec.observability.probes`. JSON-Envelope `apiVersion: vzctl.dev/v1` mit
+`warnings[]` (stabile Codes: `DNS_GUEST_PROBE_FAIL`, `DNS_HOST_PROBE_FAIL`,
+`AGENT_DEGRADED`, `AGENT_EXEC_TIMEOUT`, `VM_NOT_RUNNING`, `AGENT_NOT_READY`,
+`ROUTE_STATUS_AMBIGUOUS`, `INGRESS_UNREACHABLE`, `MOUNT_MISSING`) und
+`summary.health` `ok`|`degraded`|`critical`. Exit `0`/`1`/`2`. Ziel < 10s.
+
+`stack.watch` korreliert periodische Status-Ticks mit `events.subscribe` und
+schreibt NDJSON auf stdout. `--filter` ist eine Komma-Liste von Globs
+(`vm.*`, `probe.*`, `stack.status`). Ctrl-C beendet mit Exit `0`.
 
 ### `vzctl validate`
 
@@ -310,18 +335,19 @@ APFS-Space-Smoke stehen in
 Der Identity-Vertrag und Live-Boot-Nachweis stehen in
 [`p1-identity-reset.md`](../spikes/p1-identity-reset.md).
 
-### `vzctl vm list|start|stop|delete` und `vzctl ps`
+### `vzctl vm list|start|stop|restart|delete` und `vzctl ps`
 
 ```bash
 vzctl vm list [--format human|json]
 vzctl vm start <id> [--format human|json]
 vzctl vm stop <id> [--wait true|false] [--format human|json]
+vzctl vm restart <id> [--format human|json]
 vzctl vm delete <id> [--force] [--format human|json]
 vzctl vm modify <id> [--cpus N] [--memory <SIZE>] [--format human|json]
 vzctl ps [--format human|json]
 ```
 
-Kanonische Commands sind `vm.list`, `vm.start`, `vm.stop`, `vm.delete`,
+Kanonische Commands sind `vm.list`, `vm.start`, `vm.stop`, `vm.restart`, `vm.delete`,
 `vm.modify` und `ps`. `vm.list` und `ps` mergen lokale Bundles unter `$VZCTL_STATE_DIR/vms/*/vm.json`
 mit dem Supervisor-RPC `vm.list` (Runtime-State/PID) und `net.list`
 (Attachments → `ips[]` / `networks[{name,ip}]`). Fehlen Attachments, greift der
@@ -332,7 +358,7 @@ Envelope liefert `status=warn`, Exit `0`.
 `vm.start` prüft das Bundle-Manifest und ruft `vm.start` mit `vm_id` und
 `bundle` auf. `vm.stop` ruft `vm.stop` auf und wartet standardmäßig bis der
 Helper nicht mehr `starting`/`running` ist (`--wait false` überspringt das
-Warten). `vm.delete` stoppt, detacht Netz-Attachments der VM, und löscht nur
+Warten). `vm.restart` ist `stop --wait` gefolgt von `start`. `vm.delete` stoppt, detacht Netz-Attachments der VM, und löscht nur
 Bundles mit `managed-by=vzctl`. Primär ruft es Supervisor-`vm.purge` auf
 (Helper-Bookkeeping, SQLite-`network_attachments`/`port_forwards`, DNS-Reload).
 `--force` toleriert Supervisor-/Stop-/Detach-Fehler und löscht danach das
@@ -356,12 +382,15 @@ nächsten Helper-Start. Läuft die VM, liefert das Envelope
 `vm.resources`. Usage ohne Flags liefert `2`, ungültige IDs/Werte `3`,
 fehlendes/ungültiges Manifest `16`.
 
-### `vzctl vm inspect|logs|exec|transfer|attach|services|ps`
+### `vzctl vm inspect|logs|exec|transfer|attach|services|ps|probe|health|stats`
 
 ```bash
 vzctl vm inspect <id> [--format human|json]
 vzctl vm logs <id> [-f|--follow] [--tail N] [--format human|json]
 vzctl vm exec <id> [-i|--interactive] [-t|--tty] [--cwd PATH] [--env K=V]... [--timeout-ms N] [--] <cmd> [args...]
+vzctl vm probe <id> --target HOST:PORT [--via dns|ip|both] [--format human|json]
+vzctl vm health <id> [--format human|json]
+vzctl vm stats <id> [--format human|json]
 vzctl vm transfer <id> <src> <dst> [--format human|json]
 vzctl vm attach <id>
 vzctl vm services <id> [start|stop|restart <unit>] [--format human|json]
@@ -369,9 +398,18 @@ vzctl vm ps <id> [--format human|json]
 vzctl vm agent upgrade <id>|--all [--format human|json]
 ```
 
-Kanonische Commands sind `vm.inspect`, `vm.logs`, `vm.exec`, `vm.transfer`,
+Kanonische Commands sind `vm.inspect`, `vm.logs`, `vm.exec`, `vm.probe`,
+`vm.health`, `vm.stats`, `vm.transfer`,
 `vm.attach`, `vm.services`, `vm.ps` (Gast-Prozessliste; Host-Übersicht bleibt
 `vzctl ps`) und `vm.agent.upgrade` (Guest-Utils-Live-Rollout).
+
+`vm.probe` ruft Guest-Agent `network_probe` mit Connect-`target` auf. `via=ip`
+oder `both` löst den Hostnamen über Host-DNS (`127.0.0.1:15353`) auf und setzt
+`connect_ip`, damit Guest-DNS-Ausfälle den TCP-Pfad nicht blockieren.
+Erwartetes Lab-Muster: `dns FAIL` + `ip OK`. `vm.health` / `vm.stats` mappen
+1:1 auf Agent-RPCs. `inspect` enthält additiv `health_detail`.
+
+Bei `vm.exec` Exit `18` schreibt die CLI Agent-Health und Stats auf stderr.
 
 `inspect` merged Bundle-Manifest, Runtime-`vm.list`, Attachments und optional
 Agent `health`/`version`/`report_ip`. Das Envelope enthält additiv
@@ -463,7 +501,9 @@ vzctl dns query <name> \
 
 `dns.status` ruft Supervisor-RPC `dns.status` auf und spiegelt
 `DNSServer.health()` / `daemon.health.dns` (`ok`, `listeners`, `records`,
-`zones`, `ttl`, `upstream`, `last_error`). Kanonischer Command: `dns.status`.
+`zones`, `ttl`, `upstream`, `last_error`). Human- und JSON-Ausgabe trennen
+die Sektionen `host_resolver`, `bridge_dns`, `upstream` und `last_probe`.
+Kanonischer Command: `dns.status`.
 `ok=true` liefert Exit `0`; Supervisor down oder `ok=false` liefert Exit `10`
 mit `status=fail` und dem `dns`-Payload. Usage `2`.
 

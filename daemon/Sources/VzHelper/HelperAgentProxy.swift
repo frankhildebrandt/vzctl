@@ -141,25 +141,43 @@ enum HelperAgentRequest {
         return CAInjectParams(pem: pem, fingerprint: fingerprint, name: name)
     }
 
-    static func parseNetworkProbe(_ value: JSONValue?) throws -> (url: String, timeout: Int) {
-        guard case let .object(params)? = value,
-              case let .string(url)? = params["url"],
-              !url.isEmpty
-        else {
-            throw RouteApplyError.invalid("agent.network_probe requires url")
+    static func parseNetworkProbe(_ value: JSONValue?) throws -> [String: Any] {
+        guard case let .object(params)? = value else {
+            throw RouteApplyError.invalid("agent.network_probe params must be an object")
         }
-        let timeout: Int
+        var forwarded: [String: Any] = [:]
+        if case let .string(url)? = params["url"], !url.isEmpty {
+            forwarded["url"] = url
+        }
+        if case let .string(target)? = params["target"], !target.isEmpty {
+            forwarded["target"] = target
+        }
+        if forwarded["url"] != nil && forwarded["target"] != nil {
+            throw RouteApplyError.invalid("agent.network_probe cannot set both url and target")
+        }
+        if forwarded["url"] == nil && forwarded["target"] == nil {
+            throw RouteApplyError.invalid("agent.network_probe requires url or target")
+        }
+        if case let .string(via)? = params["via"] {
+            guard ["dns", "ip", "both"].contains(via) else {
+                throw RouteApplyError.invalid("agent.network_probe via must be dns, ip, or both")
+            }
+            forwarded["via"] = via
+        }
+        if case let .string(connectIP)? = params["connect_ip"], !connectIP.isEmpty {
+            forwarded["connect_ip"] = connectIP
+        }
         if case let .number(raw)? = params["timeout_ms"] {
             guard raw.rounded() == raw, raw >= 100, raw <= 30_000 else {
                 throw RouteApplyError.invalid(
                     "agent.network_probe timeout_ms must be 100...30000"
                 )
             }
-            timeout = Int(raw)
+            forwarded["timeout_ms"] = Int(raw)
         } else {
-            timeout = 5_000
+            forwarded["timeout_ms"] = 5_000
         }
-        return (url, timeout)
+        return forwarded
     }
 }
 
@@ -173,6 +191,7 @@ enum HelperAgentProxy {
         "agent.ping",
         "agent.ca_inject",
         "agent.network_probe",
+        "agent.stats",
     ]
 
     static func run(
@@ -217,7 +236,7 @@ enum HelperAgentProxy {
                 "truncated": .bool(result.truncated),
             ])
         case "agent.health":
-            return .object(["status": .string(try client.health())])
+            return JSONValue.fromAny(try client.health())
         case "agent.version":
             let version = try client.version()
             return .object([
@@ -266,20 +285,16 @@ enum HelperAgentProxy {
             }
             return .object(response)
         case "agent.network_probe":
-            let request = try HelperAgentRequest.parseNetworkProbe(params)
-            let result = try client.networkProbe(
-                url: request.url,
-                timeoutMilliseconds: request.timeout,
-                timeout: TimeInterval(request.timeout) / 1_000 + 5
+            let forwarded = try HelperAgentRequest.parseNetworkProbe(params)
+            let timeoutMS = forwarded["timeout_ms"] as? Int ?? 5_000
+            return JSONValue.fromAny(
+                try client.networkProbe(
+                    params: forwarded,
+                    timeout: TimeInterval(timeoutMS) / 1_000 + 5
+                )
             )
-            return .object([
-                "classification": .string(result.classification),
-                "phase": .string(result.phase),
-                "status_code": result.statusCode.map { .number(Double($0)) } ?? .null,
-                "latency_ms": .number(Double(result.latencyMS)),
-                "redirected": .bool(result.redirected),
-                "error_code": result.errorCode.map(JSONValue.string) ?? .null,
-            ])
+        case "agent.stats":
+            return JSONValue.fromAny(try client.stats())
         default:
             throw RouteApplyError.invalid("unknown agent method: \(method)")
         }

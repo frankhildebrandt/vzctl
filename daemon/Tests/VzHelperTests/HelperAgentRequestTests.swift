@@ -63,6 +63,7 @@ import VzDaemonKit
     #expect(HelperAgentProxy.methods.contains("agent.report_ip"))
     #expect(HelperAgentProxy.methods.contains("agent.ping"))
     #expect(HelperAgentProxy.methods.contains("agent.ca_inject"))
+    #expect(HelperAgentProxy.methods.contains("agent.stats"))
 }
 
 @Test func agentCAInjectParsesRequiredParamsAndDefaultName() throws {
@@ -108,6 +109,32 @@ import VzDaemonKit
     }
 }
 
+@Test func agentNetworkProbeParsesTargetMode() throws {
+    let parsed = try HelperAgentRequest.parseNetworkProbe(
+        .object([
+            "vm_id": .string("neti/neti-home"),
+            "target": .string("main-node.core.neti.vz.test:4222"),
+            "via": .string("both"),
+            "connect_ip": .string("10.90.0.2"),
+            "timeout_ms": .number(1_500),
+        ])
+    )
+    #expect(parsed["target"] as? String == "main-node.core.neti.vz.test:4222")
+    #expect(parsed["via"] as? String == "both")
+    #expect(parsed["connect_ip"] as? String == "10.90.0.2")
+    #expect(parsed["timeout_ms"] as? Int == 1_500)
+}
+
+@Test func agentNetworkProbeRejectsUrlAndTargetTogether() {
+    #expect(throws: RouteApplyError.self) {
+        try HelperAgentRequest.parseNetworkProbe(
+            .object([
+                "url": .string("https://captive.apple.com/"),
+                "target": .string("10.90.0.2:4222"),
+            ])
+        )
+    }
+}
 @Test func muxEncodeDecodeRoundTrip() throws {
     let payload = Data("pty-out".utf8)
     let encoded = try GuestAgentMux.encode(type: .stdout, payload: payload)

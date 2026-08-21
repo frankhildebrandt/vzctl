@@ -32,6 +32,10 @@ vzctl stack volume remove <name>
 vzctl stack mount add <vm> --source <volume> --target <path> [--read-only]
 vzctl stack mount remove <vm> --target <path>
 
+vzctl stack status [-C dir] [--format human|json] [--verbose]
+vzctl stack watch [-C dir] [--filter glob] [--interval sec]
+vzctl status -C dir                                 # alias of stack status
+
 vzctl validate [-C <dir|file>]          # offline schema + refs
 vzctl validate --schema                 # JSON Schema to stdout
 vzctl plan|diff [-C path]
@@ -53,6 +57,7 @@ vzctl adopt [-C path]                   # report-only stale helper locks
 | `down` | graceful stop (reverse dependsOn) |
 | `down --purge` | SIGKILL helpers, delete managed resources |
 | `adopt` | report stale locks only |
+| `stack status` | aggregate VM/agent/DNS/route health; exit 0 ok, 1 degraded, 2 critical |
 
 Incomplete apply journal → `--resume` or `--abort` (exit 5). Lease held → exit 6.
 
@@ -86,9 +91,12 @@ Prefer the YAML + apply. Imperative create is for one-off VMs:
 vzctl vm create <id> --from <sealed> --disk <GiB> [--cpus N] [--memory SIZE] \
   [--network name] [--role router|docker] [--cloud-init PATH] [--project P] \
   [--root-password <secret>]
-vzctl vm list|start|stop|delete|inspect|logs|ps|services <id>
+vzctl vm list|start|stop|restart|delete|inspect|logs|ps|services <id>
 vzctl vm modify <id> [--cpus N] [--memory SIZE]   # no hotplug; restart needed
 vzctl vm exec <id> [-it] [--cwd PATH] [--env K=V]... -- <cmd> [args...]
+vzctl vm probe <id> --target HOST:PORT [--via dns|ip|both]
+vzctl vm health <id>
+vzctl vm stats <id>
 vzctl vm transfer <id> <src> <dst>                # max 256 KiB
 vzctl vm attach <id>                              # detach: Ctrl-P Ctrl-Q
 vzctl vm mount|unmount|mounts ...
@@ -112,7 +120,7 @@ vzctl dns install-bind-helper|uninstall-bind-helper
 vzctl docker [--project P] ps|inspect|start|stop|restart|run ...
 vzctl port list
 vzctl services status|start|stop|restart [all|net|edge|supervisor]
-vzctl doctor
+vzctl doctor [--stack|-C dir]
 vzctl certs ca init|install
 vzctl oidc status|clients [--project P]
 ```
@@ -135,7 +143,7 @@ vzctl skill help
 
 ## Exit codes
 
-Use `vzctl help exit-codes`. Short map: `0` ok (warnings allowed), `2` usage,
-`3` invalid, `5` journal, `6` lease, `10` supervisor, `11` host, `12` unavailable,
+Use `vzctl help exit-codes`. Short map: `0` ok (warnings allowed), `1` stack degraded,
+`2` usage or stack critical, `3` invalid, `5` journal, `6` lease, `10` supervisor, `11` host, `12` unavailable,
 `13-16` image/disk, `17` net, `18` route/agent, `19` resolver, `20` DNS query,
 `21-23` image fetch, `24` reconciler, `25` services.

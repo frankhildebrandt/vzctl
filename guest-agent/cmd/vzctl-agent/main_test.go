@@ -49,7 +49,7 @@ func TestHelloPingVersionHealthExecAndReportIP(t *testing.T) {
 	assertOK(t, hello)
 	result := hello["result"].(map[string]any)
 	caps := result["capabilities"].([]any)
-	if len(caps) != 10 {
+	if len(caps) != 11 {
 		t.Fatalf("capabilities = %#v", caps)
 	}
 
@@ -108,7 +108,7 @@ func TestTimeHintNoneBelowThreshold(t *testing.T) {
 			t.Fatal("clock must not be stepped")
 			return nil
 		},
-	})
+	}, nil, nil)
 	if !got.OK {
 		t.Fatalf("response = %#v", got)
 	}
@@ -130,7 +130,7 @@ func TestTimeHintStepsAboveThreshold(t *testing.T) {
 		thresholdMS: 1_000,
 		now:         func() time.Time { return now },
 		step:        func(value time.Time) error { steppedTo = value; return nil },
-	})
+	}, nil, nil)
 	if !got.OK || got.Result.(map[string]any)["action"] != "stepped" {
 		t.Fatalf("response = %#v", got)
 	}
@@ -153,7 +153,7 @@ func TestTimeHintDryRunSkipsAndValidatesReason(t *testing.T) {
 	got := handleRequestWithPolicy(context.Background(), request{
 		V: 1, ID: "time-dry", Method: "time_hint",
 		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"manual"}`),
-	}, policy)
+	}, policy, nil, nil)
 	if !got.OK || got.Result.(map[string]any)["action"] != "skipped" {
 		t.Fatalf("response = %#v", got)
 	}
@@ -161,7 +161,7 @@ func TestTimeHintDryRunSkipsAndValidatesReason(t *testing.T) {
 	invalid := handleRequestWithPolicy(context.Background(), request{
 		V: 1, ID: "time-invalid", Method: "time_hint",
 		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"resume"}`),
-	}, policy)
+	}, policy, nil, nil)
 	if invalid.OK || invalid.Error == nil || invalid.Error.Code != "proto" {
 		t.Fatalf("response = %#v", invalid)
 	}
@@ -336,6 +336,30 @@ func readResponse(t *testing.T, conn net.Conn) map[string]any {
 		t.Fatal(err)
 	}
 	return got
+}
+
+func TestSanitizedTTYEnvironmentDefaultsTerm(t *testing.T) {
+	env := sanitizedEnvironment(nil, true)
+	if got := lookupEnv(env, "TERM"); got != "xterm-256color" {
+		t.Fatalf("TERM = %q", got)
+	}
+	if got := lookupEnv(sanitizedEnvironment(nil, false), "TERM"); got != "" {
+		t.Fatalf("non-tty TERM = %q", got)
+	}
+	override := sanitizedEnvironment(map[string]string{"TERM": "vt100"}, true)
+	if got := lookupEnv(override, "TERM"); got != "vt100" {
+		t.Fatalf("override TERM = %q", got)
+	}
+}
+
+func lookupEnv(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if len(entry) >= len(prefix) && entry[:len(prefix)] == prefix {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
 }
 
 func pointer(value string) *string {

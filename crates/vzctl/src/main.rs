@@ -25,6 +25,7 @@ mod image;
 mod ingress;
 mod mounts;
 mod network;
+mod observability;
 mod oidc;
 mod port;
 mod progress;
@@ -81,6 +82,7 @@ enum OutputFormat {
 struct DoctorOptions {
     format: OutputFormat,
     min_free_gib: u64,
+    stack: Option<PathBuf>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -249,7 +251,7 @@ struct BuilderVmBackend {
 struct NativeVmDiskBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CheckStatus {
+pub(crate) enum CheckStatus {
     Ok,
     Warn,
     Fail,
@@ -274,11 +276,11 @@ impl CheckStatus {
 }
 
 #[derive(Debug)]
-struct Check {
-    id: &'static str,
-    status: CheckStatus,
-    message: String,
-    details: Value,
+pub(crate) struct Check {
+    pub(crate) id: &'static str,
+    pub(crate) status: CheckStatus,
+    pub(crate) message: String,
+    pub(crate) details: Value,
 }
 
 impl Check {
@@ -359,7 +361,9 @@ fn main() -> ExitCode {
         Some("route") => help::with_help("route", args, |args| {
             route::command(args, &supervisor_socket_path())
         }),
-        Some("stack") => help::with_help("stack", args, stack::command),
+        Some("stack") => help::with_help("stack", args, |args| {
+            stack::command(args, &supervisor_socket_path())
+        }),
         Some("dns") => help::with_help("dns", args, |args| {
             dns::command(args, &supervisor_socket_path())
         }),
@@ -379,6 +383,9 @@ fn main() -> ExitCode {
         Some("vm") => help::with_help("vm", args, vm_command),
         Some("ps") => help::with_help("ps", args, |args| {
             vm::ps_command(args, &supervisor_socket_path())
+        }),
+        Some("status") => help::with_help("stack", args, |args| {
+            observability::status_alias(args, &supervisor_socket_path())
         }),
         Some(other) => {
             eprintln!("unknown command: {other}");
@@ -1564,7 +1571,7 @@ fn vm_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     match args.next().as_deref() {
         None | Some("help") | Some("-h") | Some("--help") => {
             eprintln!(
-                "usage: vzctl vm create|list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify ..."
+                "usage: vzctl vm create|list|start|stop|restart|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify ..."
             );
             ExitCode::from(EXIT_USAGE)
         }
@@ -3622,6 +3629,7 @@ fn parse_doctor_options(args: impl Iterator<Item = String>) -> Result<DoctorOpti
         .map(|value| parse_min_free_gib(&value))
         .transpose()?
         .unwrap_or(DEFAULT_MIN_FREE_GIB);
+    let mut stack = None;
     let mut args = args.peekable();
 
     while let Some(arg) = args.next() {
@@ -3642,9 +3650,16 @@ fn parse_doctor_options(args: impl Iterator<Item = String>) -> Result<DoctorOpti
                     .ok_or_else(|| "--min-free-gib requires an integer".to_string())?;
                 min_free_gib = parse_min_free_gib(&value)?;
             }
+            "--stack" | "-C" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--stack requires a path".to_string())?;
+                stack = Some(PathBuf::from(value));
+            }
             "-h" | "--help" => {
                 return Err(
-                    "usage: vzctl doctor [--format human|json] [--min-free-gib N]".to_string(),
+                    "usage: vzctl doctor [--format human|json] [--min-free-gib N] [--stack|-C dir]"
+                        .to_string(),
                 )
             }
             _ => return Err(format!("unknown doctor option: {arg}")),
@@ -3654,6 +3669,7 @@ fn parse_doctor_options(args: impl Iterator<Item = String>) -> Result<DoctorOpti
     Ok(DoctorOptions {
         format,
         min_free_gib,
+        stack,
     })
 }
 
@@ -3688,6 +3704,20 @@ fn doctor(options: DoctorOptions) -> ExitCode {
     checks.push(check_vmnet_hint(macos_version));
     checks.push(check_image_backend(&images_dir));
     checks.push(check_supervisor());
+    let host_probe = dns::doctor_host_listener_check(
+        dns_port,
+        dns_port_free == Some(false),
+    );
+    checks.push(Check::new(
+        host_probe.id,
+        if host_probe.ok {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        host_probe.message,
+        host_probe.details,
+    ));
     let bind_helper = dns::doctor_bind_helper_check();
     checks.push(Check::new(
         bind_helper.id,
@@ -3711,6 +3741,12 @@ fn doctor(options: DoctorOptions) -> ExitCode {
         docker_check.details,
     ));
     checks.push(check_certs_host_trust(&state_dir));
+    if let Some(stack) = &options.stack {
+        checks.extend(observability::doctor_stack_checks(
+            stack,
+            &supervisor_socket_path(),
+        ));
+    }
 
     let exit_code = if macos_version.unwrap_or(0) < 26 {
         EXIT_HOST_UNSUPPORTED
@@ -4531,7 +4567,18 @@ mod tests {
             DoctorOptions {
                 format: OutputFormat::Human,
                 min_free_gib: 20,
+                stack: None,
             }
+        );
+    }
+
+    #[test]
+    fn doctor_options_accept_stack_path() {
+        let args = ["--stack", "/tmp/lab"].into_iter().map(str::to_string);
+        let options = parse_doctor_options(args).unwrap();
+        assert_eq!(
+            options.stack.as_deref(),
+            Some(std::path::Path::new("/tmp/lab"))
         );
     }
 
@@ -4545,6 +4592,7 @@ mod tests {
             DoctorOptions {
                 format: OutputFormat::Json,
                 min_free_gib: 42,
+                stack: None,
             }
         );
     }

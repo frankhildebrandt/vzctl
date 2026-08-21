@@ -177,6 +177,19 @@ oidc:
   überschreiben. Secrets nur als File-Ref, nie inline `clientSecret`
   (siehe [oidc-v1.md](oidc-v1.md))
 
+## Observability (optional)
+
+```yaml
+observability:
+  probes:
+    - { name: router-nats, from: sat, target: "main-node.core.lab.vz.test:4222", expect: tcp }
+    - { name: host-ingress, from: host, target: "https://main-node.svc.lab.vz.test/", expect: http_2xx }
+```
+
+`from` ist `host` oder ein VM-Key unter `spec.vms`. `expect` ist `tcp`,
+`http_2xx` oder `dns`. Unbekannte VM-Refs und Credentials im Target sind
+Validate-Fehler. `vzctl stack status` führt die Probes aus.
+
 ## Semantische Regeln
 
 - Image-, Network-, Route-, Policy- und VM-Referenzen müssen existieren.

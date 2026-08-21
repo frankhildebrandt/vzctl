@@ -102,6 +102,8 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 | `GET` | `/v1/vms/{id}` | Inspect via Worker |
 | `POST` | `/v1/vms/{id}/start` | Start |
 | `POST` | `/v1/vms/{id}/stop` | Stop |
+| `POST` | `/v1/vms/{id}/restart` | Restart (`stop --wait` + `start`) |
+| `GET` | `/v1/vms/{id}/stats` | Guest-Agent CPU/RAM/IOPS (`vm.agent.stats`) |
 | `DELETE` | `/v1/vms/{id}?force=` | Delete/purge |
 | `PATCH` | `/v1/vms/{id}` | Modify resources |
 | `GET` | `/v1/vms/{id}/mounts` | Mounts |
@@ -171,3 +173,5 @@ gehen direkt an die bestehenden Supervisor-Handler.
 und leitet als `agent.ca_inject` weiter; Erfolg liefert mindestens
 `{installed:true,fingerprint,name}`. Helper-, Agent-, Installations- und
 Verifikationsfehler werden als Fehler an den Aufrufer zurückgegeben.
+
+`vm.agent.stats` ist analog: Helper leitet `agent.stats` weiter (CPU/RAM/IOPS).

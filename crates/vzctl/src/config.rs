@@ -97,8 +97,37 @@ pub(crate) struct Spec {
     /// Embedded Dex OIDC (v0.2).
     #[serde(default)]
     pub(crate) oidc: Option<OidcConfig>,
+    /// Stack probes executed by `stack status` / `doctor --stack`.
+    #[serde(default)]
+    pub(crate) observability: ObservabilityConfig,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ObservabilityConfig {
+    #[serde(default)]
+    pub(crate) probes: Vec<ObservabilityProbe>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ObservabilityProbe {
+    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"))]
+    pub(crate) name: String,
+    /// `host` or a VM key under `spec.vms`.
+    pub(crate) from: String,
+    pub(crate) target: String,
+    pub(crate) expect: ProbeExpect,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProbeExpect {
+    Tcp,
+    Http2xx,
+    Dns,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
@@ -1196,6 +1225,7 @@ fn validate_references(
 
     detect_dependency_cycles(&environment.spec.vms, &mut issues);
     validate_certs_ingress_oidc(environment, &mut issues);
+    validate_observability(environment, &mut issues);
     sort_and_deduplicate(&mut issues);
     issues
 }
@@ -1207,6 +1237,55 @@ fn valid_probe_url(value: &str) -> bool {
     let Some(rest) = rest else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     !authority.is_empty() && !authority.contains('@') && !authority.chars().any(char::is_whitespace)
+}
+
+fn validate_observability(environment: &Environment, issues: &mut Vec<ValidationIssue>) {
+    let mut names = BTreeSet::new();
+    for (index, probe) in environment.spec.observability.probes.iter().enumerate() {
+        let base = format!("$.spec.observability.probes[{index}]");
+        if !names.insert(probe.name.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{base}.name"),
+                format!("duplicate probe name {:?}", probe.name),
+                "semantic",
+            ));
+        }
+        if probe.from != "host" && !environment.spec.vms.contains_key(&probe.from) {
+            issues.push(ValidationIssue::new(
+                format!("{base}.from"),
+                format!("probe from references unknown VM {:?}", probe.from),
+                "semantic",
+            ));
+        }
+        if probe.target.contains('@') || probe.target.contains("://") && !valid_probe_url(&probe.target)
+        {
+            issues.push(ValidationIssue::new(
+                format!("{base}.target"),
+                "probe target must not contain credentials or secrets",
+                "semantic",
+            ));
+        }
+        match probe.expect {
+            ProbeExpect::Http2xx => {
+                if !valid_probe_url(&probe.target) {
+                    issues.push(ValidationIssue::new(
+                        format!("{base}.target"),
+                        "http_2xx probes require an http(s) URL without credentials",
+                        "semantic",
+                    ));
+                }
+            }
+            ProbeExpect::Tcp | ProbeExpect::Dns => {
+                if probe.target.contains("://") {
+                    issues.push(ValidationIssue::new(
+                        format!("{base}.target"),
+                        "tcp/dns probes require host or host:port, not a URL",
+                        "semantic",
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn validate_certs_ingress_oidc(environment: &Environment, issues: &mut Vec<ValidationIssue>) {
@@ -2382,6 +2461,7 @@ pub(crate) fn scaffold_environment(name: &str, cidr: &str) -> Result<Environment
             certs: None,
             ingress: None,
             oidc: None,
+            observability: ObservabilityConfig::default(),
             vms: BTreeMap::new(),
         },
     })
@@ -2479,6 +2559,12 @@ pub(crate) fn serialize_environment_yaml(environment: &Environment) -> String {
         spec_map.insert(
             "oidc".to_string(),
             serde_json::to_value(&spec.oidc).unwrap(),
+        );
+    }
+    if !spec.observability.probes.is_empty() {
+        spec_map.insert(
+            "observability".to_string(),
+            serde_json::to_value(&spec.observability).unwrap(),
         );
     }
     spec_map.insert(
@@ -3232,6 +3318,35 @@ spec:
         assert!(issues
             .iter()
             .any(|issue| issue.message.contains("collides with DHCP")));
+    }
+
+    #[test]
+    fn observability_probe_rejects_unknown_vm() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: lab }
+spec:
+  project: lab
+  domain: lab.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
+  networks: { lan: { cidr: 10.90.0.0/24, mode: shared } }
+  routes: []
+  policies: []
+  observability:
+    probes:
+      - { name: nats, from: unknown-vm, target: "10.90.0.2:4222", expect: tcp }
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 4G
+      networks: [{ name: lan, ip: 10.90.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains("observability.probes") && issue.message.contains("unknown VM")
+        }));
     }
 
     #[test]

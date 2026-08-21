@@ -30,6 +30,7 @@ final class SupervisorServer: @unchecked Sendable {
         "vm.agent.report_ip",
         "vm.agent.ca_inject",
         "vm.agent.network_probe",
+        "vm.agent.stats",
     ]
 
     let socketPath: String

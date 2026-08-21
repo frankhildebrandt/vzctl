@@ -28,14 +28,15 @@ fn root_help_is_short_and_points_to_topics() {
     );
 }
 
-#[test]
-fn help_exit_codes_lists_table() {
-    let stdout = help_stdout(&["help", "exit-codes"]);
-    assert!(stdout.contains("  0   success"));
-    assert!(stdout.contains("  25  host service lifecycle failed"));
-    let via_flag = help_stdout(&["help", "--exit-codes"]);
-    assert!(via_flag.contains("  10  supervisor"));
-}
+    #[test]
+    fn help_exit_codes_lists_table() {
+        let stdout = help_stdout(&["help", "exit-codes"]);
+        assert!(stdout.contains("  0   success"));
+        assert!(stdout.contains("  1   stack status degraded"));
+        assert!(stdout.contains("  25  host service lifecycle failed"));
+        let via_flag = help_stdout(&["help", "--exit-codes"]);
+        assert!(via_flag.contains("  10  supervisor"));
+    }
 
 #[test]
 fn namespace_help_matches_help_topic() {
@@ -66,6 +67,15 @@ fn stack_vm_help_prints_stack_help() {
     let stdout = help_stdout(&["stack", "vm", "help"]);
     assert!(stdout.contains("vm add"));
     assert!(stdout.contains("net add"));
+    assert!(stdout.contains("status [-C dir]"));
+}
+
+#[test]
+fn vm_help_lists_probe_health_stats() {
+    let stdout = help_stdout(&["vm", "help"]);
+    assert!(stdout.contains("probe <id>"));
+    assert!(stdout.contains("health <id>"));
+    assert!(stdout.contains("stats <id>"));
 }
 
 #[test]

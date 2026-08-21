@@ -26,6 +26,34 @@ enum Format {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeVia {
+    Dns,
+    Ip,
+    Both,
+}
+
+impl ProbeVia {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Ip => "ip",
+            Self::Both => "both",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, Failure> {
+        match value {
+            "dns" => Ok(Self::Dns),
+            "ip" => Ok(Self::Ip),
+            "both" => Ok(Self::Both),
+            other => Err(usage(format!(
+                "unsupported --via: {other} (expected dns, ip, or both)"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum Operation {
     List,
@@ -36,6 +64,9 @@ enum Operation {
     Stop {
         id: String,
         wait: bool,
+    },
+    Restart {
+        id: String,
     },
     Delete {
         id: String,
@@ -96,6 +127,18 @@ enum Operation {
     AgentUpgrade {
         all: bool,
         id: Option<String>,
+    },
+    Probe {
+        id: String,
+        target: String,
+        via: ProbeVia,
+        timeout_ms: u64,
+    },
+    Health {
+        id: String,
+    },
+    Stats {
+        id: String,
     },
 }
 
@@ -186,6 +229,7 @@ impl Options {
             Operation::HostPs => "ps",
             Operation::Start { .. } => "vm.start",
             Operation::Stop { .. } => "vm.stop",
+            Operation::Restart { .. } => "vm.restart",
             Operation::Delete { .. } => "vm.delete",
             Operation::Inspect { .. } => "vm.inspect",
             Operation::Exec {
@@ -204,6 +248,9 @@ impl Options {
             Operation::Mounts { .. } => "vm.mounts",
             Operation::Modify { .. } => "vm.modify",
             Operation::AgentUpgrade { .. } => "vm.agent.upgrade",
+            Operation::Probe { .. } => "vm.probe",
+            Operation::Health { .. } => "vm.health",
+            Operation::Stats { .. } => "vm.stats",
         }
     }
 }
@@ -215,7 +262,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
             usage(if ps_top_level {
                 "usage: vzctl ps [--format human|json]"
             } else {
-                "usage: vzctl vm list|start|stop|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify|agent ..."
+                "usage: vzctl vm list|start|stop|restart|delete|inspect|logs|exec|transfer|attach|services|ps|mount|unmount|mounts|modify|probe|health|stats|agent ..."
             })
         })?;
     let rest = args.collect::<Vec<_>>();
@@ -225,6 +272,7 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
         "ps" if !ps_top_level => parse_guest_ps(rest),
         "start" if !ps_top_level => parse_start(rest),
         "stop" if !ps_top_level => parse_stop(rest),
+        "restart" if !ps_top_level => parse_restart(rest),
         "delete" if !ps_top_level => parse_delete(rest),
         "inspect" if !ps_top_level => parse_inspect(rest),
         "logs" if !ps_top_level => parse_logs(rest),
@@ -236,6 +284,9 @@ fn parse(mut args: impl Iterator<Item = String>, ps_top_level: bool) -> Result<O
         "unmount" if !ps_top_level => parse_unmount(rest),
         "mounts" if !ps_top_level => parse_mounts_list(rest),
         "modify" if !ps_top_level => parse_modify(rest),
+        "probe" if !ps_top_level => parse_probe(rest),
+        "health" if !ps_top_level => parse_health(rest),
+        "stats" if !ps_top_level => parse_stats(rest),
         "agent" if !ps_top_level => parse_agent(rest),
         other => Err(usage(if ps_top_level {
             format!("unknown ps option: {other}")
@@ -289,6 +340,19 @@ fn parse_stop(args: Vec<String>) -> Result<Options, Failure> {
     })
 }
 
+fn parse_restart(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm restart requires a VM id")?;
+    validate_vm_id(&id)?;
+    let (format, flags) = parse_flags(&args[1..], &[])?;
+    if !flags.is_empty() {
+        return Err(usage("vm restart accepts only --format human|json"));
+    }
+    Ok(Options {
+        operation: Operation::Restart { id },
+        format,
+    })
+}
+
 fn parse_delete(args: Vec<String>) -> Result<Options, Failure> {
     let id = positional(&args, "vm delete requires a VM id")?;
     validate_vm_id(&id)?;
@@ -337,6 +401,108 @@ fn parse_inspect(args: Vec<String>) -> Result<Options, Failure> {
     }
     Ok(Options {
         operation: Operation::Inspect { id },
+        format,
+    })
+}
+
+fn parse_health(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm health requires a VM id")?;
+    validate_vm_id(&id)?;
+    let (format, flags) = parse_flags(&args[1..], &[])?;
+    if !flags.is_empty() {
+        return Err(usage("vm health accepts only --format human|json"));
+    }
+    Ok(Options {
+        operation: Operation::Health { id },
+        format,
+    })
+}
+
+fn parse_stats(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm stats requires a VM id")?;
+    validate_vm_id(&id)?;
+    let (format, flags) = parse_flags(&args[1..], &[])?;
+    if !flags.is_empty() {
+        return Err(usage("vm stats accepts only --format human|json"));
+    }
+    Ok(Options {
+        operation: Operation::Stats { id },
+        format,
+    })
+}
+
+fn parse_probe(args: Vec<String>) -> Result<Options, Failure> {
+    let id = positional(&args, "vm probe requires a VM id")?;
+    validate_vm_id(&id)?;
+    let mut format = Format::Human;
+    let mut target = None;
+    let mut via = ProbeVia::Both;
+    let mut timeout_ms = 5_000_u64;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--target" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--target requires host:port"))?;
+                if value.is_empty() || !value.contains(':') {
+                    return Err(Failure::new(
+                        EXIT_INVALID,
+                        format!("invalid --target: {value} (expected host:port)"),
+                    ));
+                }
+                target = Some(value.clone());
+                index += 2;
+            }
+            "--via" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--via requires dns, ip, or both"))?;
+                via = ProbeVia::parse(value)?;
+                index += 2;
+            }
+            "--timeout-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--timeout-ms requires an integer"))?;
+                timeout_ms = value.parse::<u64>().map_err(|_| {
+                    Failure::new(EXIT_INVALID, format!("invalid --timeout-ms: {value}"))
+                })?;
+                if !(100..=30_000).contains(&timeout_ms) {
+                    return Err(Failure::new(
+                        EXIT_INVALID,
+                        "--timeout-ms must be 100...30000",
+                    ));
+                }
+                index += 2;
+            }
+            "--format" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--format requires human or json"))?;
+                format = match value.as_str() {
+                    "human" => Format::Human,
+                    "json" => Format::Json,
+                    other => return Err(usage(format!("unsupported vm format: {other}"))),
+                };
+                index += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("unknown vm probe option: {other}")));
+            }
+            other => {
+                return Err(usage(format!("unexpected vm probe argument: {other}")));
+            }
+        }
+    }
+    let target = target.ok_or_else(|| usage("vm probe requires --target HOST:PORT"))?;
+    Ok(Options {
+        operation: Operation::Probe {
+            id,
+            target,
+            via,
+            timeout_ms,
+        },
         format,
     })
 }
@@ -926,6 +1092,7 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         Operation::List | Operation::HostPs => list_vms(options.command(), socket_path),
         Operation::Start { id } => start_vm(id, socket_path),
         Operation::Stop { id, wait } => stop_vm(id, *wait, socket_path),
+        Operation::Restart { id } => restart_vm(id, socket_path),
         Operation::Delete { id, force } => delete_vm(id, *force, socket_path),
         Operation::Inspect { id } => inspect_vm(id, socket_path),
         Operation::Exec {
@@ -945,7 +1112,11 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             timeout_ms,
             interactive: false,
             tty: false,
-        } => exec_vm(id, cmd, cwd.as_deref(), env, *timeout_ms, socket_path),
+        } => exec_vm(id, cmd, cwd.as_deref(), env, *timeout_ms, socket_path)
+            .or_else(|failure| {
+                maybe_hint_agent_timeout(id, socket_path, &failure);
+                Err(failure)
+            }),
         Operation::Exec { .. } => Err(Failure::new(
             EXIT_INVALID,
             "vm exec interactive tty requires both -i/--interactive and -t/--tty (use -it)",
@@ -972,6 +1143,14 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
             memory_mib,
         } => modify_vm(id, *cpus, *memory_mib, socket_path),
         Operation::AgentUpgrade { all, id } => agent_upgrade_vm(*all, id.as_deref(), socket_path),
+        Operation::Probe {
+            id,
+            target,
+            via,
+            timeout_ms,
+        } => probe_vm(id, target, *via, *timeout_ms, socket_path),
+        Operation::Health { id } => health_vm(id, socket_path),
+        Operation::Stats { id } => stats_vm(id, socket_path),
     }
 }
 
@@ -1158,6 +1337,23 @@ fn stop_vm(id: &str, wait: bool, socket_path: &Path) -> Result<Value, Failure> {
             "state": "stopped",
         },
     }))
+}
+
+fn restart_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    stop_vm(id, true, socket_path)?;
+    let mut envelope = start_vm(id, socket_path)?;
+    envelope["command"] = json!("vm.restart");
+    if let Some(summary) = envelope.get_mut("summary").and_then(Value::as_object_mut) {
+        let state = summary
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("starting");
+        summary.insert(
+            "message".into(),
+            json!(format!("VM {id} restarted ({state})")),
+        );
+    }
+    Ok(envelope)
 }
 
 fn delete_vm(id: &str, force: bool, socket_path: &Path) -> Result<Value, Failure> {
@@ -1357,6 +1553,7 @@ fn inspect_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
                 agent = json!({
                     "state": "ready",
                     "health": health.get("status").cloned().unwrap_or(Value::Null),
+                    "health_detail": health,
                     "version": version
                         .as_ref()
                         .and_then(|value| value.get("agent_version"))
@@ -1416,6 +1613,151 @@ fn inspect_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
             "serial": serial_log_path(id).display().to_string(),
         },
         "warnings": warnings,
+    }))
+}
+
+fn maybe_hint_agent_timeout(id: &str, socket_path: &Path, failure: &Failure) {
+    if failure.code != EXIT_GUEST {
+        return;
+    }
+    let message = failure.message.to_ascii_lowercase();
+    if !message.contains("timeout") && !message.contains("timed out") {
+        return;
+    }
+    eprintln!("guest agent operation timed out (exit 18); fetching health/stats for {id}");
+    match rpc(socket_path, "vm.agent.health", json!({ "vm_id": id })) {
+        Ok(health) => {
+            eprintln!(
+                "  agent health={} queue_depth={} p99_exec_ms={}",
+                health["status"].as_str().unwrap_or("?"),
+                health["queue_depth"],
+                health["p99_exec_ms"]
+            );
+        }
+        Err(error) => eprintln!("  agent health unavailable: {}", error.message),
+    }
+    match rpc(socket_path, "vm.agent.stats", json!({ "vm_id": id })) {
+        Ok(stats) => {
+            eprintln!(
+                "  agent stats cpu={} mem_used_pct={} load1={}",
+                stats["cpu"]["percent"],
+                stats
+                    .get("mem_used_pct")
+                    .cloned()
+                    .unwrap_or_else(|| stats["memory"]["percent"].clone()),
+                stats["load1"]
+            );
+        }
+        Err(error) => eprintln!("  agent stats unavailable: {}", error.message),
+    }
+}
+
+fn probe_vm(
+    id: &str,
+    target: &str,
+    via: ProbeVia,
+    timeout_ms: u64,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let connect_ip = resolve_probe_connect_ip(target, via);
+    let mut params = json!({
+        "vm_id": id,
+        "target": target,
+        "via": via.as_str(),
+        "timeout_ms": timeout_ms,
+    });
+    if let Some(ip) = connect_ip.as_ref() {
+        params["connect_ip"] = json!(ip);
+    }
+    let probe = rpc(socket_path, "vm.agent.network_probe", params)?;
+    let dns_ok = probe["dns"]["ok"].as_bool();
+    let ip_ok = probe["ip"]["ok"].as_bool();
+    let chosen_ok = probe["error_stage"].is_null() && probe["chosen_ip"].as_str().is_some();
+    let (status, exit_code, message) = match via {
+        ProbeVia::Both => match (dns_ok, ip_ok) {
+            (Some(true), Some(true)) => ("ok", 0, "dns ok, ip ok"),
+            (Some(false), Some(true)) => ("warn", 0, "dns FAIL, ip OK"),
+            (Some(true), Some(false)) => ("warn", 0, "dns OK, ip FAIL"),
+            _ => ("fail", EXIT_GUEST, "probe failed"),
+        },
+        ProbeVia::Dns => {
+            if dns_ok == Some(true) || (dns_ok.is_none() && chosen_ok) {
+                ("ok", 0, "dns ok")
+            } else {
+                ("fail", EXIT_GUEST, "dns probe failed")
+            }
+        }
+        ProbeVia::Ip => {
+            if ip_ok == Some(true) || (ip_ok.is_none() && chosen_ok) {
+                ("ok", 0, "ip ok")
+            } else {
+                ("fail", EXIT_GUEST, "ip probe failed")
+            }
+        }
+    };
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.probe",
+        "status": status,
+        "exit_code": exit_code,
+        "summary": {
+            "message": format!("{id}: {message}"),
+            "vm_id": id,
+            "target": target,
+            "via": via.as_str(),
+        },
+        "probe": probe,
+    }))
+}
+
+fn resolve_probe_connect_ip(target: &str, via: ProbeVia) -> Option<String> {
+    if !matches!(via, ProbeVia::Ip | ProbeVia::Both) {
+        return None;
+    }
+    let host = target.rsplit_once(':').map(|(host, _)| host)?;
+    let host = host.trim_matches(['[', ']']);
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host.to_string());
+    }
+    crate::dns::lookup_a_addresses(host)
+        .ok()
+        .and_then(|ips| ips.into_iter().next())
+}
+
+fn health_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    let health = rpc(socket_path, "vm.agent.health", json!({ "vm_id": id }))?;
+    let status = health["status"].as_str().unwrap_or("unknown");
+    let (envelope_status, exit_code) = match status {
+        "ok" => ("ok", 0),
+        "degraded" => ("warn", 0),
+        _ => ("fail", EXIT_GUEST),
+    };
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.health",
+        "status": envelope_status,
+        "exit_code": exit_code,
+        "summary": {
+            "message": format!("{id} health {status}"),
+            "vm_id": id,
+            "health": status,
+        },
+        "health": health,
+    }))
+}
+
+fn stats_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    let stats = rpc(socket_path, "vm.agent.stats", json!({ "vm_id": id }))?;
+    Ok(json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.stats",
+        "status": "ok",
+        "exit_code": 0,
+        "summary": {
+            "message": format!("{id} stats"),
+            "vm_id": id,
+        },
+        "stats": stats,
     }))
 }
 
@@ -1485,9 +1827,7 @@ fn exec_tty_vm(
     if let Some(cwd) = cwd {
         params["cwd"] = json!(cwd);
     }
-    if !env.is_empty() {
-        params["env"] = json!(env);
-    }
+    params["env"] = json!(tty_exec_env(env));
     let result = rpc(socket_path, "vm.exec_tty", params)?;
     let path = result["socket"]
         .as_str()
@@ -1518,6 +1858,22 @@ fn exec_tty_vm(
             "tty": true,
         },
     }))
+}
+
+const DEFAULT_TTY_TERM: &str = "xterm-256color";
+
+/// Guest terminfo rarely includes host types like xterm-ghostty; keep a
+/// portable default unless the caller set TERM explicitly.
+fn tty_exec_env(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut out = env.clone();
+    let missing = out
+        .get("TERM")
+        .map(|value| value.is_empty())
+        .unwrap_or(true);
+    if missing {
+        out.insert("TERM".into(), DEFAULT_TTY_TERM.into());
+    }
+    out
 }
 
 fn terminal_winsize() -> (u16, u16) {
@@ -2820,14 +3176,33 @@ fn rpc_timeout_secs(method: &str, params: &Value) -> u64 {
     }
 }
 
+pub(crate) fn supervisor_rpc_deadline(
+    socket_path: &Path,
+    method: &str,
+    params: Value,
+    timeout_secs: u64,
+) -> Result<Value, (u8, String)> {
+    rpc_with_timeout(socket_path, method, params, timeout_secs)
+        .map_err(|failure| (failure.code, failure.message))
+}
+
 fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
+    let timeout_secs = rpc_timeout_secs(method, &params);
+    rpc_with_timeout(socket_path, method, params, timeout_secs)
+}
+
+fn rpc_with_timeout(
+    socket_path: &Path,
+    method: &str,
+    params: Value,
+    timeout_secs: u64,
+) -> Result<Value, Failure> {
     let mut stream = UnixStream::connect(socket_path).map_err(|error| {
         Failure::new(
             EXIT_SUPERVISOR,
             format!("supervisor socket {}: {error}", socket_path.display()),
         )
     })?;
-    let timeout_secs = rpc_timeout_secs(method, &params);
     stream
         .set_read_timeout(Some(Duration::from_secs(timeout_secs)))
         .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(timeout_secs.min(10)))))
@@ -2930,7 +3305,7 @@ fn print_human(command: &str, envelope: &Value) {
                 }
             }
         }
-        "vm.start" | "vm.stop" | "vm.delete" | "vm.transfer" | "vm.attach" | "vm.mount"
+        "vm.start" | "vm.stop" | "vm.restart" | "vm.delete" | "vm.transfer" | "vm.attach" | "vm.mount"
         | "vm.unmount" | "vm.modify" | "vm.agent.upgrade" => {
             println!(
                 "{}",
@@ -2983,8 +3358,9 @@ fn print_human(command: &str, envelope: &Value) {
                 }
             }
             println!(
-                "  agent: {}",
-                envelope["agent"]["state"].as_str().unwrap_or("unavailable")
+                "  agent: {}  health={}",
+                envelope["agent"]["state"].as_str().unwrap_or("unavailable"),
+                envelope["agent"]["health"].as_str().unwrap_or("-")
             );
             if let Some(warnings) = envelope["warnings"].as_array() {
                 for warning in warnings {
@@ -3049,6 +3425,65 @@ fn print_human(command: &str, envelope: &Value) {
                         process["args"].as_str().unwrap_or("-"),
                     );
                 }
+            }
+        }
+        "vm.probe" => {
+            println!("{}", envelope["summary"]["message"].as_str().unwrap_or("probe"));
+            let probe = &envelope["probe"];
+            if let Some(dns) = probe.get("dns") {
+                println!(
+                    "  dns  {:<4}  {}  {}ms",
+                    if dns["ok"].as_bool() == Some(true) {
+                        "OK"
+                    } else {
+                        "FAIL"
+                    },
+                    dns["error"].as_str().unwrap_or("-"),
+                    dns["connect_ms"].as_i64().unwrap_or(0)
+                );
+            }
+            if let Some(ip) = probe.get("ip") {
+                println!(
+                    "  ip   {:<4}  {}  {}ms",
+                    if ip["ok"].as_bool() == Some(true) {
+                        "OK"
+                    } else {
+                        "FAIL"
+                    },
+                    ip["chosen_ip"].as_str().or(ip["error"].as_str()).unwrap_or("-"),
+                    ip["connect_ms"].as_i64().unwrap_or(0)
+                );
+            }
+        }
+        "vm.health" => {
+            let health = &envelope["health"];
+            println!(
+                "{}  status={}  queue_depth={}  p99_exec_ms={}",
+                envelope["summary"]["vm_id"].as_str().unwrap_or("?"),
+                health["status"].as_str().unwrap_or("?"),
+                health["queue_depth"],
+                health["p99_exec_ms"]
+            );
+        }
+        "vm.stats" => {
+            let stats = &envelope["stats"];
+            println!(
+                "{}  cpu={}  load1={}  mem_used_pct={}",
+                envelope["summary"]["vm_id"].as_str().unwrap_or("?"),
+                stats["cpu"]["percent"],
+                stats["load1"],
+                stats
+                    .get("mem_used_pct")
+                    .cloned()
+                    .unwrap_or_else(|| stats["memory"]["percent"].clone())
+            );
+            if let Some(top) = stats.get("top_process").filter(|value| !value.is_null()) {
+                println!(
+                    "  top {} pid={} pcpu={}",
+                    top["name"].as_str().unwrap_or("?"),
+                    top["pid"],
+                    top["pcpu"]
+                );
             }
         }
         _ => println!("{envelope}"),
@@ -3159,8 +3594,39 @@ mod tests {
         assert_eq!(list.operation, Operation::List);
         assert_eq!(list.format, Format::Json);
 
+        let probe = parse(
+            [
+                "probe".into(),
+                "neti/neti-home".into(),
+                "--target".into(),
+                "main-node.core.neti.vz.test:4222".into(),
+                "--via".into(),
+                "both".into(),
+            ]
+            .into_iter(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            probe.operation,
+            Operation::Probe {
+                id: "neti/neti-home".into(),
+                target: "main-node.core.neti.vz.test:4222".into(),
+                via: ProbeVia::Both,
+                timeout_ms: 5_000,
+            }
+        );
+
+        let health = parse(["health".into(), "web".into()].into_iter(), false).unwrap();
+        assert_eq!(health.operation, Operation::Health { id: "web".into() });
+        let stats = parse(["stats".into(), "web".into()].into_iter(), false).unwrap();
+        assert_eq!(stats.operation, Operation::Stats { id: "web".into() });
+
         let start = parse(["start".into(), "web".into()].into_iter(), false).unwrap();
         assert_eq!(start.operation, Operation::Start { id: "web".into() });
+
+        let restart = parse(["restart".into(), "web".into()].into_iter(), false).unwrap();
+        assert_eq!(restart.operation, Operation::Restart { id: "web".into() });
 
         let stop = parse(
             ["stop".into(), "web".into(), "--wait".into(), "false".into()].into_iter(),
@@ -3212,6 +3678,21 @@ mod tests {
             }
         );
         assert_eq!(modify.format, Format::Json);
+    }
+
+    #[test]
+    fn tty_exec_env_defaults_portable_term() {
+        let empty = BTreeMap::new();
+        assert_eq!(
+            tty_exec_env(&empty).get("TERM").map(String::as_str),
+            Some("xterm-256color")
+        );
+        let mut explicit = BTreeMap::new();
+        explicit.insert("TERM".into(), "vt100".into());
+        assert_eq!(
+            tty_exec_env(&explicit).get("TERM").map(String::as_str),
+            Some("vt100")
+        );
     }
 
     #[test]

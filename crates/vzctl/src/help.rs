@@ -59,7 +59,7 @@ pub(crate) fn command(mut args: impl Iterator<Item = String>) -> ExitCode {
 pub(crate) fn print_topic(topic: &str) -> bool {
     match topic {
         "exit-codes" | "--exit-codes" => print_exit_codes(),
-        "stack" => print_stack(),
+        "stack" | "status" => print_stack(),
         "validate" => print_validate(),
         "plan" => print_reconcile("plan"),
         "diff" => print_reconcile("diff"),
@@ -108,7 +108,7 @@ Commands:
   vm, ps           VM lifecycle and host process list
   net, route       Networks and guest forwarding
   dns, docker, port
-  doctor, version, services, certs, oidc, events
+  doctor, version, services, certs, oidc, events, status
   skill            Print or install the agent skill
 
 Most commands accept --format human|json.
@@ -122,7 +122,8 @@ fn print_exit_codes() {
 vzctl exit codes
 
   0   success (warnings allowed)
-  2   usage or unknown command
+  1   stack status degraded
+  2   usage, or stack status critical
   3   invalid input or validation
   5   incomplete apply journal
   6   apply lease held
@@ -154,6 +155,8 @@ fn print_stack() {
 vzctl stack — write hypernetwork.config.yaml (source of truth)
 
   init [DIR] --name <project> [--cidr CIDR] [--force] [-C path]
+  status [-C dir] [--format human|json] [--verbose]
+  watch [-C dir] [--filter glob] [--interval sec]
   vm add <name> [-C path] [--from image-key|pull-alias] [--network net] [--ip addr]
        [--disk SIZE] [--cpus N] [--memory SIZE] [--role router|docker] [--cloud-init path]
   vm remove <name> [-C path]
@@ -166,6 +169,8 @@ vzctl stack — write hypernetwork.config.yaml (source of truth)
   mount remove <vm> --target <path> [-C path]
 
 Mutations validate then write atomically. Default directory is `.`.
+`status` aggregates VM/agent/DNS/route health (exit 0 ok, 1 degraded, 2 critical).
+`watch` emits NDJSON from status ticks plus event-like probe codes.
 `--format human|json` is accepted on every subcommand."
     );
 }
@@ -256,6 +261,9 @@ vzctl vm — imperative VM lifecycle (prefer YAML + apply for stacks)
   attach <id>                                (detach: Ctrl-P Ctrl-Q)
   services <id> [start|stop|restart <unit>]
   ps <id>
+  probe <id> --target HOST:PORT [--via dns|ip|both] [--timeout-ms N]
+  health <id>
+  stats <id>
   mount|unmount|mounts ...
   agent upgrade <id>|--all
 
@@ -319,7 +327,8 @@ vzctl dns — Hypervisor DNS and macOS resolver
   install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]
 
 Guest nameserver is bridge .0:53 (needs bind-helper). Host resolver is
-127.0.0.1:15353. Resolver/bind-helper writes need privileges."
+127.0.0.1:15353. `status` reports host_resolver, bridge_dns, and upstream
+separately. Resolver/bind-helper writes need privileges."
     );
 }
 
@@ -356,9 +365,10 @@ fn print_doctor() {
         "\
 vzctl doctor — host baseline and supervisor health
 
-  vzctl doctor [--format human|json] [--min-free-gib N]
+  vzctl doctor [--format human|json] [--min-free-gib N] [--stack|-C dir]
 
 Hard-fail: unhealthy supervisor (10) or macOS < 26 (11). Other issues are WARN / exit 0.
+`--stack` adds stack status checks with actionable hints.
 Override minimum free disk with --min-free-gib or VZCTL_DOCTOR_MIN_FREE_GIB."
     );
 }

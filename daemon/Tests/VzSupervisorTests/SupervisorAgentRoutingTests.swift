@@ -5,6 +5,7 @@ import VzDaemonKit
 
 @Test func supervisorRoutesCAInjectToHelpers() {
     #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.ca_inject"))
+    #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.stats"))
 }
 
 @Test func failedHelperStateIsVisibleWithConcreteError() throws {

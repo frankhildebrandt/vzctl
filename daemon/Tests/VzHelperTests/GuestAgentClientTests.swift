@@ -81,6 +81,47 @@ import Testing
     #expect(observed.get() == "cancel")
 }
 
+@Test func statsDecodesCpuMemoryAndDisk() throws {
+    try withMockServer { server in
+        let request = try readObject(from: server)
+        guard
+            request["method"] as? String == "stats",
+            let id = request["id"] as? String
+        else { return }
+        try writeObject(
+            [
+                "v": 1,
+                "id": id,
+                "ok": true,
+                "result": [
+                    "cpu": ["percent": 12.5],
+                    "memory": [
+                        "used_mib": 512,
+                        "total_mib": 1024,
+                        "percent": 50.0,
+                    ],
+                    "disk": [
+                        "read_iops": 3.2,
+                        "write_iops": 1.1,
+                    ],
+                ],
+            ],
+            to: server
+        )
+    } client: { client in
+        let stats = try client.stats()
+        let cpu = stats["cpu"] as? [String: Any]
+        let memory = stats["memory"] as? [String: Any]
+        let disk = stats["disk"] as? [String: Any]
+        #expect((cpu?["percent"] as? NSNumber)?.doubleValue == 12.5)
+        #expect((memory?["used_mib"] as? NSNumber)?.intValue == 512)
+        #expect((memory?["total_mib"] as? NSNumber)?.intValue == 1024)
+        #expect((memory?["percent"] as? NSNumber)?.doubleValue == 50)
+        #expect((disk?["read_iops"] as? NSNumber)?.doubleValue == 3.2)
+        #expect((disk?["write_iops"] as? NSNumber)?.doubleValue == 1.1)
+    }
+}
+
 @Test func execFailureKeepsStructuredExitAndStreams() throws {
     // Wire contract: exec_failed becomes AgentExecResult for callers that expect
     // exit/stdout/stderr rather than a thrown remote error.

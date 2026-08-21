@@ -23,6 +23,9 @@ const (
 
 type networkProbeParams struct {
 	URL       string `json:"url"`
+	Target    string `json:"target"`
+	Via       string `json:"via"`
+	ConnectIP string `json:"connect_ip"`
 	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
 }
 
@@ -39,6 +42,12 @@ func handleNetworkProbe(parent context.Context, req request) response {
 	var params networkProbeParams
 	if err := decodeParams(req.Params, &params); err != nil {
 		return errorResponse(req.ID, "proto", "invalid network_probe parameters", nil)
+	}
+	if params.Target != "" {
+		if _, _, _, _, err := validateConnectProbeParams(params); err != nil {
+			return errorResponse(req.ID, "proto", err.Error(), nil)
+		}
+		return successResponse(req.ID, runConnectProbe(parent, params, defaultConnectProbeIO))
 	}
 	timeout, validationError := validateNetworkProbeParams(params)
 	if validationError != nil {

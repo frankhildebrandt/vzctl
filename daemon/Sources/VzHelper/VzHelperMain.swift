@@ -79,7 +79,8 @@ enum VzHelperMain {
             try requireCapabilities(hello.capabilities)
             try client.ping(nonce: "helper-agent-e2e")
             let health = try client.health()
-            print("hello=ok version=\(hello.version) ping=ok health=\(health)")
+            let healthStatus = health["status"] as? String ?? "unknown"
+            print("hello=ok version=\(hello.version) ping=ok health=\(healthStatus)")
 
             if let reason = options.timeHintReason {
                 let result = try client.timeHint(reason: reason)

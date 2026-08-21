@@ -163,3 +163,16 @@ resilience:
     egressProbe: { enabled: true, url: https://captive.apple.com/ }
     restartVMsOnStuckEgress: false
 ```
+
+## Observability (optional)
+
+```yaml
+observability:
+  probes:
+    - { name: router-ssh, from: web, target: "router.lan.lab.vz.test:22", expect: tcp }
+    - { name: host-ingress, from: host, target: "https://web.svc.lab.vz.test/", expect: http_2xx }
+```
+
+`from` is `host` or a VM key. `expect` is `tcp`, `http_2xx`, or `dns`.
+`validate` rejects unknown VM refs and credentials in targets.
+`stack status` runs these probes.

@@ -47,7 +47,7 @@ var (
 	startedAt = time.Now()
 )
 
-var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject", "network_probe"}
+var capabilities = []string{"ping", "version", "exec", "exec_tty", "report_ip", "health", "time_hint", "fs_mount", "ca_inject", "network_probe", "stats"}
 
 type request struct {
 	V      int             `json:"v"`
@@ -73,6 +73,8 @@ type wireError struct {
 type server struct {
 	token    []byte
 	timeHint timeHintPolicy
+	stats    *statsCollector
+	health   *healthTracker
 }
 
 type timeHintPolicy struct {
@@ -166,6 +168,8 @@ func main() {
 			now:         time.Now,
 			step:        setSystemClock,
 		},
+		stats:  newStatsCollector(),
+		health: newHealthTracker(),
 	}
 	var connectionID atomic.Uint64
 	for {
@@ -310,7 +314,10 @@ func (s *server) serveConn(conn net.Conn) error {
 					inflightMu.Unlock()
 					continue
 				}
+				s.tracker().beginExec()
+				ttyStarted := time.Now()
 				err := runTTYSession(conn, writer, session)
+				s.tracker().endExec(ttyStarted, "")
 				cancelRequest()
 				inflightMu.Lock()
 				delete(inflight, req.ID)
@@ -334,7 +341,7 @@ func (s *server) serveConn(conn net.Conn) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			response := handleRequestWithPolicy(requestContext, req, s.timeHint)
+			response := handleRequestWithPolicy(requestContext, req, s.timeHint, s.collector(), s.tracker())
 			inflightMu.Lock()
 			_ = writer.write(response)
 			delete(inflight, req.ID)
@@ -397,11 +404,25 @@ func handleCancel(req request, mu *sync.Mutex, inflight map[string]context.Cance
 	return successResponse(req.ID, map[string]any{"cancelled": found})
 }
 
-func handleRequest(ctx context.Context, req request) response {
-	return handleRequestWithPolicy(ctx, req, timeHintPolicy{})
+func (s *server) collector() *statsCollector {
+	if s.stats == nil {
+		s.stats = newStatsCollector()
+	}
+	return s.stats
 }
 
-func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy) response {
+func (s *server) tracker() *healthTracker {
+	if s.health == nil {
+		s.health = newHealthTracker()
+	}
+	return s.health
+}
+
+func handleRequest(ctx context.Context, req request) response {
+	return handleRequestWithPolicy(ctx, req, timeHintPolicy{}, nil, nil)
+}
+
+func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy, stats *statsCollector, health *healthTracker) response {
 	if req.V != protocolVersion {
 		return errorResponse(req.ID, "proto", "unsupported protocol version", map[string]any{
 			"supported_versions": []int{protocolVersion},
@@ -429,16 +450,9 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 		if err := decodeParams(req.Params, &struct{}{}); err != nil {
 			return errorResponse(req.ID, "proto", "invalid health parameters", nil)
 		}
-		return successResponse(req.ID, map[string]any{
-			"status":    "ok",
-			"uptime_ms": time.Since(startedAt).Milliseconds(),
-			"checks": map[string]any{
-				"service":    map[string]any{"ok": true},
-				"token_file": map[string]any{"ok": true},
-			},
-		})
+		return successResponse(req.ID, health.snapshot().result())
 	case "exec":
-		return handleExec(ctx, req)
+		return handleExec(ctx, req, health)
 	case "report_ip":
 		if err := decodeParams(req.Params, &struct{}{}); err != nil {
 			return errorResponse(req.ID, "proto", "invalid report_ip parameters", nil)
@@ -458,6 +472,18 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 		return handleCAInject(req)
 	case "network_probe":
 		return handleNetworkProbe(ctx, req)
+	case "stats":
+		if err := decodeParams(req.Params, &struct{}{}); err != nil {
+			return errorResponse(req.ID, "proto", "invalid stats parameters", nil)
+		}
+		if stats == nil {
+			stats = newStatsCollector()
+		}
+		result, err := stats.sample()
+		if err != nil {
+			return errorResponse(req.ID, "internal", "cannot sample guest stats", nil)
+		}
+		return successResponse(req.ID, result)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,
@@ -521,7 +547,19 @@ func absoluteMilliseconds(value int64) int64 {
 	return value
 }
 
-func handleExec(parent context.Context, req request) response {
+func handleExec(parent context.Context, req request, health *healthTracker) response {
+	started := time.Now()
+	health.beginExec()
+	response := runExec(parent, req)
+	errMessage := ""
+	if !response.OK && response.Error != nil {
+		errMessage = response.Error.Code
+	}
+	health.endExec(started, errMessage)
+	return response
+}
+
+func runExec(parent context.Context, req request) response {
 	var params execParams
 	if err := decodeParams(req.Params, &params); err != nil {
 		return errorResponse(req.ID, "proto", "invalid exec parameters", nil)
@@ -543,7 +581,7 @@ func handleExec(parent context.Context, req request) response {
 	}
 	command := exec.Command(params.Cmd[0], params.Cmd[1:]...)
 	command.Dir = params.Cwd
-	command.Env = sanitizedEnvironment(params.Env)
+	command.Env = sanitizedEnvironment(params.Env, false)
 	command.Stdin = bytes.NewReader(stdin)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout := &cappedBuffer{limit: maxExecStream}
@@ -632,7 +670,7 @@ func prepareTTYExec(parent context.Context, req request) (response, *ttySession)
 
 	command := exec.Command(params.Cmd[0], params.Cmd[1:]...)
 	command.Dir = params.Cwd
-	command.Env = sanitizedEnvironment(params.Env)
+	command.Env = sanitizedEnvironment(params.Env, true)
 	command.Stdin = pts
 	command.Stdout = pts
 	command.Stderr = pts
@@ -798,12 +836,20 @@ func validateExecParams(params execParams) (time.Duration, []byte, error) {
 	return timeout, stdin, nil
 }
 
-func sanitizedEnvironment(extra map[string]string) []string {
+// sanitizedEnvironment builds the child env. TTY sessions default TERM so
+// ncurses can load a terminfo entry; callers may override TERM.
+func sanitizedEnvironment(extra map[string]string, tty bool) []string {
 	values := map[string]string{
 		"LANG": "C.UTF-8",
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
+	if tty {
+		values["TERM"] = "xterm-256color"
+	}
 	for key, value := range extra {
+		if key == "TERM" && value == "" {
+			continue
+		}
 		values[key] = value
 	}
 	keys := make([]string, 0, len(values))

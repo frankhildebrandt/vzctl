@@ -135,12 +135,20 @@ final class GuestAgentClient: @unchecked Sendable {
         return AgentHello(version: agentVersion, capabilities: capabilities)
     }
 
-    func health(timeout: TimeInterval = 2) throws -> String {
+    func health(timeout: TimeInterval = 2) throws -> [String: Any] {
         let result = try request(method: "health", params: [:], timeout: timeout)
-        guard let status = result["status"] as? String, ["ok", "degraded"].contains(status) else {
+        guard let status = result["status"] as? String, ["ok", "degraded", "down"].contains(status) else {
             throw GuestAgentError.protocolViolation("invalid health result")
         }
-        return status
+        return result
+    }
+
+    func stats(timeout: TimeInterval = 2) throws -> [String: Any] {
+        let result = try request(method: "stats", params: [:], timeout: timeout)
+        guard result["cpu"] is [String: Any], result["memory"] is [String: Any], result["disk"] is [String: Any] else {
+            throw GuestAgentError.protocolViolation("invalid stats result")
+        }
+        return result
     }
 
     func exec(
@@ -318,12 +326,18 @@ final class GuestAgentClient: @unchecked Sendable {
     }
 
     func networkProbe(
+        params: [String: Any],
+        timeout: TimeInterval = 35
+    ) throws -> [String: Any] {
+        try request(method: "network_probe", params: params, timeout: timeout)
+    }
+
+    func networkProbe(
         url: String,
         timeoutMilliseconds: Int = 5_000,
         timeout: TimeInterval = 35
     ) throws -> AgentNetworkProbe {
-        let result = try request(
-            method: "network_probe",
+        let result = try networkProbe(
             params: ["url": url, "timeout_ms": timeoutMilliseconds],
             timeout: timeout
         )

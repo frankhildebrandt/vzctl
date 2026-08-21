@@ -6,7 +6,9 @@ P0 agent slice implements:
 
 - little-endian length-prefixed JSON framing, capped at 1 MiB;
 - first-frame `hello`, constant-time token comparison and bounded auth delay;
-- `ping`, `version`, `health`, `exec` and `report_ip`;
+- `ping`, `version`, `health` (`ok`|`degraded`|`down`), `exec`, `report_ip`,
+  `stats` (incl. `load1`/`mem_used_pct`/`top_process`) and `network_probe`
+  (HTTP `url` or connect `target`/`via` dns|ip|both);
 - concurrent in-flight requests plus `cancel`, process-group termination and
   helper/agent deadlines;
 - argv-only execution with 256 KiB stdin/stdout/stderr caps and truncation;
