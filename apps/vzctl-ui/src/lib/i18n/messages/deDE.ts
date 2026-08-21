@@ -346,6 +346,8 @@ export const deDE = {
   "images.pullTitle": "Pull",
   "images.pullHint": "Alias aus dem Katalog laden und als Raw normalisieren.",
   "images.pullAlias": "Alias",
+  "images.os": "OS",
+  "images.version": "Version",
   "images.pull": "Pull",
   "images.tagTitle": "Tag (Bake / Seal)",
   "images.tagHint":
@@ -417,6 +419,8 @@ export const deDE = {
   "vmForm.replaceHint": "Löscht die bestehende VM und legt sie neu an.",
   "vmForm.id": "ID",
   "vmForm.from": "From (sealed / alias)",
+  "vmForm.os": "OS",
+  "vmForm.version": "Version",
   "vmForm.disk": "VM-Festplatte (GiB)",
   "vmForm.cpus": "CPUs",
   "vmForm.memory": "Memory (MiB oder 2G)",

@@ -1,4 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { ImageCatalogPicker } from "@/components/ImageCatalogPicker";
 import {
   Card,
   FieldError,
@@ -7,12 +9,12 @@ import {
   FormGrid,
 } from "@/components/ui";
 import { useT } from "@/lib/i18n";
+import { imageKeys, listImages } from "@/lib/images";
 import {
   createVm,
   createdVmId,
   type CreateVmInput,
 } from "@/lib/vms";
-import { IMAGE_ALIAS_HINTS } from "@/lib/images";
 
 type Mode = "create" | "replace";
 
@@ -30,6 +32,10 @@ export function VmForm({
   onSubmitReplace?: (input: CreateVmInput) => Promise<void>;
 }) {
   const t = useT();
+  const catalogQuery = useQuery({
+    queryKey: imageKeys.list(),
+    queryFn: listImages,
+  });
   const [id, setId] = useState(initial?.id ?? "");
   const [from, setFrom] = useState(initial?.from ?? "ubuntu-latest");
   const [diskGib, setDiskGib] = useState(initial?.diskGib ?? 8);
@@ -63,7 +69,6 @@ export function VmForm({
     try {
       if (mode === "replace" && onSubmitReplace) {
         await onSubmitReplace(input);
-        // Parent owns confirmation + completion for replace.
         return;
       }
       const envelope = await createVm(input);
@@ -85,7 +90,7 @@ export function VmForm({
         mode === "replace"
           ? t("vmForm.replaceHint")
           : t("vmForm.createHint", {
-              aliases: IMAGE_ALIAS_HINTS.slice(0, 4).join(", "),
+              aliases: "ubuntu-latest, ubuntu-24.04, debian-12",
             })
       }
       onSubmit={(e: React.FormEvent<HTMLFormElement>) => void submit(e)}
@@ -100,21 +105,14 @@ export function VmForm({
             placeholder="web"
           />
         </FormField>
-        <FormField label={t("vmForm.from")}>
-          <input
-            required
-            value={from}
-            disabled={busy}
-            onChange={(e) => setFrom(e.target.value)}
-            placeholder="ubuntu-latest"
-            list="image-aliases"
-          />
-          <datalist id="image-aliases">
-            {IMAGE_ALIAS_HINTS.map((alias) => (
-              <option key={alias} value={alias} />
-            ))}
-          </datalist>
-        </FormField>
+        <ImageCatalogPicker
+          value={from}
+          catalog={catalogQuery.data?.catalog ?? []}
+          disabled={busy}
+          osLabelKey="vmForm.os"
+          versionLabelKey="vmForm.version"
+          onChange={setFrom}
+        />
         <FormField label={t("vmForm.disk")}>
           <input
             type="number"

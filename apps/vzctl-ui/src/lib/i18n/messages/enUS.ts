@@ -309,6 +309,8 @@ export const enUS: Record<MessageKey, string> = {
   "images.pullTitle": "Pull",
   "images.pullHint": "Load alias from catalog and normalize as raw.",
   "images.pullAlias": "Alias",
+  "images.os": "OS",
+  "images.version": "Version",
   "images.pull": "Pull",
   "images.tagTitle": "Tag (bake / seal)",
   "images.tagHint":
@@ -375,6 +377,8 @@ export const enUS: Record<MessageKey, string> = {
   "vmForm.replaceHint": "Deletes the existing VM and creates it anew.",
   "vmForm.id": "ID",
   "vmForm.from": "From (sealed / alias)",
+  "vmForm.os": "OS",
+  "vmForm.version": "Version",
   "vmForm.disk": "VM disk (GiB)",
   "vmForm.cpus": "CPUs",
   "vmForm.memory": "Memory (MiB or 2G)",

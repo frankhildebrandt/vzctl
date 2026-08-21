@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { ConsoleLog, type ConsoleLine } from "@/components/ApplyProgress";
 import {
   ActionRow,
@@ -27,7 +27,6 @@ import {
 } from "@/lib/jobLog";
 import {
   bakeImage,
-  catalogAliasOptions,
   DEFAULT_IMAGE_TAG,
   imageKeys,
   imageStateLabel,
@@ -38,6 +37,7 @@ import {
   type ImageListItem,
   type JobResponse,
 } from "@/lib/images";
+import { ImageCatalogPicker } from "@/components/ImageCatalogPicker";
 import { useSettingsStore } from "@/store/settingsStore";
 
 export function ImagesPage() {
@@ -58,11 +58,6 @@ export function ImagesPage() {
     queryKey: imageKeys.list(),
     queryFn: listImages,
   });
-
-  const catalogOptions = useMemo(
-    () => catalogAliasOptions(listQuery.data?.catalog ?? []),
-    [listQuery.data?.catalog],
-  );
 
   const tag = imageTag.trim();
   const tagOk = validImageTag(tag);
@@ -252,19 +247,12 @@ export function ImagesPage() {
           }}
         >
           <FormGrid>
-          <FormField label={t("images.pullAlias")}>
-            <select
-              value={pullAlias}
-              disabled={busy}
-              onChange={(e) => setPullAlias(e.target.value)}
-            >
-              {catalogOptions.map((alias) => (
-                <option key={alias} value={alias}>
-                  {alias}
-                </option>
-              ))}
-            </select>
-          </FormField>
+          <ImageCatalogPicker
+            value={pullAlias}
+            catalog={listQuery.data?.catalog ?? []}
+            disabled={busy}
+            onChange={setPullAlias}
+          />
           <Button type="submit" disabled={busy || !pullAlias.trim()}>
             {t("images.pull")}
           </Button>

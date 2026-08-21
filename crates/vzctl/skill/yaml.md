@@ -47,7 +47,7 @@ are required. Empty `routes`/`policies` must be `[]`.
 
 | Field | Notes |
 |---|---|
-| `from` | Pull alias: `ubuntu-latest`, `debian-latest`, `alpine-latest`, `arch-latest`, `fedora-latest`, `rocky-latest`, `alma-latest`, `opensuse-latest`, `fedora-coreos-latest` (`coreos-latest`), `flatcar-latest`, `photon-latest`, `opensuse-microos-latest`, `talos-latest` |
+| `from` | Pull alias: `ubuntu-latest`, `ubuntu-26.04`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-20.04`, `debian-latest`, `debian-13`, `debian-12`, `debian-11`, `alpine-latest`, `arch-latest`, `fedora-latest`, `rocky-latest`, `alma-latest`, `opensuse-latest`, `fedora-coreos-latest` (`coreos-latest`), `flatcar-latest`, `photon-latest`, `opensuse-microos-latest`, `talos-latest` |
 | `role` | only `base` |
 | `tag` | pins `sealed/<canonical>@<tag>.raw`; apply skips bake/seal when that tag is already sealed |
 

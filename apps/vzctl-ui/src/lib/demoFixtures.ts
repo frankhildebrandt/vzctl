@@ -135,10 +135,46 @@ const DEMO_IMAGE_CATALOG = [
     release: "26.04 LTS",
   },
   {
+    alias: "ubuntu-26.04",
+    aliases: ["ubuntu-26.04"],
+    distribution: "Ubuntu",
+    release: "26.04 LTS",
+  },
+  {
+    alias: "ubuntu-24.04",
+    aliases: ["ubuntu-24.04"],
+    distribution: "Ubuntu",
+    release: "24.04 LTS",
+  },
+  {
+    alias: "ubuntu-22.04",
+    aliases: ["ubuntu-22.04"],
+    distribution: "Ubuntu",
+    release: "22.04 LTS",
+  },
+  {
     alias: "debian-latest",
     aliases: ["debian-latest"],
     distribution: "Debian",
     release: "13 (stable/Trixie)",
+  },
+  {
+    alias: "debian-13",
+    aliases: ["debian-13"],
+    distribution: "Debian",
+    release: "13 (Trixie)",
+  },
+  {
+    alias: "debian-12",
+    aliases: ["debian-12"],
+    distribution: "Debian",
+    release: "12 (Bookworm)",
+  },
+  {
+    alias: "debian-11",
+    aliases: ["debian-11"],
+    distribution: "Debian",
+    release: "11 (Bullseye)",
   },
   {
     alias: "alpine-latest",

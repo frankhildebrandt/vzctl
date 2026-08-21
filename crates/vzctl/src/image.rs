@@ -125,6 +125,66 @@ const CATALOG: &[CatalogEntry] = &[
         },
     },
     CatalogEntry {
+        canonical: "ubuntu-26.04",
+        aliases: &["ubuntu-26.04"],
+        distribution: "Ubuntu",
+        release: "26.04 LTS",
+        resolver: Resolver::Static {
+            url: "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img",
+            filename: "ubuntu-26.04-server-cloudimg-arm64.img",
+            checksum: Checksum::Remote {
+                url: "https://cloud-images.ubuntu.com/releases/26.04/release/SHA256SUMS",
+                algorithm: HashAlgorithm::Sha256,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "ubuntu-24.04",
+        aliases: &["ubuntu-24.04"],
+        distribution: "Ubuntu",
+        release: "24.04 LTS",
+        resolver: Resolver::Static {
+            url: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img",
+            filename: "ubuntu-24.04-server-cloudimg-arm64.img",
+            checksum: Checksum::Remote {
+                url: "https://cloud-images.ubuntu.com/releases/24.04/release/SHA256SUMS",
+                algorithm: HashAlgorithm::Sha256,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "ubuntu-22.04",
+        aliases: &["ubuntu-22.04"],
+        distribution: "Ubuntu",
+        release: "22.04 LTS",
+        resolver: Resolver::Static {
+            url: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img",
+            filename: "ubuntu-22.04-server-cloudimg-arm64.img",
+            checksum: Checksum::Remote {
+                url: "https://cloud-images.ubuntu.com/releases/22.04/release/SHA256SUMS",
+                algorithm: HashAlgorithm::Sha256,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "ubuntu-20.04",
+        aliases: &["ubuntu-20.04"],
+        distribution: "Ubuntu",
+        release: "20.04 LTS",
+        resolver: Resolver::Static {
+            url: "https://cloud-images.ubuntu.com/releases/20.04/release/ubuntu-20.04-server-cloudimg-arm64.img",
+            filename: "ubuntu-20.04-server-cloudimg-arm64.img",
+            checksum: Checksum::Remote {
+                url: "https://cloud-images.ubuntu.com/releases/20.04/release/SHA256SUMS",
+                algorithm: HashAlgorithm::Sha256,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
         canonical: "debian-latest",
         aliases: &["debian-latest"],
         distribution: "Debian",
@@ -134,6 +194,51 @@ const CATALOG: &[CatalogEntry] = &[
             filename: "debian-13-generic-arm64.qcow2",
             checksum: Checksum::Remote {
                 url: "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+                algorithm: HashAlgorithm::Sha512,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "debian-13",
+        aliases: &["debian-13"],
+        distribution: "Debian",
+        release: "13 (Trixie)",
+        resolver: Resolver::Static {
+            url: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-arm64.qcow2",
+            filename: "debian-13-generic-arm64.qcow2",
+            checksum: Checksum::Remote {
+                url: "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+                algorithm: HashAlgorithm::Sha512,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "debian-12",
+        aliases: &["debian-12"],
+        distribution: "Debian",
+        release: "12 (Bookworm)",
+        resolver: Resolver::Static {
+            url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2",
+            filename: "debian-12-generic-arm64.qcow2",
+            checksum: Checksum::Remote {
+                url: "https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+                algorithm: HashAlgorithm::Sha512,
+            },
+            format: SourceFormat::Qcow2,
+        },
+    },
+    CatalogEntry {
+        canonical: "debian-11",
+        aliases: &["debian-11"],
+        distribution: "Debian",
+        release: "11 (Bullseye)",
+        resolver: Resolver::Static {
+            url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-arm64.qcow2",
+            filename: "debian-11-generic-arm64.qcow2",
+            checksum: Checksum::Remote {
+                url: "https://cloud.debian.org/images/cloud/bullseye/latest/SHA512SUMS",
                 algorithm: HashAlgorithm::Sha512,
             },
             format: SourceFormat::Qcow2,
@@ -2048,7 +2153,14 @@ mod tests {
             aliases(),
             vec![
                 "ubuntu-latest",
+                "ubuntu-26.04",
+                "ubuntu-24.04",
+                "ubuntu-22.04",
+                "ubuntu-20.04",
                 "debian-latest",
+                "debian-13",
+                "debian-12",
+                "debian-11",
                 "alpine-latest",
                 "arch-latest",
                 "fedora-latest",
@@ -2071,6 +2183,27 @@ mod tests {
             catalog_entry("coreos-latest").unwrap(),
             catalog_entry("fedora-coreos-latest").unwrap()
         ));
+    }
+
+    #[test]
+    fn versioned_ubuntu_and_debian_aliases_resolve_static_urls() {
+        let ubuntu = catalog_entry("ubuntu-24.04").unwrap();
+        assert_eq!(ubuntu.distribution, "Ubuntu");
+        assert_eq!(ubuntu.release, "24.04 LTS");
+        let Resolver::Static { url, filename, .. } = ubuntu.resolver else {
+            panic!("expected static resolver")
+        };
+        assert!(url.contains("/24.04/"));
+        assert!(filename.contains("24.04"));
+
+        let debian = catalog_entry("debian-12").unwrap();
+        assert_eq!(debian.distribution, "Debian");
+        assert_eq!(debian.release, "12 (Bookworm)");
+        let Resolver::Static { url, filename, .. } = debian.resolver else {
+            panic!("expected static resolver")
+        };
+        assert!(url.contains("/bookworm/"));
+        assert!(filename.contains("debian-12"));
     }
 
     #[test]

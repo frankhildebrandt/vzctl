@@ -41,7 +41,14 @@ export type ImageListResult = {
 
 export const IMAGE_ALIAS_HINTS = [
   "ubuntu-latest",
+  "ubuntu-26.04",
+  "ubuntu-24.04",
+  "ubuntu-22.04",
+  "ubuntu-20.04",
   "debian-latest",
+  "debian-13",
+  "debian-12",
+  "debian-11",
   "alpine-latest",
   "arch-latest",
   "fedora-latest",
@@ -55,6 +62,146 @@ export const IMAGE_ALIAS_HINTS = [
   "opensuse-microos-latest",
   "talos-latest",
 ] as const;
+
+export type ImageOsVersion = {
+  alias: string;
+  label: string;
+  isLatest: boolean;
+};
+
+export type ImageOsGroup = {
+  distribution: string;
+  versions: ImageOsVersion[];
+};
+
+function catalogEntryAliases(entry: ImageCatalogEntry): string[] {
+  const aliases = new Set<string>([entry.alias, ...entry.aliases]);
+  return [...aliases];
+}
+
+function isLatestAlias(alias: string): boolean {
+  return alias.endsWith("-latest");
+}
+
+function versionLabel(entry: ImageCatalogEntry): string {
+  return isLatestAlias(entry.alias)
+    ? `Latest (${entry.release})`
+    : entry.release;
+}
+
+/** Sort key: latest first, then descending numeric version segments. */
+function versionSortKey(alias: string): [number, number, number, number] {
+  if (isLatestAlias(alias)) return [0, Number.MAX_SAFE_INTEGER, 0, 0];
+  const numbers = alias.match(/\d+(?:\.\d+)*/g)?.[0]?.split(".").map(Number) ?? [];
+  const major = numbers[0] ?? 0;
+  const minor = numbers[1] ?? 0;
+  const patch = numbers[2] ?? 0;
+  return [1, major, minor, patch];
+}
+
+function compareVersions(a: ImageOsVersion, b: ImageOsVersion): number {
+  const left = versionSortKey(a.alias);
+  const right = versionSortKey(b.alias);
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] === right[index]) continue;
+    if (index === 0) return left[index]! - right[index]!;
+    return right[index]! - left[index]!;
+  }
+  return a.alias.localeCompare(b.alias);
+}
+
+function syntheticCatalogFromHints(): ImageCatalogEntry[] {
+  const distributionByPrefix: Record<string, string> = {
+    ubuntu: "Ubuntu",
+    debian: "Debian",
+    alpine: "Alpine Linux",
+    arch: "Arch Linux ARM",
+    fedora: "Fedora Cloud",
+    rocky: "Rocky Linux",
+    alma: "AlmaLinux",
+    opensuse: "openSUSE Leap",
+    flatcar: "Flatcar Container Linux",
+    photon: "VMware Photon OS",
+    talos: "Talos Linux",
+    coreos: "Fedora CoreOS",
+  };
+  return IMAGE_ALIAS_HINTS.map((alias) => {
+    const prefix = alias.split("-")[0] ?? alias;
+    const distribution =
+      alias.startsWith("fedora-coreos") || alias === "coreos-latest"
+        ? "Fedora CoreOS"
+        : alias.startsWith("opensuse-microos")
+          ? "openSUSE MicroOS"
+          : (distributionByPrefix[prefix] ?? prefix);
+    const release = isLatestAlias(alias) ? "latest" : alias.split("-").slice(1).join("-");
+    return { alias, aliases: [alias], distribution, release };
+  });
+}
+
+/** Group pull catalog entries by distribution for OS/version pickers. */
+export function catalogOsGroups(catalog: ImageCatalogEntry[]): ImageOsGroup[] {
+  const source = catalog.length > 0 ? catalog : syntheticCatalogFromHints();
+  const byDistribution = new Map<string, Map<string, ImageOsVersion>>();
+
+  for (const entry of source) {
+    const distribution = entry.distribution.trim();
+    if (!distribution) continue;
+    const versions = byDistribution.get(distribution) ?? new Map<string, ImageOsVersion>();
+    for (const alias of catalogEntryAliases(entry)) {
+      if (versions.has(alias)) continue;
+      versions.set(alias, {
+        alias,
+        label: versionLabel(entry),
+        isLatest: isLatestAlias(alias),
+      });
+    }
+    byDistribution.set(distribution, versions);
+  }
+
+  return [...byDistribution.entries()]
+    .map(([distribution, versions]) => ({
+      distribution,
+      versions: [...versions.values()].sort(compareVersions),
+    }))
+    .sort((left, right) => left.distribution.localeCompare(right.distribution));
+}
+
+export function resolveCatalogSelection(
+  groups: ImageOsGroup[],
+  distribution: string,
+  versionAlias: string,
+): string {
+  const group = groups.find((entry) => entry.distribution === distribution);
+  const version = group?.versions.find((entry) => entry.alias === versionAlias);
+  return version?.alias ?? versionAlias;
+}
+
+export function parseCatalogAlias(
+  groups: ImageOsGroup[],
+  alias: string,
+): { distribution: string; versionAlias: string } | null {
+  const trimmed = alias.trim();
+  if (!trimmed) return null;
+  for (const group of groups) {
+    const version = group.versions.find((entry) => entry.alias === trimmed);
+    if (version) {
+      return { distribution: group.distribution, versionAlias: version.alias };
+    }
+  }
+  return null;
+}
+
+export function defaultCatalogSelection(
+  groups: ImageOsGroup[],
+  preferredAlias = "ubuntu-latest",
+): { distribution: string; versionAlias: string } | null {
+  const parsed = parseCatalogAlias(groups, preferredAlias);
+  if (parsed) return parsed;
+  const first = groups[0];
+  const version = first?.versions[0];
+  if (!first || !version) return null;
+  return { distribution: first.distribution, versionAlias: version.alias };
+}
 
 export const imageKeys = {
   all: ["images"] as const,

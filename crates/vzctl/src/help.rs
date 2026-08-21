@@ -226,9 +226,11 @@ vzctl image — ARM64 cloud/server disks (not installer ISOs)
   bake <alias> --tag <tag> [--format human|json]
   seal <name|path> --tag <tag> [--format human|json]
 
-Aliases include ubuntu-latest, debian-latest, alpine-latest, fedora-latest,
-rocky-latest, alma-latest, arch-latest, opensuse-latest, coreos-latest,
-flatcar-latest, photon-latest, opensuse-microos-latest, talos-latest.
+Aliases include ubuntu-latest, ubuntu-26.04, ubuntu-24.04, ubuntu-22.04,
+ubuntu-20.04, debian-latest, debian-13, debian-12, debian-11, alpine-latest,
+fedora-latest, rocky-latest, alma-latest, arch-latest, opensuse-latest,
+coreos-latest, flatcar-latest, photon-latest, opensuse-microos-latest,
+talos-latest.
 
 Workflow: pull → bake --tag → seal --tag. Stack YAML pins `spec.images.*.tag`.
 Apply skips bake/seal when that tag is already sealed."
@@ -244,7 +246,7 @@ vzctl vm — imperative VM lifecycle (prefer YAML + apply for stacks)
        [--network name] [--role router|docker] [--cloud-init PATH]
        [--project P] [--root-password <secret>] [--mount tag=…,source=…,target=…[,ro]]
   list [--format human|json]
-  start|stop|delete|inspect <id>
+  start|stop|restart|delete|inspect <id>
   stop <id> [--wait true|false]
   delete <id> [--force]
   modify <id> [--cpus N] [--memory SIZE]     (no hotplug; restart needed)

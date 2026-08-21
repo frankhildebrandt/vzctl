@@ -7,6 +7,8 @@ und amd64-Images sind nicht Teil dieses Vertrags.
 ```bash
 vzctl image list
 vzctl image pull ubuntu-latest
+vzctl image pull ubuntu-24.04
+vzctl image pull debian-12
 vzctl image pull coreos-latest --format json
 vzctl image seal ubuntu-latest
 vzctl vm create web --from ubuntu-latest --disk 20
@@ -16,8 +18,15 @@ vzctl vm create web --from ubuntu-latest --disk 20
 
 | Alias | Release/Kanal | ARM64-Quelle | Eingabe |
 |---|---|---|---|
-| `ubuntu-latest` | Ubuntu 26.04 LTS | `cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img` | qcow2 |
+| `ubuntu-latest` | Ubuntu 26.04 LTS (rolling latest) | `cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img` | qcow2 |
+| `ubuntu-26.04` | Ubuntu 26.04 LTS | `cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img` | qcow2 |
+| `ubuntu-24.04` | Ubuntu 24.04 LTS | `cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img` | qcow2 |
+| `ubuntu-22.04` | Ubuntu 22.04 LTS | `cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img` | qcow2 |
+| `ubuntu-20.04` | Ubuntu 20.04 LTS | `cloud-images.ubuntu.com/releases/20.04/release/ubuntu-20.04-server-cloudimg-arm64.img` | qcow2 |
 | `debian-latest` | Debian 13 Stable (Trixie) | `cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-arm64.qcow2` | qcow2 |
+| `debian-13` | Debian 13 (Trixie) | `cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-arm64.qcow2` | qcow2 |
+| `debian-12` | Debian 12 (Bookworm) | `cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2` | qcow2 |
+| `debian-11` | Debian 11 (Bullseye) | `cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-arm64.qcow2` | qcow2 |
 | `alpine-latest` | Alpine 3.24.1 Generic UEFI cloud-init | `dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-aarch64-uefi-cloudinit-r0.qcow2` | qcow2 |
 | `arch-latest` | Arch Linux ARM, UTM-Snapshot `archlinux-arm64` | `utmapp/vm-downloads` Asset `archlinux-arm64-utm4.zip` | zip/qcow2 |
 | `fedora-latest` | Fedora 44 Cloud Base 44-1.7 | Fedora `releases/44/Cloud/aarch64/images` | qcow2 |
