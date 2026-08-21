@@ -22,6 +22,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/frankhildebrandt/vzctl/guest-agent/systemd"
 )
 
 const (
@@ -76,6 +78,7 @@ type server struct {
 	stats    *statsCollector
 	health   *healthTracker
 	services *serviceRegistry
+	systemd  *systemd.Manager
 }
 
 type timeHintPolicy struct {
@@ -388,7 +391,15 @@ func (s *server) serveConn(conn net.Conn) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			response := handleRequestWithPolicy(requestContext, req, s.timeHint, s.collector(), s.tracker(), s.services)
+			response := handleRequestWithPolicy(
+				requestContext,
+				req,
+				s.timeHint,
+				s.collector(),
+				s.tracker(),
+				s.services,
+				s.systemdManager(),
+			)
 			inflightMu.Lock()
 			_ = writer.write(response)
 			delete(inflight, req.ID)
@@ -466,10 +477,18 @@ func (s *server) tracker() *healthTracker {
 }
 
 func handleRequest(ctx context.Context, req request) response {
-	return handleRequestWithPolicy(ctx, req, timeHintPolicy{}, nil, nil, nil)
+	return handleRequestWithPolicy(ctx, req, timeHintPolicy{}, nil, nil, nil, nil)
 }
 
-func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPolicy, stats *statsCollector, health *healthTracker, services *serviceRegistry) response {
+func handleRequestWithPolicy(
+	ctx context.Context,
+	req request,
+	policy timeHintPolicy,
+	stats *statsCollector,
+	health *healthTracker,
+	services *serviceRegistry,
+	systemdMgr *systemd.Manager,
+) response {
 	if req.V != protocolVersion {
 		return errorResponse(req.ID, "proto", "unsupported protocol version", map[string]any{
 			"supported_versions": []int{protocolVersion},
@@ -535,6 +554,32 @@ func handleRequestWithPolicy(ctx context.Context, req request, policy timeHintPo
 		return handleServicesList(req, services)
 	case "services.http":
 		return handleServicesHTTP(ctx, req, services)
+	case "systemd.status":
+		if systemdMgr == nil {
+			systemdMgr = systemd.NewManager()
+		}
+		return handleSystemdStatus(req, systemdMgr)
+	case "systemd.list":
+		if systemdMgr == nil {
+			systemdMgr = systemd.NewManager()
+		}
+		return handleSystemdList(ctx, req, systemdMgr)
+	case "systemd.show":
+		if systemdMgr == nil {
+			systemdMgr = systemd.NewManager()
+		}
+		return handleSystemdShow(ctx, req, systemdMgr)
+	case "systemd.control":
+		if systemdMgr == nil {
+			systemdMgr = systemd.NewManager()
+		}
+		return handleSystemdControl(ctx, req, systemdMgr)
+	case "systemd.events":
+		if systemdMgr == nil {
+			systemdMgr = systemd.NewManager()
+		}
+		systemdMgr.EnsureWatcher(ctx)
+		return handleSystemdEvents(req, systemdMgr)
 	default:
 		return errorResponse(req.ID, "unsupported", "method is not supported", map[string]any{
 			"method": req.Method,
@@ -1015,10 +1060,12 @@ func isGuestAddress(ip net.IP) bool {
 }
 
 func versionResult() map[string]any {
+	caps := append([]string{}, capabilities...)
+	caps = append(caps, systemdCapabilities()...)
 	return map[string]any{
 		"v":             protocolVersion,
 		"agent_version": version,
-		"capabilities":  capabilities,
+		"capabilities":  caps,
 	}
 }
 

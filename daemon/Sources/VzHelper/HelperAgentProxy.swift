@@ -224,6 +224,92 @@ enum HelperAgentRequest {
         }
         return ServicesHTTPParams(name: name, method: method, path: path, headers: headers, body: body)
     }
+
+    struct SystemdListParams: Equatable, Sendable {
+        let type: String?
+        let all: Bool
+    }
+
+    struct SystemdControlParams: Equatable, Sendable {
+        let unit: String
+        let action: String
+    }
+
+    struct SystemdEventsParams: Equatable, Sendable {
+        let since: String?
+        let limit: Int
+    }
+
+    static func parseSystemdList(_ value: JSONValue?) throws -> SystemdListParams {
+        guard case let .object(params)? = value else {
+            throw RouteApplyError.invalid("agent.systemd.list params must be an object")
+        }
+        let type: String?
+        if case let .string(raw)? = params["type"], !raw.isEmpty {
+            type = raw
+        } else if params["type"] == nil || params["type"] == .null {
+            type = nil
+        } else {
+            throw RouteApplyError.invalid("agent.systemd.list type must be a string")
+        }
+        let all: Bool
+        if case let .bool(value)? = params["all"] {
+            all = value
+        } else if params["all"] == nil || params["all"] == .null {
+            all = false
+        } else {
+            throw RouteApplyError.invalid("agent.systemd.list all must be a boolean")
+        }
+        return SystemdListParams(type: type, all: all)
+    }
+
+    static func parseSystemdUnit(_ value: JSONValue?) throws -> String {
+        guard case let .object(params)? = value,
+              case let .string(unit)? = params["unit"],
+              !unit.isEmpty
+        else {
+            throw RouteApplyError.invalid("agent.systemd.show requires unit")
+        }
+        return unit
+    }
+
+    static func parseSystemdControl(_ value: JSONValue?) throws -> SystemdControlParams {
+        guard case let .object(params)? = value,
+              case let .string(unit)? = params["unit"],
+              !unit.isEmpty,
+              case let .string(action)? = params["action"],
+              ["start", "stop", "restart"].contains(action)
+        else {
+            throw RouteApplyError.invalid("agent.systemd.control requires unit and action")
+        }
+        return SystemdControlParams(unit: unit, action: action)
+    }
+
+    static func parseSystemdEvents(_ value: JSONValue?) throws -> SystemdEventsParams {
+        guard case let .object(params)? = value else {
+            throw RouteApplyError.invalid("agent.systemd.events params must be an object")
+        }
+        let since: String?
+        if case let .string(raw)? = params["since"], !raw.isEmpty {
+            since = raw
+        } else if params["since"] == nil || params["since"] == .null {
+            since = nil
+        } else {
+            throw RouteApplyError.invalid("agent.systemd.events since must be a string")
+        }
+        let limit: Int
+        if case let .number(raw)? = params["limit"] {
+            guard raw.rounded() == raw, raw > 0, raw <= 512 else {
+                throw RouteApplyError.invalid("agent.systemd.events limit must be 1...512")
+            }
+            limit = Int(raw)
+        } else if params["limit"] == nil || params["limit"] == .null {
+            limit = 100
+        } else {
+            throw RouteApplyError.invalid("agent.systemd.events limit must be a number")
+        }
+        return SystemdEventsParams(since: since, limit: limit)
+    }
 }
 
 enum HelperAgentProxy {
@@ -240,6 +326,11 @@ enum HelperAgentProxy {
         "agent.services.list",
         "agent.services.http",
         "agent.services.stream",
+        "agent.systemd.status",
+        "agent.systemd.list",
+        "agent.systemd.show",
+        "agent.systemd.control",
+        "agent.systemd.events",
     ]
 
     static func run(
@@ -371,6 +462,32 @@ enum HelperAgentProxy {
                     path: parsed.path,
                     headers: parsed.headers,
                     body: parsed.body
+                )
+            )
+        case "agent.systemd.status":
+            return JSONValue.fromAny(try client.systemdStatus())
+        case "agent.systemd.list":
+            let listParams = try HelperAgentRequest.parseSystemdList(params)
+            return .object([
+                "units": .array(
+                    try client.systemdList(type: listParams.type, all: listParams.all)
+                        .map { JSONValue.fromAny($0) }
+                ),
+            ])
+        case "agent.systemd.show":
+            let unit = try HelperAgentRequest.parseSystemdUnit(params)
+            return .object(["unit": JSONValue.fromAny(try client.systemdShow(unit: unit))])
+        case "agent.systemd.control":
+            let control = try HelperAgentRequest.parseSystemdControl(params)
+            return JSONValue.fromAny(
+                try client.systemdControl(unit: control.unit, action: control.action)
+            )
+        case "agent.systemd.events":
+            let eventsParams = try HelperAgentRequest.parseSystemdEvents(params)
+            return JSONValue.fromAny(
+                try client.systemdEvents(
+                    since: eventsParams.since,
+                    limit: eventsParams.limit
                 )
             )
         default:

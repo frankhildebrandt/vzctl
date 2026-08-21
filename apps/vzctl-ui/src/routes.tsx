@@ -41,6 +41,7 @@ import { StackStatusCard } from "@/components/StackStatus";
 import { DashboardPage } from "@/components/pages";
 import { ContainerDetailPage } from "@/components/ContainerDetailPage";
 import { ContainersPage } from "@/components/ContainersPage";
+import { VmServicesPage } from "@/components/VmServicesPage";
 import { ImagesPage } from "@/components/ImagesPage";
 import { NetworksPage } from "@/components/NetworksPage";
 import { VmDetailLayout } from "@/components/VmDetailLayout";
@@ -225,6 +226,15 @@ export const vmReplaceRoute = createRoute({
     return (
       <VmReplacePage vmId={decodeVmIdParam(rawVmId)} stackPath={stackPath} />
     );
+  },
+});
+
+export const vmServicesRoute = createRoute({
+  getParentRoute: () => vmDetailRoute,
+  path: "services",
+  component: function VmServicesRoute() {
+    const { vmId: rawVmId } = vmDetailRoute.useParams();
+    return <VmServicesPage vmId={decodeVmIdParam(rawVmId)} />;
   },
 });
 

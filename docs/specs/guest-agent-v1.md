@@ -214,6 +214,41 @@ Memory comes from `MemTotal`/`MemAvailable`. IOPS sum whole disks (`vda`,
 Older agents without the capability return `unsupported`. Hosts should show
 n/a until `vzctl vm agent upgrade`.
 
+### `systemd.*` (capability `systemd`)
+
+When PID 1 is systemd, the agent advertises capability `systemd` and exposes
+guest unit management without shell `exec`:
+
+| Method | Params | Result |
+|---|---|---|
+| `systemd.status` | `{}` | `{available, version?}` |
+| `systemd.list` | `{type?: service\|timer\|socket, all?: bool}` | `{units[]}` |
+| `systemd.show` | `{unit}` | `{unit: {name, type, load, active, sub, description, unit_file, fragment}}` |
+| `systemd.control` | `{unit, action: start\|stop\|restart}` | `{unit, action, ok: true}` |
+| `systemd.events` | `{since?: string, limit?: int}` | `{events[], cursor}` |
+
+`systemd.list` uses `systemctl list-units --output=json`. `systemd.show` uses
+`systemctl show`. Unit names are validated (no `;`, no `..`, max 256 bytes).
+
+When systemd is unavailable (OpenRC guests), `systemd.status` returns
+`available: false` and other methods return `unavailable`.
+
+A background D-Bus subscription buffers up to 512 normalized unit-change events.
+`systemd.events` returns entries after `since` (event `id` cursor). Event shape:
+
+```json
+{
+  "id": "1785387600000000000:nginx.service",
+  "unit": "nginx.service",
+  "unit_type": "service",
+  "load": "loaded",
+  "active": "active",
+  "sub": "running",
+  "reason": "properties_changed",
+  "at": "2026-08-22T10:00:00.000000000Z"
+}
+```
+
 ### Guest publish (`guest_publish`)
 
 Capability `guest_publish` lets guest processes advertise a **loopback HTTP
@@ -513,7 +548,7 @@ The host control plane may push a **guest utils bundle** to running VMs without
 rebaking the sealed base image. The bundle contains:
 
 - `/usr/local/sbin/vzctl-agent` (cross-built ARM64 binary)
-- `/usr/local/bin/iwatch` (GitHub Release `linux_arm64`, pin `guest-agent/IWATCH_VERSION`)
+- `/usr/local/bin/iwatch` (GitHub Release `linux_arm64` from `releases/latest`; override `VZCTL_IWATCH_VERSION` / `VZCTL_IWATCH_BIN`)
 - `/usr/local/lib/vzctl/{virtiofs-bind,router-apply,ca-inject}`
 - `/etc/sudoers.d/vzctl-{agent,virtiofs,router,ca}`
 - `/etc/systemd/system/vzctl-agent.service` (and OpenRC unit when present)
@@ -530,7 +565,7 @@ After a successful rollout the guest records:
 {
   "bundle_id": "0.1.3-deadbeef",
   "agent_version": "0.1.3",
-  "iwatch_version": "v0.1.0",
+  "iwatch_version": "v0.2.0",
   "content_sha256": "...",
   "updated_at": "2026-08-07T12:00:00Z"
 }

@@ -840,12 +840,14 @@ mod tests {
     #[test]
     fn content_fingerprint_is_stable() {
         let _guard = env_lock().lock().unwrap();
-        std::env::remove_var("VZCTL_IWATCH_VERSION");
+        std::env::set_var("VZCTL_IWATCH_VERSION", "v0.0.0");
         std::env::remove_var("VZCTL_IWATCH_BIN");
         let first = content_fingerprint("0.1.3");
         let second = content_fingerprint("0.1.3");
+        let other = content_fingerprint("0.1.4");
+        std::env::remove_var("VZCTL_IWATCH_VERSION");
         assert_eq!(first, second);
-        assert_ne!(first, content_fingerprint("0.1.4"));
+        assert_ne!(first, other);
     }
 
     #[test]

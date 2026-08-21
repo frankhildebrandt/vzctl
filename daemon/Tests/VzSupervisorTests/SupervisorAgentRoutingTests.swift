@@ -9,6 +9,8 @@ import VzDaemonKit
     #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.services.list"))
     #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.services.http"))
     #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.services.stream"))
+    #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.systemd.status"))
+    #expect(SupervisorServer.proxiedAgentMethods.contains("vm.agent.systemd.list"))
 }
 
 @Test func failedHelperStateIsVisibleWithConcreteError() throws {

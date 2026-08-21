@@ -67,6 +67,8 @@ import VzDaemonKit
     #expect(HelperAgentProxy.methods.contains("agent.services.list"))
     #expect(HelperAgentProxy.methods.contains("agent.services.http"))
     #expect(HelperAgentProxy.methods.contains("agent.services.stream"))
+    #expect(HelperAgentProxy.methods.contains("agent.systemd.status"))
+    #expect(HelperAgentProxy.methods.contains("agent.systemd.list"))
 }
 
 @Test func agentCAInjectParsesRequiredParamsAndDefaultName() throws {

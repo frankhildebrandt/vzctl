@@ -236,7 +236,7 @@ fn vm_exec_inspect_services_and_guest_ps() {
     let socket = state.join("vz.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = thread::spawn(move || {
-        for _ in 0..8 {
+        for _ in 0..9 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = String::new();
             BufReader::new(stream.try_clone().unwrap())
@@ -303,6 +303,11 @@ fn vm_exec_inspect_services_and_guest_ps() {
                 Some("vm.agent.report_ip") => json!({
                     "jsonrpc": "2.0",
                     "result": {"interfaces": []},
+                    "id": request["id"],
+                }),
+                Some("vm.agent.systemd.status") => json!({
+                    "jsonrpc": "2.0",
+                    "result": {"available": false},
                     "id": request["id"],
                 }),
                 other => panic!("unexpected method {other:?}"),

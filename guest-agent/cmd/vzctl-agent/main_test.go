@@ -108,7 +108,7 @@ func TestTimeHintNoneBelowThreshold(t *testing.T) {
 			t.Fatal("clock must not be stepped")
 			return nil
 		},
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	if !got.OK {
 		t.Fatalf("response = %#v", got)
 	}
@@ -130,7 +130,7 @@ func TestTimeHintStepsAboveThreshold(t *testing.T) {
 		thresholdMS: 1_000,
 		now:         func() time.Time { return now },
 		step:        func(value time.Time) error { steppedTo = value; return nil },
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	if !got.OK || got.Result.(map[string]any)["action"] != "stepped" {
 		t.Fatalf("response = %#v", got)
 	}
@@ -153,7 +153,7 @@ func TestTimeHintDryRunSkipsAndValidatesReason(t *testing.T) {
 	got := handleRequestWithPolicy(context.Background(), request{
 		V: 1, ID: "time-dry", Method: "time_hint",
 		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"manual"}`),
-	}, policy, nil, nil, nil)
+	}, policy, nil, nil, nil, nil)
 	if !got.OK || got.Result.(map[string]any)["action"] != "skipped" {
 		t.Fatalf("response = %#v", got)
 	}
@@ -161,7 +161,7 @@ func TestTimeHintDryRunSkipsAndValidatesReason(t *testing.T) {
 	invalid := handleRequestWithPolicy(context.Background(), request{
 		V: 1, ID: "time-invalid", Method: "time_hint",
 		Params: json.RawMessage(`{"host_unix_ms":1785387600000,"reason":"resume"}`),
-	}, policy, nil, nil, nil)
+	}, policy, nil, nil, nil, nil)
 	if invalid.OK || invalid.Error == nil || invalid.Error.Code != "proto" {
 		t.Fatalf("response = %#v", invalid)
 	}

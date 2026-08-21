@@ -50,6 +50,7 @@ describe("resolveSidebarNav", () => {
     expect(nav.items.map((i) => i.id)).toEqual([
       "overview",
       "logs",
+      "services",
       "shell",
       "console",
       "modify",
@@ -94,6 +95,7 @@ describe("resolveSidebarNav", () => {
     expect(nav.items.map((i) => i.id)).toContain("delete");
     expect(nav.items.find((i) => i.id === "shell")?.disabled).toBe(true);
     expect(nav.items.find((i) => i.id === "logs")?.disabled).toBe(true);
+    expect(nav.items.find((i) => i.id === "services")?.disabled).toBe(true);
   });
 
   it("builds settings with dashboard escape and no redundant back", () => {

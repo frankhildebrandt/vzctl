@@ -34,6 +34,11 @@ final class SupervisorServer: @unchecked Sendable {
         "vm.agent.services.list",
         "vm.agent.services.http",
         "vm.agent.services.stream",
+        "vm.agent.systemd.status",
+        "vm.agent.systemd.list",
+        "vm.agent.systemd.show",
+        "vm.agent.systemd.control",
+        "vm.agent.systemd.events",
     ]
 
     let socketPath: String
@@ -55,6 +60,7 @@ final class SupervisorServer: @unchecked Sendable {
     private var eventListeners: [UUID: EventListener] = [:]
     private var restServer: RestServer?
     private var networkResilience: NetworkResilienceController?
+    private var systemdEvents: SystemdEventBridge?
     private let restJobs: RestJobRunner
     private let restRouter: RestRouter
     private let apiListenSpec: RestListenSpec
@@ -124,6 +130,27 @@ final class SupervisorServer: @unchecked Sendable {
             networkResilience = resilience
             resilience.start()
 
+            let systemdBridge = SystemdEventBridge(
+                stateDirectory: stateDirectory,
+                runningVMs: { [unowned self] in
+                    self.stateLock.withLock {
+                        self.helpers.values
+                            .filter { $0.state == "running" }
+                            .map(\.vmID)
+                    }
+                },
+                hasSubscriber: { [unowned self] in
+                    self.stateLock.withLock {
+                        self.subscribers.values.contains {
+                            $0.filter.matches("vm.systemd.unit")
+                        }
+                    }
+                },
+                emit: { [unowned self] type, data in self.emit(type: type, data: data) }
+            )
+            systemdEvents = systemdBridge
+            systemdBridge.start()
+
             while true {
                 let client = Darwin.accept(fd, nil, nil)
                 if client < 0 {
@@ -162,6 +189,8 @@ final class SupervisorServer: @unchecked Sendable {
     func stop() {
         networkResilience?.stop()
         networkResilience = nil
+        systemdEvents?.stop()
+        systemdEvents = nil
         let state = stateLock.withLock { () -> (Int32, Bool, [Int32]) in
             let current = listener
             let shouldUnlink = ownsSocket

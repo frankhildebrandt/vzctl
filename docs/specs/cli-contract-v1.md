@@ -396,6 +396,8 @@ vzctl vm health <id> [--format human|json]
 vzctl vm stats <id> [--format human|json]
 vzctl vm transfer <id> <src> <dst> [--format human|json]
 vzctl vm attach <id>
+vzctl vm services <id> [--type service|timer|socket] [--all] [--format human|json]
+vzctl vm services <id> status <unit> [--format human|json]
 vzctl vm services <id> [start|stop|restart <unit>] [--format human|json]
 vzctl vm ps <id> [--format human|json]
 vzctl vm agent upgrade <id>|--all [--format human|json]
@@ -439,7 +441,12 @@ Format. Follow+JSON bleibt Exit `3`.
 zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).
 `transfer` kopiert Dateien host↔guest (`<id>:<guest-path>` vs. Host-Pfad) über
 `exec` + base64/`tee` und ist auf 256 KiB begrenzt (darüber Exit `12`).
-`services` und `vm ps` sind feste `exec`-Wrapper (`systemctl` bzw. `ps`).
+`services` wraps guest systemd when the agent exposes capability `systemd`
+(`vm.agent.systemd.*`); older agents fall back to `systemctl` via `exec` for
+list/start/stop/restart only. JSON includes structured `units[]` or `unit` and
+`systemd.available`. Subscribe to unit changes with
+`vzctl events subscribe --filter 'vm.systemd.*'`. `vm ps` bleibt ein fester
+`exec`-Wrapper (`ps`).
 `attach` öffnet die Serial-Console am Helper-Socket
 `$VZCTL_STATE_DIR/helpers/<FNV64(vm-id)>.console.sock` im Raw-TTY-Modus. Der
 hash-only Dateiname hält den AF_UNIX-Pfad auch bei Project-prefixten VM-IDs kurz.

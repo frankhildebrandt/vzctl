@@ -402,6 +402,59 @@ final class GuestAgentClient: @unchecked Sendable {
         return try request(method: "services.http", params: params, timeout: timeout)
     }
 
+    func systemdStatus(timeout: TimeInterval = 5) throws -> [String: Any] {
+        try request(method: "systemd.status", params: [:], timeout: timeout)
+    }
+
+    func systemdList(
+        type: String? = nil,
+        all: Bool = false,
+        timeout: TimeInterval = 35
+    ) throws -> [[String: Any]] {
+        var params: [String: Any] = [:]
+        if let type { params["type"] = type }
+        if all { params["all"] = true }
+        let result = try request(method: "systemd.list", params: params, timeout: timeout)
+        guard let units = result["units"] as? [[String: Any]] else {
+            throw GuestAgentError.protocolViolation("invalid systemd.list result")
+        }
+        return units
+    }
+
+    func systemdShow(unit: String, timeout: TimeInterval = 35) throws -> [String: Any] {
+        let result = try request(
+            method: "systemd.show",
+            params: ["unit": unit],
+            timeout: timeout
+        )
+        guard let props = result["unit"] as? [String: Any] else {
+            throw GuestAgentError.protocolViolation("invalid systemd.show result")
+        }
+        return props
+    }
+
+    func systemdControl(
+        unit: String,
+        action: String,
+        timeout: TimeInterval = 35
+    ) throws -> [String: Any] {
+        try request(
+            method: "systemd.control",
+            params: ["unit": unit, "action": action],
+            timeout: timeout
+        )
+    }
+
+    func systemdEvents(
+        since: String? = nil,
+        limit: Int = 100,
+        timeout: TimeInterval = 35
+    ) throws -> [String: Any] {
+        var params: [String: Any] = ["limit": limit]
+        if let since, !since.isEmpty { params["since"] = since }
+        return try request(method: "systemd.events", params: params, timeout: timeout)
+    }
+
     /// Negotiates a guest HTTP stream upgrade. After success, read mux stdout.
     func upgradeServiceStream(
         name: String,

@@ -357,7 +357,68 @@ final class RestRouter: @unchecked Sendable {
             )
         }
 
+        if let response = try routeSystemd(
+            vmId: vmId,
+            method: method,
+            rest: Array(rest.dropFirst(2)),
+            request: request
+        ) {
+            return response
+        }
+
         throw RestRouteError(404, .notFound, "vm sub-route")
+    }
+
+    private func routeSystemd(
+        vmId: String,
+        method: String,
+        rest: [String],
+        request: RestHTTPRequest
+    ) throws -> RestHTTPResponse? {
+        guard let first = rest.first, first == "systemd" else { return nil }
+        if rest.count == 1, method == "GET" {
+            return try rpcOK(
+                "vm.agent.systemd.status",
+                params: .object(["vm_id": .string(vmId)])
+            )
+        }
+        guard rest.count >= 2, rest[1] == "units" else { return nil }
+        if rest.count == 2, method == "GET" {
+            var params: [String: JSONValue] = ["vm_id": .string(vmId)]
+            if let unitType = request.query["type"], !unitType.isEmpty {
+                params["type"] = .string(unitType)
+            }
+            if request.query["all"] == "1" || request.query["all"] == "true" {
+                params["all"] = .bool(true)
+            }
+            return try rpcOK("vm.agent.systemd.list", params: .object(params))
+        }
+        guard rest.count >= 3 else { return nil }
+        let unit = decodePathSegment(rest[2])
+        if rest.count == 3, method == "GET" {
+            return try rpcOK(
+                "vm.agent.systemd.show",
+                params: .object([
+                    "vm_id": .string(vmId),
+                    "unit": .string(unit),
+                ])
+            )
+        }
+        if rest.count == 4, method == "POST", ["start", "stop", "restart"].contains(rest[3]) {
+            return try rpcOK(
+                "vm.agent.systemd.control",
+                params: .object([
+                    "vm_id": .string(vmId),
+                    "unit": .string(unit),
+                    "action": .string(rest[3]),
+                ])
+            )
+        }
+        return nil
+    }
+
+    private func decodePathSegment(_ value: String) -> String {
+        value.removingPercentEncoding ?? value
     }
 
     private func createVM(_ request: RestHTTPRequest) throws -> RestHTTPResponse {

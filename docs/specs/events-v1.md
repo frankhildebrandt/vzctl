@@ -128,6 +128,24 @@ A-Adressen, nicht nur Namen.
 Gleiches Schema wie `dns.reloaded`, aber `ok=false` und `error` enthält die
 Snapshot- oder Bind-Ursache. Bereits erfolgreiche Listener bleiben aktiv.
 
+### `vm.systemd.unit`
+
+Emitted when a guest systemd unit changes state. Requires an upgraded guest
+agent with capability `systemd` and an active `events.subscribe` filter such as
+`vm.systemd.*`.
+
+```json
+{
+  "vm_id": "lab/web",
+  "unit": "nginx.service",
+  "unit_type": "service",
+  "load": "loaded",
+  "active": "active",
+  "sub": "running",
+  "reason": "properties_changed"
+}
+```
+
 ### Host-Network-Recovery
 
 Alle Events tragen `epoch`. Sensible Pfaddaten wie SSID, öffentliche IP und

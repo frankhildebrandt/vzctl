@@ -7,18 +7,51 @@ use std::process::Command;
 const IWATCH_REPO: &str = "frankhildebrandt/iwatch";
 pub const IWATCH_GUEST_PATH: &str = "/usr/local/bin/iwatch";
 
-/// Pinned iwatch release tag (`vX.Y.Z`), overridable via `VZCTL_IWATCH_VERSION`.
+/// Release tag to bundle: `VZCTL_IWATCH_VERSION` pin, otherwise GitHub `latest`.
 pub fn iwatch_version_string() -> Result<String, GuestUtilsError> {
-    if let Ok(version) = std::env::var("VZCTL_IWATCH_VERSION") {
-        let trimmed = version.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
+    if let Some(version) = configured_iwatch_version() {
+        if !version.eq_ignore_ascii_case("latest") {
+            return Ok(version);
         }
     }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../guest-agent/IWATCH_VERSION");
-    fs::read_to_string(&path)
+    fetch_latest_iwatch_tag()
+}
+
+fn configured_iwatch_version() -> Option<String> {
+    std::env::var("VZCTL_IWATCH_VERSION")
+        .ok()
         .map(|value| value.trim().to_string())
-        .map_err(|error| GuestUtilsError::new(format!("read guest-agent/IWATCH_VERSION: {error}")))
+        .filter(|value| !value.is_empty())
+}
+
+/// Parse the tag from a GitHub `/releases/latest` redirect target.
+pub fn parse_latest_tag(url: &str) -> Result<String, GuestUtilsError> {
+    let url = url.trim().trim_end_matches('/');
+    let Some(tag) = url.rsplit_once("/tag/").map(|(_, tag)| tag) else {
+        return Err(GuestUtilsError::new(format!(
+            "cannot parse iwatch latest tag from {url}"
+        )));
+    };
+    if tag.is_empty() || tag.contains('/') {
+        return Err(GuestUtilsError::new(format!(
+            "cannot parse iwatch latest tag from {url}"
+        )));
+    }
+    Ok(tag.to_string())
+}
+
+fn fetch_latest_iwatch_tag() -> Result<String, GuestUtilsError> {
+    let url = format!("https://github.com/{IWATCH_REPO}/releases/latest");
+    let output = Command::new("curl")
+        .args(["-fsSL", "-o", "/dev/null", "-w", "%{url_effective}", &url])
+        .output()
+        .map_err(|error| GuestUtilsError::new(format!("curl {url}: {error}")))?;
+    if !output.status.success() {
+        return Err(GuestUtilsError::new(format!(
+            "cannot resolve latest iwatch release from {url}"
+        )));
+    }
+    parse_latest_tag(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// GoReleaser archive filename for the linux/arm64 guest binary.
@@ -203,6 +236,34 @@ mod tests {
             iwatch_archive_name("1.2.3"),
             "iwatch_1.2.3_linux_arm64.tar.gz"
         );
+    }
+
+    #[test]
+    fn parse_latest_tag_from_github_redirect() {
+        assert_eq!(
+            parse_latest_tag(
+                "https://github.com/frankhildebrandt/iwatch/releases/tag/v0.2.0\n"
+            )
+            .unwrap(),
+            "v0.2.0"
+        );
+        assert_eq!(
+            parse_latest_tag("https://github.com/frankhildebrandt/iwatch/releases/tag/v1.0.0/")
+                .unwrap(),
+            "v1.0.0"
+        );
+        assert!(parse_latest_tag(
+            "https://github.com/frankhildebrandt/iwatch/releases/latest"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn version_string_uses_env_pin() {
+        std::env::set_var("VZCTL_IWATCH_VERSION", "v9.9.9");
+        let version = iwatch_version_string().unwrap();
+        std::env::remove_var("VZCTL_IWATCH_VERSION");
+        assert_eq!(version, "v9.9.9");
     }
 
     #[test]

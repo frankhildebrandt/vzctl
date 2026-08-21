@@ -111,6 +111,10 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 | `GET` | `/v1/vms/{id}/mounts` | Mounts |
 | `POST` | `/v1/vms/{id}/mounts` | Add mount |
 | `DELETE` | `/v1/vms/{id}/mounts/{tag}` | Remove mount |
+| `GET` | `/v1/vms/{id}/systemd` | Guest systemd capability (`vm.agent.systemd.status`) |
+| `GET` | `/v1/vms/{id}/systemd/units?type=&all=` | List units (`vm.agent.systemd.list`) |
+| `GET` | `/v1/vms/{id}/systemd/units/{unit}` | Show unit (`vm.agent.systemd.show`) |
+| `POST` | `/v1/vms/{id}/systemd/units/{unit}/start\|stop\|restart` | Control unit |
 
 ### Networks / Ports
 

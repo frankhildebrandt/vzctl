@@ -261,7 +261,8 @@ vzctl vm — imperative VM lifecycle (prefer YAML + apply for stacks)
   exec <id> [-it] [--cwd PATH] [--env K=V]... [--timeout-ms N] -- <cmd> [args...]
   transfer <id> <src> <dst>                  (max 256 KiB)
   attach <id>                                (detach: Ctrl-P Ctrl-Q)
-  services <id> [start|stop|restart <unit>]
+  services <id> [--type service|timer|socket] [--all]
+           [status <unit>|start|stop|restart <unit>]
   ps <id>
   probe <id> --target HOST:PORT [--via dns|ip|both] [--timeout-ms N]
   health <id>

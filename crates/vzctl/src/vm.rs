@@ -95,6 +95,8 @@ enum Operation {
     Services {
         id: String,
         action: ServicesAction,
+        unit_type: String,
+        all: bool,
     },
     GuestPs {
         id: String,
@@ -159,6 +161,7 @@ enum TransferPath {
 #[derive(Debug, Eq, PartialEq)]
 enum ServicesAction {
     List,
+    Status(String),
     Start(String),
     Stop(String),
     Restart(String),
@@ -926,6 +929,8 @@ fn parse_services(args: Vec<String>) -> Result<Options, Failure> {
     validate_vm_id(&id)?;
     let mut format = Format::Human;
     let mut action = ServicesAction::List;
+    let mut unit_type = "service".to_string();
+    let mut all = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -938,6 +943,33 @@ fn parse_services(args: Vec<String>) -> Result<Options, Failure> {
                     "json" => Format::Json,
                     other => return Err(usage(format!("unsupported vm format: {other}"))),
                 };
+                index += 2;
+            }
+            "--type" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--type requires service, timer, or socket"))?;
+                unit_type = match value.as_str() {
+                    "service" | "timer" | "socket" => value.to_string(),
+                    other => {
+                        return Err(usage(format!(
+                            "unsupported vm services unit type: {other}"
+                        )));
+                    }
+                };
+                index += 2;
+            }
+            "--all" => {
+                all = true;
+                index += 1;
+            }
+            "status" => {
+                let unit = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with('-'))
+                    .ok_or_else(|| usage("vm services status requires a unit"))?
+                    .clone();
+                action = ServicesAction::Status(unit);
                 index += 2;
             }
             "start" | "stop" | "restart" => {
@@ -963,7 +995,12 @@ fn parse_services(args: Vec<String>) -> Result<Options, Failure> {
         }
     }
     Ok(Options {
-        operation: Operation::Services { id, action },
+        operation: Operation::Services {
+            id,
+            action,
+            unit_type,
+            all,
+        },
         format,
     })
 }
@@ -1224,7 +1261,12 @@ fn execute(options: &Options, socket_path: &Path) -> Result<Value, Failure> {
         )),
         Operation::Transfer { id, src, dst } => transfer_vm(id, src, dst, socket_path),
         Operation::Attach { id } => attach_vm(id),
-        Operation::Services { id, action } => services_vm(id, action, socket_path),
+        Operation::Services {
+            id,
+            action,
+            unit_type,
+            all,
+        } => services_vm(id, action, unit_type, *all, socket_path),
         Operation::GuestPs { id } => guest_ps_vm(id, socket_path),
         Operation::Logs { id, follow, tail, source, list_sources, q, min_level, group_field, group_value, filters, restart } => {
             logs_vm(
@@ -2303,30 +2345,162 @@ fn transfer_envelope(id: &str, direction: &str, src: &str, dst: &str, bytes: usi
     })
 }
 
-fn services_vm(id: &str, action: &ServicesAction, socket_path: &Path) -> Result<Value, Failure> {
+fn services_vm(
+    id: &str,
+    action: &ServicesAction,
+    unit_type: &str,
+    all: bool,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    match services_vm_agent(id, action, unit_type, all, socket_path) {
+        Ok(envelope) => Ok(envelope),
+        Err(agent_failure) => services_vm_exec_fallback(
+            id,
+            action,
+            unit_type,
+            all,
+            socket_path,
+            agent_failure,
+        ),
+    }
+}
+
+fn services_vm_agent(
+    id: &str,
+    action: &ServicesAction,
+    unit_type: &str,
+    all: bool,
+    socket_path: &Path,
+) -> Result<Value, Failure> {
+    let vm_id = json!({ "vm_id": id });
+    let status = rpc(socket_path, "vm.agent.systemd.status", vm_id.clone())?;
+    let available = status
+        .get("available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !available {
+        return Err(Failure::new(
+            EXIT_UNAVAILABLE,
+            "systemd is not available on this guest",
+        ));
+    }
+    let mut out = json!({
+        "apiVersion": API_VERSION,
+        "command": "vm.services",
+        "status": "ok",
+        "exit_code": 0,
+        "systemd": {
+            "available": true,
+            "version": status.get("version").cloned().unwrap_or(Value::Null),
+        },
+    });
+    match action {
+        ServicesAction::List => {
+            let mut params = vm_id;
+            if let Some(object) = params.as_object_mut() {
+                object.insert("type".into(), json!(unit_type));
+                if all {
+                    object.insert("all".into(), json!(true));
+                }
+            }
+            let result = rpc(socket_path, "vm.agent.systemd.list", params)?;
+            out["units"] = result.get("units").cloned().unwrap_or_else(|| json!([]));
+        }
+        ServicesAction::Status(unit) => {
+            validate_systemd_unit(unit)?;
+            let result = rpc(
+                socket_path,
+                "vm.agent.systemd.show",
+                json!({ "vm_id": id, "unit": unit }),
+            )?;
+            out["unit"] = result.get("unit").cloned().unwrap_or_else(|| json!({}));
+        }
+        ServicesAction::Start(unit) | ServicesAction::Stop(unit) | ServicesAction::Restart(unit) => {
+            let verb = services_action_verb(action);
+            validate_systemd_unit(unit)?;
+            rpc(
+                socket_path,
+                "vm.agent.systemd.control",
+                json!({ "vm_id": id, "unit": unit, "action": verb }),
+            )?;
+            out["control"] = json!({
+                "unit": unit,
+                "action": verb,
+                "ok": true,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn services_vm_exec_fallback(
+    id: &str,
+    action: &ServicesAction,
+    unit_type: &str,
+    all: bool,
+    socket_path: &Path,
+    agent_failure: Failure,
+) -> Result<Value, Failure> {
+    if matches!(action, ServicesAction::Status(_)) {
+        return Err(agent_failure);
+    }
     let cmd = match action {
-        ServicesAction::List => vec![
-            "systemctl".to_string(),
-            "list-units".to_string(),
-            "--type=service".to_string(),
-            "--no-pager".to_string(),
-            "--plain".to_string(),
-        ],
+        ServicesAction::List => {
+            let mut argv = vec![
+                "systemctl".to_string(),
+                "list-units".to_string(),
+                format!("--type={unit_type}"),
+                "--no-pager".to_string(),
+                "--plain".to_string(),
+            ];
+            if all {
+                argv.push("--all".to_string());
+            }
+            argv
+        }
+        ServicesAction::Status(_) => unreachable!(),
         ServicesAction::Start(unit) => {
+            validate_systemd_unit(unit)?;
             vec!["systemctl".to_string(), "start".to_string(), unit.clone()]
         }
         ServicesAction::Stop(unit) => {
+            validate_systemd_unit(unit)?;
             vec!["systemctl".to_string(), "stop".to_string(), unit.clone()]
         }
         ServicesAction::Restart(unit) => {
-            vec!["systemctl".to_string(), "restart".to_string(), unit.clone()]
+            validate_systemd_unit(unit)?;
+            vec![
+                "systemctl".to_string(),
+                "restart".to_string(),
+                unit.clone(),
+            ]
         }
     };
     let envelope = exec_vm(id, &cmd, None, &BTreeMap::new(), 30_000, socket_path)?;
     let mut out = envelope;
     out["command"] = json!("vm.services");
+    out["systemd"] = json!({ "available": true });
     out["services"] = out["exec"].clone();
     Ok(out)
+}
+
+fn services_action_verb(action: &ServicesAction) -> &'static str {
+    match action {
+        ServicesAction::Start(_) => "start",
+        ServicesAction::Stop(_) => "stop",
+        ServicesAction::Restart(_) => "restart",
+        ServicesAction::List | ServicesAction::Status(_) => "list",
+    }
+}
+
+fn validate_systemd_unit(unit: &str) -> Result<(), Failure> {
+    if unit.is_empty() || unit.len() > 256 {
+        return Err(Failure::new(EXIT_INVALID, "invalid systemd unit name"));
+    }
+    if unit.contains(';') || unit.contains("..") {
+        return Err(Failure::new(EXIT_INVALID, "invalid systemd unit name"));
+    }
+    Ok(())
 }
 
 fn guest_ps_vm(id: &str, socket_path: &Path) -> Result<Value, Failure> {
@@ -3871,12 +4045,53 @@ fn print_human(command: &str, envelope: &Value) {
                 }
             }
         }
-        "vm.exec" | "vm.services" => {
-            let payload = if command == "vm.services" {
-                &envelope["services"]
-            } else {
-                &envelope["exec"]
-            };
+        "vm.services" => {
+            if let Some(units) = envelope["units"].as_array() {
+                println!(
+                    "{:<36} {:<10} {:<10} {:<12} {}",
+                    "UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"
+                );
+                for unit in units {
+                    println!(
+                        "{:<36} {:<10} {:<10} {:<12} {}",
+                        unit["name"].as_str().unwrap_or("-"),
+                        unit["load"].as_str().unwrap_or("-"),
+                        unit["active"].as_str().unwrap_or("-"),
+                        unit["sub"].as_str().unwrap_or("-"),
+                        unit["description"].as_str().unwrap_or("-"),
+                    );
+                }
+            } else if let Some(unit) = envelope["unit"].as_object() {
+                for key in ["name", "type", "load", "active", "sub", "description", "unit_file", "fragment"] {
+                    if let Some(value) = unit.get(key).and_then(Value::as_str) {
+                        println!("{key}: {value}");
+                    }
+                }
+            } else if let Some(control) = envelope["control"].as_object() {
+                println!(
+                    "{} {}",
+                    control["action"].as_str().unwrap_or("control"),
+                    control["unit"].as_str().unwrap_or("-")
+                );
+            } else if let Some(payload) = envelope.get("services") {
+                let stdout = payload["stdout"].as_str().unwrap_or("");
+                let stderr = payload["stderr"].as_str().unwrap_or("");
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                    if !stdout.ends_with('\n') {
+                        println!();
+                    }
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                    if !stderr.ends_with('\n') {
+                        eprintln!();
+                    }
+                }
+            }
+        }
+        "vm.exec" => {
+            let payload = &envelope["exec"];
             let stdout = payload["stdout"].as_str().unwrap_or("");
             let stderr = payload["stderr"].as_str().unwrap_or("");
             if !stdout.is_empty() {

@@ -96,6 +96,41 @@ const DEMO_CONTAINERS = [
   },
 ];
 
+const DEMO_SYSTEMD_UNITS = [
+  {
+    name: "vzctl-agent.service",
+    type: "service",
+    load: "loaded",
+    active: "active",
+    sub: "running",
+    description: "vzctl guest agent",
+  },
+  {
+    name: "ssh.service",
+    type: "service",
+    load: "loaded",
+    active: "active",
+    sub: "running",
+    description: "OpenBSD Secure Shell server",
+  },
+  {
+    name: "apt-daily.timer",
+    type: "timer",
+    load: "loaded",
+    active: "inactive",
+    sub: "dead",
+    description: "Daily apt download activities",
+  },
+  {
+    name: "docker.socket",
+    type: "socket",
+    load: "loaded",
+    active: "active",
+    sub: "listening",
+    description: "Docker Socket for the API",
+  },
+];
+
 const DEMO_IMAGES = [
   {
     alias: "ubuntu-latest",
@@ -616,6 +651,9 @@ export async function mockApiRequest<T = unknown>(
   if (segments[0] === "v1" && segments[1] === "vms" && segments.length === 4) {
     const action = segments[3];
     const id = decodeURIComponent(segments[2] ?? "");
+    if (action === "systemd" && method === "GET") {
+      return { available: true, version: "255" } as T;
+    }
     if (action === "stats" && method === "GET") {
       return {
         cpu: { percent: 18.5 },
@@ -684,6 +722,25 @@ export async function mockApiRequest<T = unknown>(
             fields: { component: "api", msg: "fail" },
           },
         ],
+      } as T;
+    }
+  }
+  if (
+    segments[0] === "v1" &&
+    segments[1] === "vms" &&
+    segments[3] === "systemd" &&
+    segments[4] === "units"
+  ) {
+    const unitType = new URL(`http://local${path}`).searchParams.get("type") ?? "service";
+    if (segments.length === 5 && method === "GET") {
+      const units = DEMO_SYSTEMD_UNITS.filter((unit) => unit.type === unitType);
+      return { units } as T;
+    }
+    if (segments.length === 7 && method === "POST") {
+      return {
+        ok: true,
+        unit: decodeURIComponent(segments[5] ?? ""),
+        action: segments[6],
       } as T;
     }
   }
