@@ -17,6 +17,16 @@ describe("buildLogsQuery", () => {
     );
   });
 
+  it("omits all min level", () => {
+    expect(buildLogsQuery({ minLevel: "all" })).toBe("");
+  });
+
+  it("encodes before for older pages", () => {
+    expect(buildLogsQuery({ before: 42, limit: 100 })).toBe(
+      "?before=42&limit=100",
+    );
+  });
+
   it("omits empty query", () => {
     expect(buildLogsQuery({})).toBe("");
   });
@@ -32,6 +42,15 @@ describe("guestServiceApiPath", () => {
   it("builds the iwatch restart path", () => {
     expect(guestServiceApiPath("edge/web", "app", "/api/restart")).toBe(
       "/v1/vms/edge%2Fweb/guest-services/app/api/restart",
+    );
+  });
+
+  it("builds line detail and share paths", () => {
+    expect(
+      guestServiceApiPath("edge/web", "app", "/api/logs/7", { q: "err" }),
+    ).toBe("/v1/vms/edge%2Fweb/guest-services/app/api/logs/7?q=err");
+    expect(guestServiceApiPath("edge/web", "app", "/api/share/7")).toBe(
+      "/v1/vms/edge%2Fweb/guest-services/app/api/share/7",
     );
   });
 });

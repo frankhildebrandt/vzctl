@@ -18,10 +18,30 @@ export type IwatchLine = {
 };
 
 export type IwatchStatus = {
+  process?: string;
+  bufferLen?: number;
+  bufferCap?: number;
+  commandTitle?: string;
+  lastUrl?: string;
   observedFields?: string[];
   groupField?: string;
   groupValues?: string[];
 };
+
+export type IwatchLineDetail = {
+  line: IwatchLine;
+  pretty?: Record<string, string>;
+};
+
+export type IwatchShare = {
+  text?: string;
+};
+
+export type GuestLogAction =
+  | "/api/restart"
+  | "/api/truncate"
+  | "/api/separator"
+  | "/api/open-url";
 
 export type LogsQuery = {
   q?: string;
@@ -35,11 +55,25 @@ export type LogsQuery = {
   tail?: number;
 };
 
+export const IWATCH_LEVELS = [
+  "all",
+  "trace",
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "fatal",
+] as const;
+
+export type IwatchLevel = (typeof IWATCH_LEVELS)[number];
+
 /** Build iwatch `/api/logs` query string (`q`, `minLevel`, `group*`, `filter.*`). */
 export function buildLogsQuery(input: LogsQuery): string {
   const params = new URLSearchParams();
   if (input.q) params.set("q", input.q);
-  if (input.minLevel) params.set("minLevel", input.minLevel);
+  if (input.minLevel && input.minLevel !== "all") {
+    params.set("minLevel", input.minLevel);
+  }
   if (input.groupField) params.set("groupField", input.groupField);
   if (input.groupValue) params.set("groupValue", input.groupValue);
   if (input.after != null) params.set("after", String(input.after));
@@ -93,10 +127,45 @@ export async function fetchGuestLogStatus(
   )) as IwatchStatus;
 }
 
+export async function fetchGuestLogLine(
+  vmId: string,
+  name: string,
+  index: number,
+  query: LogsQuery,
+): Promise<IwatchLineDetail> {
+  return (await api.get(
+    guestServiceApiPath(vmId, name, `/api/logs/${index}`, query),
+  )) as IwatchLineDetail;
+}
+
+export async function fetchGuestLogShare(
+  vmId: string,
+  name: string,
+  index: number,
+  query: LogsQuery,
+  context?: number,
+): Promise<IwatchShare> {
+  const base = guestServiceApiPath(vmId, name, `/api/share/${index}`, query);
+  const path =
+    context != null && context > 0
+      ? `${base}${base.includes("?") ? "&" : "?"}context=${context}`
+      : base;
+  return (await api.get(path)) as IwatchShare;
+}
+
+/** POST an iwatch control endpoint for the published source. */
+export async function postGuestLogAction(
+  vmId: string,
+  name: string,
+  action: GuestLogAction,
+): Promise<void> {
+  await api.post(guestServiceApiPath(vmId, name, action));
+}
+
 /** POST iwatch `/api/restart` for the published source (watched process, not the VM). */
 export async function restartGuestProcess(
   vmId: string,
   name: string,
 ): Promise<void> {
-  await api.post(guestServiceApiPath(vmId, name, "/api/restart"));
+  await postGuestLogAction(vmId, name, "/api/restart");
 }

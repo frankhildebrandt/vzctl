@@ -670,6 +670,12 @@ export async function mockApiRequest<T = unknown>(
             url: "http://127.0.0.1:8787",
             pid: 42,
           },
+          {
+            name: "worker",
+            kind: "iwatch",
+            url: "http://127.0.0.1:8788",
+            pid: 43,
+          },
         ],
       } as T;
     }
@@ -694,32 +700,53 @@ export async function mockApiRequest<T = unknown>(
     segments.length >= 6
   ) {
     const apiTail = segments.slice(5).join("/");
-    if (method === "POST" && apiTail === "api/restart") {
-      return { ok: "restarted" } as T;
+    if (method === "POST" && (apiTail === "api/restart" || apiTail === "api/truncate" || apiTail === "api/separator" || apiTail === "api/open-url")) {
+      return { ok: true } as T;
     }
     if (method === "GET" && apiTail === "api/status") {
       return {
-        observedFields: ["component", "msg"],
+        process: "running",
+        bufferLen: 2,
+        bufferCap: 400,
+        observedFields: ["component", "msg", "timeout"],
         groupField: "component",
         groupValues: ["api", "worker"],
       } as T;
+    }
+    if (method === "GET" && /^api\/logs\/\d+$/.test(apiTail)) {
+      return {
+        line: {
+          index: 1,
+          source: "app",
+          text: "demo heartbeat ok",
+          level: "info",
+          ts: "2026-08-01T12:00:00.000Z",
+          fields: { component: "api" },
+        },
+        pretty: { component: "api" },
+      } as T;
+    }
+    if (method === "GET" && /^api\/share\/\d+$/.test(apiTail)) {
+      return { text: "demo share text" } as T;
     }
     if (method === "GET" && apiTail.startsWith("api/logs")) {
       return {
         lines: [
           {
             index: 1,
-            source: "app",
-            text: "demo heartbeat ok",
+            source: "stdout",
+            text: 'time=2026-08-01T12:00:00.000Z level=INFO msg="demo heartbeat ok" component=api',
             level: "info",
-            fields: { component: "api" },
+            ts: "2026-08-01T12:00:00.000Z",
+            fields: { component: "api", msg: "demo heartbeat ok" },
           },
           {
             index: 2,
-            source: "app",
-            text: "demo request failed",
+            source: "stdout",
+            text: 'time=2026-08-01T12:00:01.000Z level=ERROR msg="demo request failed" component=api',
             level: "error",
-            fields: { component: "api", msg: "fail" },
+            ts: "2026-08-01T12:00:01.000Z",
+            fields: { component: "api", msg: "demo request failed" },
           },
         ],
       } as T;
