@@ -1,6 +1,7 @@
 package systemd
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,32 @@ func TestEventBufferSince(t *testing.T) {
 	events, _ = buf.since(events[0].ID, 10)
 	if len(events) != 1 || events[0].Unit != "c.service" {
 		t.Fatalf("tail=%#v", events)
+	}
+}
+
+func TestSystemctlEnvPreservesPath(t *testing.T) {
+	env := systemctlEnv()
+	foundLC := false
+	foundPath := false
+	for _, entry := range env {
+		if entry == "LC_ALL=C" {
+			foundLC = true
+		}
+		if strings.HasPrefix(entry, "PATH=") && strings.Contains(entry, "/usr/bin") {
+			foundPath = true
+		}
+	}
+	if !foundLC {
+		t.Fatal("expected LC_ALL=C in systemctl env")
+	}
+	if !foundPath {
+		t.Fatalf("expected PATH with /usr/bin in systemctl env: %#v", env)
+	}
+}
+
+func TestDefaultExecTimeoutIsSeconds(t *testing.T) {
+	if defaultExecTimeout < time.Second {
+		t.Fatalf("defaultExecTimeout = %v, want >= 1s", defaultExecTimeout)
 	}
 }
 

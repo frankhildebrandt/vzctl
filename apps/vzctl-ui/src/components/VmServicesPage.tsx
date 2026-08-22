@@ -53,7 +53,7 @@ export function VmServicesPage({
     refetchInterval: 5000,
   });
 
-  const running = isRunning(vmQuery.data?.state);
+  const running = isRunning(vmQuery.data?.vm.state);
 
   const statusQuery = useQuery({
     queryKey: systemdKeys.status(vmId),
@@ -126,7 +126,16 @@ export function VmServicesPage({
     return (
       <>
         <PageHeader title={t("systemd.title")} />
-        <LoadingState />
+        <LoadingState message={t("common.loading")} />
+      </>
+    );
+  }
+
+  if (statusQuery.isError) {
+    return (
+      <>
+        <PageHeader title={t("systemd.title")} />
+        <Alert title={t("common.error")}>{String(statusQuery.error)}</Alert>
       </>
     );
   }
@@ -158,7 +167,7 @@ export function VmServicesPage({
         {UNIT_TYPES.map((type) => (
           <Button
             key={type}
-            variant={unitType === type ? "primary" : "secondary"}
+            tone={unitType === type ? "primary" : "secondary"}
             onClick={() => setUnitType(type)}
           >
             {typeLabel[type]}
@@ -167,7 +176,7 @@ export function VmServicesPage({
       </Toolbar>
 
       {unitsQuery.isLoading ? (
-        <LoadingState />
+        <LoadingState message={t("common.loading")} />
       ) : unitsQuery.isError ? (
         <Alert title={t("common.error")}>{String(unitsQuery.error)}</Alert>
       ) : units.length === 0 ? (
@@ -191,7 +200,7 @@ export function VmServicesPage({
                   <tr key={unit.name}>
                     <td>{unit.name}</td>
                     <td>
-                      <StatusPill tone={active ? "ok" : "muted"}>
+                      <StatusPill state={active ? "running" : "stopped"}>
                         {unitStatusLabel(unit)}
                       </StatusPill>
                     </td>
@@ -201,14 +210,14 @@ export function VmServicesPage({
                         {active ? (
                           <>
                             <Button
-                              variant="secondary"
+                              tone="secondary"
                               disabled={busy || lifecycle.isPending}
                               onClick={() => setPending({ kind: "stop", unit })}
                             >
                               {busy ? t("common.ellipsis") : t("systemd.stop")}
                             </Button>
                             <Button
-                              variant="secondary"
+                              tone="secondary"
                               disabled={busy || lifecycle.isPending}
                               onClick={() =>
                                 setPending({ kind: "restart", unit })
@@ -219,7 +228,7 @@ export function VmServicesPage({
                           </>
                         ) : (
                           <Button
-                            variant="secondary"
+                            tone="secondary"
                             disabled={busy || lifecycle.isPending}
                             onClick={() =>
                               lifecycle.mutate({

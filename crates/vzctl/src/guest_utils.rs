@@ -430,78 +430,15 @@ where
     let binary_path = bundle.cache_dir.join("vzctl-agent");
     let bytes = fs::read(&binary_path)
         .map_err(|error| GuestUtilsError::new(format!("read host agent binary: {error}")))?;
-    let staging = "/tmp/vzctl-agent.staging";
-    guest_exec(
-        call,
+    deploy_guest_binary(
         vm_id,
-        vec![
-            "sudo".into(),
-            "-n".into(),
-            "sh".into(),
-            "-c".into(),
-            format!("rm -f {staging}"),
-        ],
-        None,
-        10_000,
-    )?;
-
-    for chunk in split_chunks(&bytes) {
-        // stdin_b64 is already decoded to raw bytes by the agent; write them
-        // with cat. A second `base64 -d` treats ELF as text and fails with
-        // "invalid input".
-        let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
-        let script = format!("cat >> {staging}");
-        let (exit, _, stderr, truncated) = guest_exec(
-            call,
-            vm_id,
-            vec!["sudo".into(), "-n".into(), "sh".into(), "-c".into(), script],
-            Some(encoded),
-            60_000,
-        )?;
-        if exit != 0 || truncated {
-            return Err(GuestUtilsError::new(format!(
-                "agent binary chunk upload failed (exit {exit}): {}",
-                stderr.trim()
-            )));
-        }
-    }
-
-    let install_script = format!(
-        "set -eu\n\
-staging={staging}\n\
-target={target}\n\
-backup={target}.bak\n\
-expected={expected}\n\
-actual=$(sha256sum \"$staging\" | awk '{{print $1}}')\n\
-[ \"$actual\" = \"$expected\" ] || {{ echo \"sha256 mismatch: expected $expected got $actual\" >&2; exit 1; }}\n\
-cp -f \"$target\" \"$backup\" 2>/dev/null || true\n\
-chmod 0755 \"$staging\"\n\
-mv -f \"$staging\" \"$target.new\"\n\
-mv -f \"$target.new\" \"$target\"\n",
-        staging = sh_escape(staging),
-        target = sh_escape(AGENT_BINARY_GUEST_PATH),
-        expected = bundle.binary_sha256,
-    );
-    let (exit, _, stderr, truncated) = guest_exec(
+        "/tmp/vzctl-agent.staging",
+        AGENT_BINARY_GUEST_PATH,
+        &bytes,
+        &bundle.binary_sha256,
+        "agent binary",
         call,
-        vm_id,
-        vec![
-            "sudo".into(),
-            "-n".into(),
-            "sh".into(),
-            "-c".into(),
-            install_script,
-        ],
-        None,
-        60_000,
-    )?;
-    if exit != 0 || truncated {
-        return Err(GuestUtilsError::new(format!(
-            "agent binary install failed (exit {exit}): {}",
-            stderr.trim()
-        )));
-    }
-    Ok(())
+    )
 }
 
 fn deploy_iwatch_binary<F>(
@@ -515,35 +452,65 @@ where
     let binary_path = bundle.cache_dir.join("iwatch");
     let bytes = fs::read(&binary_path)
         .map_err(|error| GuestUtilsError::new(format!("read host iwatch binary: {error}")))?;
-    let expected = hex::encode(Sha256::digest(&bytes));
-    let staging = "/tmp/iwatch.staging";
-    guest_exec(
+    deploy_guest_binary(
+        vm_id,
+        "/tmp/iwatch.staging",
+        crate::iwatch_bin::IWATCH_GUEST_PATH,
+        &bytes,
+        &hex::encode(Sha256::digest(&bytes)),
+        "iwatch binary",
+        call,
+    )
+}
+
+/// Copy a host binary onto the guest. Chunks are written as the agent user;
+/// `sudo cat` is unsafe because Ubuntu sets `Defaults use_pty`, which corrupts
+/// binary stdin (ICRNL/echo) and fails the SHA-256 check.
+fn deploy_guest_binary<F>(
+    vm_id: &str,
+    staging: &str,
+    target: &str,
+    bytes: &[u8],
+    expected_sha256: &str,
+    label: &str,
+    call: &mut F,
+) -> Result<(), GuestUtilsError>
+where
+    F: FnMut(&str, Value) -> Result<Value, String>,
+{
+    let (exit, _, stderr, truncated) = guest_exec(
         call,
         vm_id,
         vec![
             "sudo".into(),
             "-n".into(),
-            "sh".into(),
-            "-c".into(),
-            format!("rm -f {staging}"),
+            "rm".into(),
+            "-f".into(),
+            staging.into(),
         ],
         None,
         10_000,
     )?;
+    if exit != 0 || truncated {
+        return Err(GuestUtilsError::new(format!(
+            "{label} staging cleanup failed (exit {exit}): {}",
+            stderr.trim()
+        )));
+    }
 
-    for chunk in split_chunks(&bytes) {
+    let staging_script = format!("cat >> {}", sh_escape(staging));
+    for chunk in split_chunks(bytes) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
-        let script = format!("cat >> {staging}");
         let (exit, _, stderr, truncated) = guest_exec(
             call,
             vm_id,
-            vec!["sudo".into(), "-n".into(), "sh".into(), "-c".into(), script],
+            vec!["sh".into(), "-c".into(), staging_script.clone()],
             Some(encoded),
             60_000,
         )?;
         if exit != 0 || truncated {
             return Err(GuestUtilsError::new(format!(
-                "iwatch binary chunk upload failed (exit {exit}): {}",
+                "{label} chunk upload failed (exit {exit}): {}",
                 stderr.trim()
             )));
         }
@@ -553,15 +520,17 @@ where
         "set -eu\n\
 staging={staging}\n\
 target={target}\n\
+backup={target}.bak\n\
 expected={expected}\n\
 actual=$(sha256sum \"$staging\" | awk '{{print $1}}')\n\
 [ \"$actual\" = \"$expected\" ] || {{ echo \"sha256 mismatch: expected $expected got $actual\" >&2; exit 1; }}\n\
+if [ -e \"$target\" ]; then cp -f \"$target\" \"$backup\" || true; fi\n\
 chmod 0755 \"$staging\"\n\
 mv -f \"$staging\" \"$target.new\"\n\
 mv -f \"$target.new\" \"$target\"\n",
         staging = sh_escape(staging),
-        target = sh_escape(crate::iwatch_bin::IWATCH_GUEST_PATH),
-        expected = expected,
+        target = sh_escape(target),
+        expected = expected_sha256,
     );
     let (exit, _, stderr, truncated) = guest_exec(
         call,
@@ -578,7 +547,7 @@ mv -f \"$target.new\" \"$target\"\n",
     )?;
     if exit != 0 || truncated {
         return Err(GuestUtilsError::new(format!(
-            "iwatch binary install failed (exit {exit}): {}",
+            "{label} install failed (exit {exit}): {}",
             stderr.trim()
         )));
     }
@@ -791,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_binary_upload_pipes_raw_stdin_through_cat() {
+    fn agent_binary_upload_pipes_raw_stdin_without_sudo() {
         let dir = std::env::temp_dir().join(format!(
             "vzctl-agent-upload-{}",
             std::process::id()
@@ -805,11 +774,16 @@ mod tests {
             binary_sha256: "def".into(),
             cache_dir: dir.clone(),
         };
-        let mut scripts = Vec::new();
+        let mut cat_argv = Vec::new();
         let _ = deploy_agent_binary("web", &bundle, &mut |_method, params| {
             if let Some(cmd) = params["cmd"].as_array() {
-                if let Some(script) = cmd.last().and_then(Value::as_str) {
-                    scripts.push(script.to_string());
+                let argv: Vec<String> = cmd
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                if argv.iter().any(|arg| arg.contains("cat >>")) {
+                    cat_argv.push(argv);
                 }
             }
             Ok(json!({
@@ -821,12 +795,18 @@ mod tests {
         });
         let _ = fs::remove_dir_all(&dir);
         assert!(
-            scripts.iter().any(|script| script.contains("cat >>")),
-            "expected cat append, got {scripts:?}"
+            !cat_argv.is_empty(),
+            "expected cat append, got {cat_argv:?}"
         );
         assert!(
-            scripts.iter().all(|script| !script.contains("base64 -d")),
-            "stdin_b64 is already decoded; base64 -d would fail, got {scripts:?}"
+            cat_argv.iter().all(|argv| argv.first().map(String::as_str) == Some("sh")),
+            "binary stdin must not go through sudo (use_pty), got {cat_argv:?}"
+        );
+        assert!(
+            cat_argv
+                .iter()
+                .all(|argv| argv.iter().all(|arg| arg != "sudo" && !arg.contains("base64 -d"))),
+            "stdin_b64 is already decoded; base64 -d would fail, got {cat_argv:?}"
         );
     }
 

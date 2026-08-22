@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SystemctlRunner executes systemctl with argv-only semantics.
@@ -35,8 +36,8 @@ func NewManager() *Manager {
 }
 
 func defaultSystemctlRunner(ctx context.Context, args ...string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", args...)
-	cmd.Env = []string{"LC_ALL=C"}
+	cmd := exec.CommandContext(ctx, systemctlBinary(), args...)
+	cmd.Env = systemctlEnv()
 	output, err := cmd.CombinedOutput()
 	stdout := string(output)
 	if err != nil {
@@ -47,6 +48,17 @@ func defaultSystemctlRunner(ctx context.Context, args ...string) (string, int, e
 		return stdout, -1, err
 	}
 	return stdout, 0, nil
+}
+
+func systemctlBinary() string {
+	if path, err := exec.LookPath("systemctl"); err == nil {
+		return path
+	}
+	return "/usr/bin/systemctl"
+}
+
+func systemctlEnv() []string {
+	return append(os.Environ(), "LC_ALL=C")
 }
 
 // Available reports whether systemd is the guest init.
@@ -258,7 +270,7 @@ func stringField(row map[string]any, keys ...string) string {
 	return ""
 }
 
-const defaultExecTimeout = 30
+const defaultExecTimeout = 30 * time.Second
 
 // ErrUnavailable is returned when the guest does not run systemd.
 var ErrUnavailable = errors.New("systemd is not available on this guest")
