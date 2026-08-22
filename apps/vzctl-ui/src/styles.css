@@ -2365,6 +2365,18 @@ button.sidebar-link.tone-danger:hover:not(:disabled) {
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
 }
 
+.vm-logs-virtual-inner {
+  position: relative;
+  width: 100%;
+}
+
+.vm-logs-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
 .vm-logs-line {
   display: grid;
   grid-template-columns: 5.5rem 4rem minmax(0, 1fr);
@@ -2374,8 +2386,6 @@ button.sidebar-link.tone-danger:hover:not(:disabled) {
   white-space: pre-wrap;
   word-break: break-word;
   cursor: default;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 1.45em;
 }
 
 .vm-logs-line.no-source {

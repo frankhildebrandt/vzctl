@@ -14,31 +14,32 @@ import {
   guestServiceApiPath,
   type IwatchLine,
   type IwatchStatus,
-  type LogsQuery,
 } from "@/lib/guestLogs";
 import type { HiddenFields } from "@/lib/iwatchFormat";
 import {
-  formatLogLineView,
   formatLogLineViews,
-  hiddenFieldsKey,
   type LogLineView,
 } from "@/lib/logLineViews";
+import {
+  buildLogsStreamQuery,
+  serializeFilterQueryKey,
+  TEXT_FILTER_DEBOUNCE_MS,
+  type GuestLogFilters,
+} from "@/lib/logStreamQuery";
 
+export type { GuestLogFilters } from "@/lib/logStreamQuery";
 export const MAX_WINDOW = 400;
 export const PAGE_SIZE = 100;
-export const FILTER_DEBOUNCE_MS = 500;
 
 type SsePayload = {
   event?: string;
   data?: IwatchLine | IwatchStatus | string[];
 };
 
-export type GuestLogFilters = {
-  q: string;
-  minLevel: string;
-  groupField: string;
-  groupValue: string;
-  fieldFilters: Record<string, string>;
+export type LogScrollApi = {
+  scrollToBottom: () => void;
+  scrollToIndex: (index: number) => void;
+  preserveScrollAfterPrepend: (previousScrollHeight: number) => void;
 };
 
 type UseGuestLogStreamInput = {
@@ -65,69 +66,45 @@ type UseGuestLogStreamResult = {
   jumpLine: (delta: number) => void;
   loadOlder: () => Promise<void>;
   connectNow: () => void;
-  listRef: React.RefObject<HTMLUListElement | null>;
+  listRef: React.RefObject<HTMLDivElement | null>;
+  scrollApiRef: React.MutableRefObject<LogScrollApi | null>;
   onScroll: () => void;
+  onDisableFollow: () => void;
 };
-
-function buildQuery(
-  filters: GuestLogFilters,
-  extra?: Partial<LogsQuery>,
-): LogsQuery {
-  return {
-    q: filters.q || undefined,
-    minLevel: filters.minLevel || undefined,
-    groupField: filters.groupField || undefined,
-    groupValue: filters.groupValue || undefined,
-    filters: filters.fieldFilters,
-    tail: MAX_WINDOW,
-    ...extra,
-  };
-}
 
 type LineStore = {
   subscribe: (listener: () => void) => () => void;
   getSnapshot: () => LogLineView[];
-  replace: (
-    lines: IwatchLine[],
-    observedFields: string[],
-    hiddenFields: HiddenFields,
-  ) => void;
-  append: (
-    line: IwatchLine,
-    observedFields: string[],
-    hiddenFields: HiddenFields,
-  ) => void;
-  appendMany: (
-    lines: IwatchLine[],
-    observedFields: string[],
-    hiddenFields: HiddenFields,
-  ) => void;
-  prepend: (
-    lines: IwatchLine[],
-    observedFields: string[],
-    hiddenFields: HiddenFields,
-  ) => void;
+  setFormat: (observedFields: string[], hiddenFields: HiddenFields) => void;
+  replace: (lines: IwatchLine[]) => void;
+  appendMany: (lines: IwatchLine[]) => void;
+  prepend: (lines: IwatchLine[]) => void;
   clear: () => void;
 };
 
+function trimFront(lines: IwatchLine[]): IwatchLine[] {
+  if (lines.length <= MAX_WINDOW) return lines;
+  return lines.slice(lines.length - MAX_WINDOW);
+}
+
+function trimBack(lines: IwatchLine[]): IwatchLine[] {
+  if (lines.length <= MAX_WINDOW) return lines;
+  return lines.slice(0, MAX_WINDOW);
+}
+
 function createLineStore(): LineStore {
+  let rawLines: IwatchLine[] = [];
   let views: LogLineView[] = [];
+  let observedFields: string[] = [];
+  let hiddenFields: HiddenFields = { raw: true };
   const listeners = new Set<() => void>();
 
   const emit = () => {
     for (const listener of listeners) listener();
   };
 
-  const trimFront = () => {
-    if (views.length > MAX_WINDOW) {
-      views = views.slice(views.length - MAX_WINDOW);
-    }
-  };
-
-  const trimBack = () => {
-    if (views.length > MAX_WINDOW) {
-      views = views.slice(0, MAX_WINDOW);
-    }
+  const rebuild = () => {
+    views = formatLogLineViews(rawLines, observedFields, hiddenFields);
   };
 
   return {
@@ -138,41 +115,40 @@ function createLineStore(): LineStore {
     getSnapshot() {
       return views;
     },
-    replace(lines, observedFields, hiddenFields) {
-      views = formatLogLineViews(lines, observedFields, hiddenFields);
+    setFormat(nextObservedFields, nextHiddenFields) {
+      observedFields = nextObservedFields;
+      hiddenFields = nextHiddenFields;
+      if (rawLines.length === 0) return;
+      rebuild();
       emit();
     },
-    append(line, observedFields, hiddenFields) {
-      views = [...views, formatLogLineView(line, observedFields, hiddenFields)];
-      trimFront();
+    replace(lines) {
+      rawLines = lines;
+      rebuild();
       emit();
     },
-    appendMany(lines, observedFields, hiddenFields) {
+    appendMany(lines) {
       if (lines.length === 0) return;
-      views = [
-        ...views,
-        ...formatLogLineViews(lines, observedFields, hiddenFields),
-      ];
-      trimFront();
+      rawLines = trimFront(rawLines.concat(lines));
+      rebuild();
       emit();
     },
-    prepend(lines, observedFields, hiddenFields) {
-      views = [
-        ...formatLogLineViews(lines, observedFields, hiddenFields),
-        ...views,
-      ];
-      trimBack();
+    prepend(lines) {
+      if (lines.length === 0) return;
+      rawLines = trimBack(lines.concat(rawLines));
+      rebuild();
       emit();
     },
     clear() {
-      if (views.length === 0) return;
+      if (rawLines.length === 0 && views.length === 0) return;
+      rawLines = [];
       views = [];
       emit();
     },
   };
 }
 
-/** Manage iwatch snapshot + SSE stream with batched, store-backed line views. */
+/** Manage iwatch snapshot + SSE stream with virtualized, store-backed line views. */
 export function useGuestLogStream({
   vmId,
   source,
@@ -196,29 +172,61 @@ export function useGuestLogStream({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [connectTick, setConnectTick] = useState(0);
+  const [debouncedTextFilters, setDebouncedTextFilters] = useState({
+    q: filters.q,
+    fieldFilters: filters.fieldFilters,
+  });
 
-  const listRef = useRef<HTMLUListElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollApiRef = useRef<LogScrollApi | null>(null);
+  const activeSubscriptionRef = useRef<string | null>(null);
   const autoScrollRef = useRef(autoScroll);
   const pendingLiveRef = useRef(pendingLive);
   const loadingOlderRef = useRef(false);
-  const debouncedFiltersRef = useRef(filters);
+  const filtersRef = useRef(filters);
   const pendingLinesRef = useRef<IwatchLine[]>([]);
   const flushRafRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
-  const formatRef = useRef({
-    observedFields,
-    hiddenFields,
-    hiddenKey: hiddenFieldsKey(hiddenFields),
-  });
-  const rawLinesRef = useRef<IwatchLine[]>([]);
-
-  const [debouncedFilters, setDebouncedFilters] = useState(filters);
+  const ignoreScrollRef = useRef(false);
 
   const lineViews = useSyncExternalStore(
     lineStore.subscribe,
     lineStore.getSnapshot,
     lineStore.getSnapshot,
   );
+
+  const effectiveFilters = useMemo(
+    (): GuestLogFilters => ({
+      q: debouncedTextFilters.q,
+      minLevel: filters.minLevel,
+      groupField: filters.groupField,
+      groupValue: filters.groupValue,
+      fieldFilters: debouncedTextFilters.fieldFilters,
+    }),
+    [
+      debouncedTextFilters,
+      filters.minLevel,
+      filters.groupField,
+      filters.groupValue,
+    ],
+  );
+
+  const filterQueryKey = useMemo(
+    () => serializeFilterQueryKey(effectiveFilters),
+    [effectiveFilters],
+  );
+
+  const query = useMemo(
+    () => buildLogsStreamQuery(effectiveFilters, { tail: MAX_WINDOW }),
+    [effectiveFilters],
+  );
+
+  const effectiveObservedFields =
+    streamObservedFields.length > 0 ? streamObservedFields : observedFields;
+
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
 
   useEffect(() => {
     autoScrollRef.current = autoScroll;
@@ -230,45 +238,47 @@ export function useGuestLogStream({
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      debouncedFiltersRef.current = filters;
-      setDebouncedFilters(filters);
-    }, FILTER_DEBOUNCE_MS);
+      setDebouncedTextFilters({
+        q: filters.q,
+        fieldFilters: filters.fieldFilters,
+      });
+    }, TEXT_FILTER_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [filters]);
-
-  const query = useMemo(
-    () => buildQuery(debouncedFilters),
-    [debouncedFilters],
-  );
-
-  const effectiveObservedFields =
-    streamObservedFields.length > 0 ? streamObservedFields : observedFields;
+  }, [filters.q, filters.fieldFilters]);
 
   useEffect(() => {
-    formatRef.current = {
-      observedFields: effectiveObservedFields,
-      hiddenFields,
-      hiddenKey: hiddenFieldsKey(hiddenFields),
-    };
-    if (rawLinesRef.current.length > 0) {
-      lineStore.replace(
-        rawLinesRef.current,
-        effectiveObservedFields,
-        hiddenFields,
-      );
-    }
+    lineStore.setFormat(effectiveObservedFields, hiddenFields);
   }, [effectiveObservedFields, hiddenFields, lineStore]);
 
   const applyStatus = useCallback((status: IwatchStatus) => {
-    setProcessStatus(status);
-    if (status.groupValues) setGroupValues(status.groupValues);
-    if (status.observedFields) setStreamObservedFields(status.observedFields);
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    const list = listRef.current;
-    if (list && autoScrollRef.current) {
-      list.scrollTop = list.scrollHeight;
+    setProcessStatus((current) => {
+      if (
+        current.process === status.process &&
+        current.bufferLen === status.bufferLen &&
+        current.bufferCap === status.bufferCap &&
+        current.commandTitle === status.commandTitle &&
+        current.lastUrl === status.lastUrl
+      ) {
+        return current;
+      }
+      return status;
+    });
+    if (status.groupValues) {
+      setGroupValues((current) =>
+        current === status.groupValues ? current : (status.groupValues ?? current),
+      );
+    }
+    if (status.observedFields) {
+      setStreamObservedFields((current) => {
+        const next = status.observedFields ?? current;
+        if (
+          current.length === next.length &&
+          current.every((field, index) => field === next[index])
+        ) {
+          return current;
+        }
+        return next;
+      });
     }
   }, []);
 
@@ -277,14 +287,13 @@ export function useGuestLogStream({
     const batch = pendingLinesRef.current;
     if (batch.length === 0) return;
     pendingLinesRef.current = [];
-    const { observedFields: fields, hiddenFields: hidden } = formatRef.current;
-    lineStore.appendMany(batch, fields, hidden);
-    rawLinesRef.current = rawLinesRef.current.concat(batch);
-    if (rawLinesRef.current.length > MAX_WINDOW) {
-      rawLinesRef.current = rawLinesRef.current.slice(-MAX_WINDOW);
+    lineStore.appendMany(batch);
+    if (autoScrollRef.current) {
+      requestAnimationFrame(() => {
+        scrollApiRef.current?.scrollToBottom();
+      });
     }
-    requestAnimationFrame(scrollToBottom);
-  }, [lineStore, scrollToBottom]);
+  }, [lineStore]);
 
   const scheduleFlush = useCallback(() => {
     if (flushRafRef.current != null) return;
@@ -294,7 +303,18 @@ export function useGuestLogStream({
   const setAutoScroll = useCallback((value: boolean) => {
     setAutoScrollState(value);
     autoScrollRef.current = value;
-    if (value) setPendingLive(0);
+    if (value) {
+      const hadPending = pendingLiveRef.current > 0;
+      setPendingLive(0);
+      pendingLiveRef.current = 0;
+      if (hadPending) {
+        setConnectTick((tick) => tick + 1);
+      } else {
+        requestAnimationFrame(() => {
+          scrollApiRef.current?.scrollToBottom();
+        });
+      }
+    }
   }, []);
 
   const selectLine = useCallback((index: number) => {
@@ -302,6 +322,10 @@ export function useGuestLogStream({
   }, []);
 
   const connectNow = useCallback(() => {
+    setDebouncedTextFilters({
+      q: filtersRef.current.q,
+      fieldFilters: filtersRef.current.fieldFilters,
+    });
     setConnectTick((tick) => tick + 1);
   }, []);
 
@@ -314,10 +338,7 @@ export function useGuestLogStream({
       position = Math.max(0, Math.min(views.length - 1, position + delta));
       const view = views[position];
       setSelectedIndex(view.index);
-      const node = listRef.current?.querySelector(
-        `[data-index="${view.index}"]`,
-      );
-      node?.scrollIntoView({ block: "nearest" });
+      scrollApiRef.current?.scrollToIndex(position);
     },
     [lineStore, selectedIndex],
   );
@@ -332,7 +353,7 @@ export function useGuestLogStream({
     try {
       const before = views[0]?.index;
       if (before == null) return;
-      const olderQuery = buildQuery(debouncedFiltersRef.current, {
+      const olderQuery = buildLogsStreamQuery(filtersRef.current, {
         before,
         limit: PAGE_SIZE,
         tail: undefined,
@@ -344,14 +365,8 @@ export function useGuestLogStream({
       if (filtered.length === 0) return;
       const list = listRef.current;
       const previousHeight = list?.scrollHeight ?? 0;
-      const { observedFields: fields, hiddenFields: hidden } = formatRef.current;
-      lineStore.prepend(filtered, fields, hidden);
-      rawLinesRef.current = filtered.concat(rawLinesRef.current).slice(0, MAX_WINDOW);
-      requestAnimationFrame(() => {
-        if (list) {
-          list.scrollTop = list.scrollHeight - previousHeight;
-        }
-      });
+      lineStore.prepend(filtered);
+      scrollApiRef.current?.preserveScrollAfterPrepend(previousHeight);
     } catch (err) {
       setStreamError(String(err));
     } finally {
@@ -361,25 +376,30 @@ export function useGuestLogStream({
   }, [enabled, source, vmId, lineStore]);
 
   const handleScroll = useCallback(() => {
+    if (ignoreScrollRef.current) return;
     const list = listRef.current;
     if (!list) return;
-    const nearBottom =
-      list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    const distanceFromBottom =
+      list.scrollHeight - list.scrollTop - list.clientHeight;
+    const nearBottom = distanceFromBottom < 80;
     if (!nearBottom) {
       if (autoScrollRef.current) {
         setAutoScrollState(false);
         autoScrollRef.current = false;
       }
-    } else if (!autoScrollRef.current || pendingLiveRef.current > 0) {
+      if (list.scrollTop === 0) {
+        void loadOlder();
+      }
+      return;
+    }
+    if (!autoScrollRef.current) {
       setAutoScrollState(true);
       autoScrollRef.current = true;
-      if (pendingLiveRef.current > 0) {
-        setPendingLive(0);
-        setConnectTick((tick) => tick + 1);
-      }
     }
-    if (list.scrollTop === 0) {
-      void loadOlder();
+    if (pendingLiveRef.current > 0) {
+      setPendingLive(0);
+      pendingLiveRef.current = 0;
+      setConnectTick((tick) => tick + 1);
     }
   }, [loadOlder]);
 
@@ -391,45 +411,67 @@ export function useGuestLogStream({
     });
   }, [handleScroll]);
 
+  const onDisableFollow = useCallback(() => {
+    if (!autoScrollRef.current) return;
+    setAutoScrollState(false);
+    autoScrollRef.current = false;
+  }, []);
+
   useEffect(() => {
     if (!enabled || !source) {
       lineStore.clear();
-      rawLinesRef.current = [];
       setStreamError(null);
       return;
     }
 
     let cancelled = false;
     let unlisten: UnlistenFn | undefined;
+    const subscriptionId = crypto.randomUUID();
+    const channel = `vzctl-guest-log-${vmId}-${source}-${subscriptionId}`;
+    activeSubscriptionRef.current = subscriptionId;
+
     setStreamError(null);
-    lineStore.clear();
-    rawLinesRef.current = [];
     pendingLinesRef.current = [];
+    lineStore.clear();
     setPendingLive(0);
     setAutoScrollState(true);
     autoScrollRef.current = true;
-    const channel = `vzctl-guest-log-${vmId}-${source}`;
 
     void (async () => {
       try {
         const snapshot = await fetchGuestLogs(vmId, source, query);
-        if (cancelled) return;
-        const trimmed = snapshot.slice(-MAX_WINDOW);
-        rawLinesRef.current = trimmed;
-        const { observedFields: fields, hiddenFields: hidden } = formatRef.current;
-        lineStore.replace(trimmed, fields, hidden);
-        requestAnimationFrame(scrollToBottom);
+        if (cancelled || activeSubscriptionRef.current !== subscriptionId) {
+          return;
+        }
+        lineStore.replace(snapshot.slice(-MAX_WINDOW));
+        requestAnimationFrame(() => {
+          scrollApiRef.current?.scrollToBottom();
+        });
       } catch (err) {
-        if (!cancelled) setStreamError(String(err));
+        if (!cancelled && activeSubscriptionRef.current === subscriptionId) {
+          setStreamError(String(err));
+        }
       }
-      if (cancelled || isDemoMode()) return;
+      if (
+        cancelled ||
+        isDemoMode() ||
+        activeSubscriptionRef.current !== subscriptionId
+      ) {
+        return;
+      }
       try {
         const path = guestServiceApiPath(vmId, source, "/api/logs/sse", query);
         await invoke("subscribe_guest_logs", {
+          subscriptionId,
           pathAndQuery: path,
           channel,
         });
+        if (cancelled || activeSubscriptionRef.current !== subscriptionId) {
+          void invoke("unsubscribe_guest_logs", { subscriptionId });
+          return;
+        }
         unlisten = await listen<SsePayload>(channel, (event) => {
+          if (activeSubscriptionRef.current !== subscriptionId) return;
           const payload = event.payload;
           const kind = payload.event ?? "line";
           if (kind === "status") {
@@ -438,7 +480,17 @@ export function useGuestLogStream({
           }
           if (kind === "fields") {
             const fields = payload.data;
-            if (Array.isArray(fields)) setStreamObservedFields(fields);
+            if (Array.isArray(fields)) {
+              setStreamObservedFields((current) => {
+                if (
+                  current.length === fields.length &&
+                  current.every((field, index) => field === fields[index])
+                ) {
+                  return current;
+                }
+                return fields;
+              });
+            }
             return;
           }
           if (kind !== "line") return;
@@ -452,28 +504,34 @@ export function useGuestLogStream({
           scheduleFlush();
         });
       } catch (err) {
-        if (!cancelled) setStreamError(String(err));
+        if (!cancelled && activeSubscriptionRef.current === subscriptionId) {
+          setStreamError(String(err));
+        }
       }
     })();
 
     return () => {
       cancelled = true;
+      if (activeSubscriptionRef.current === subscriptionId) {
+        activeSubscriptionRef.current = null;
+      }
       if (flushRafRef.current != null) {
         cancelAnimationFrame(flushRafRef.current);
         flushRafRef.current = null;
       }
+      void invoke("unsubscribe_guest_logs", { subscriptionId });
       void unlisten?.();
     };
   }, [
     vmId,
     source,
+    filterQueryKey,
     query,
     enabled,
     connectTick,
     applyStatus,
     lineStore,
     scheduleFlush,
-    scrollToBottom,
   ]);
 
   useEffect(
@@ -504,6 +562,8 @@ export function useGuestLogStream({
     loadOlder,
     connectNow,
     listRef,
+    scrollApiRef,
     onScroll,
+    onDisableFollow,
   };
 }

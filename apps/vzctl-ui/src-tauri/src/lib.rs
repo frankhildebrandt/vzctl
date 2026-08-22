@@ -1,10 +1,10 @@
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
@@ -18,6 +18,25 @@ struct EventBridge {
 }
 
 static EVENTS_SUBSCRIBED: AtomicBool = AtomicBool::new(false);
+
+fn guest_log_subscriptions() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static SUBSCRIPTIONS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    SUBSCRIPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_guest_log_subscription(subscription_id: &str) -> Arc<AtomicBool> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if let Ok(mut subs) = guest_log_subscriptions().lock() {
+        subs.insert(subscription_id.to_string(), Arc::clone(&cancelled));
+    }
+    cancelled
+}
+
+fn unregister_guest_log_subscription(subscription_id: &str) {
+    if let Ok(mut subs) = guest_log_subscriptions().lock() {
+        subs.remove(subscription_id);
+    }
+}
 
 /// PIDs of in-flight streamed vzctl children — never reap these for lease recovery.
 fn protected_pids() -> &'static Mutex<HashSet<u32>> {
@@ -111,9 +130,17 @@ fn subscribe_events(app: AppHandle, _bridge: State<'_, EventBridge>) -> Result<(
 #[tauri::command]
 fn subscribe_guest_logs(
     app: AppHandle,
+    subscription_id: String,
     path_and_query: String,
     channel: String,
 ) -> Result<(), String> {
+    if subscription_id.is_empty()
+        || !subscription_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("invalid guest log subscription id".into());
+    }
     if !channel.starts_with("vzctl-guest-log-")
         || !channel
             .bytes()
@@ -124,6 +151,7 @@ fn subscribe_guest_logs(
     if !path_and_query.contains("/guest-services/") || !path_and_query.contains("/api/logs/sse") {
         return Err("guest log path must be a guest-services SSE endpoint".into());
     }
+    let cancelled = register_guest_log_subscription(&subscription_id);
     thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let stream = api_proxy::open_sse(&path_and_query)?;
@@ -132,11 +160,17 @@ fn subscribe_guest_logs(
             let mut event = String::new();
             let mut data = String::new();
             loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
                 line.clear();
                 let n = reader
                     .read_line(&mut line)
                     .map_err(|e| format!("guest log sse read: {e}"))?;
                 if n == 0 {
+                    break;
+                }
+                if cancelled.load(Ordering::Relaxed) {
                     break;
                 }
                 let trimmed = line.trim_end_matches(['\r', '\n']);
@@ -165,7 +199,22 @@ fn subscribe_guest_logs(
         if let Err(err) = result {
             eprintln!("vzctl guest logs sse: {err}");
         }
+        unregister_guest_log_subscription(&subscription_id);
     });
+    Ok(())
+}
+
+#[tauri::command]
+fn unsubscribe_guest_logs(subscription_id: String) -> Result<(), String> {
+    if subscription_id.is_empty() {
+        return Ok(());
+    }
+    if let Ok(subs) = guest_log_subscriptions().lock() {
+        if let Some(cancelled) = subs.get(&subscription_id) {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+    unregister_guest_log_subscription(&subscription_id);
     Ok(())
 }
 
@@ -1821,6 +1870,7 @@ pub fn run() {
             request_host_reboot,
             subscribe_events,
             subscribe_guest_logs,
+            unsubscribe_guest_logs,
             open_url,
             read_text_file,
             write_text_file,

@@ -9,7 +9,8 @@ type Props = {
 
 export const VmLogLine = memo(function VmLogLine({ view, selected }: Props) {
   return (
-    <li
+    <div
+      role="listitem"
       className={cx(
         "vm-logs-line",
         view.levelClass,
@@ -26,6 +27,6 @@ export const VmLogLine = memo(function VmLogLine({ view, selected }: Props) {
         className="vm-logs-body"
         dangerouslySetInnerHTML={{ __html: view.bodyHtml }}
       />
-    </li>
+    </div>
   );
 });

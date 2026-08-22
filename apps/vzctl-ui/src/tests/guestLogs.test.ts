@@ -17,6 +17,14 @@ describe("buildLogsQuery", () => {
     );
   });
 
+  it("encodes filter.component", () => {
+    expect(
+      buildLogsQuery({
+        filters: { component: "api" },
+      }),
+    ).toBe("?filter.component=api");
+  });
+
   it("omits all min level", () => {
     expect(buildLogsQuery({ minLevel: "all" })).toBe("");
   });

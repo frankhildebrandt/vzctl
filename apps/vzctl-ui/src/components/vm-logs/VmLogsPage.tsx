@@ -39,6 +39,8 @@ const EMPTY_LIVE_STATUS: VmLogsLiveStatus = {
   selectedIndex: -1,
 };
 
+const EMPTY_OBSERVED_FIELDS: string[] = [];
+
 export function VmLogsPage({ vmId, source: sourceParam }: Props) {
   const t = useT();
   const navigate = useNavigate();
@@ -289,7 +291,6 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
             autoScroll={liveStatus.autoScroll}
             onAutoScrollChange={(value) => {
               streamActionsRef.current.setAutoScroll(value);
-              if (value) streamActionsRef.current.connectNow();
             }}
             hiddenFields={hiddenFields}
             onHiddenFieldToggle={(field, visible) =>
@@ -316,7 +317,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
             vmId={vmId}
             source={selected}
             filters={filters}
-            observedFields={statusQuery.data?.observedFields ?? []}
+            observedFields={statusQuery.data?.observedFields ?? EMPTY_OBSERVED_FIELDS}
             hiddenFields={hiddenFields}
             onStatusChange={handleLiveStatusChange}
             onOpenDetail={setDetailIndex}
