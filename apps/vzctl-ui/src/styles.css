@@ -2374,6 +2374,8 @@ button.sidebar-link.tone-danger:hover:not(:disabled) {
   white-space: pre-wrap;
   word-break: break-word;
   cursor: default;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.45em;
 }
 
 .vm-logs-line.no-source {
@@ -3250,4 +3252,295 @@ button:focus-visible,
 
 [data-theme="crt"] .card {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+/* —— Systemd services —— */
+.systemd-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.systemd-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.systemd-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.systemd-stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.systemd-stat-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.systemd-stat-running .systemd-stat-value {
+  color: var(--accent);
+}
+
+.systemd-toast {
+  margin: 0;
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.systemd-table-card {
+  overflow: hidden;
+}
+
+.systemd-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, var(--bg));
+}
+
+.systemd-toolbar-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-left: auto;
+}
+
+.systemd-search {
+  min-width: 11rem;
+  width: min(18rem, 42vw);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.7rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--input-bg);
+}
+
+.systemd-search:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 1px;
+}
+
+.systemd-clear {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.systemd-table-body {
+  padding: 1.25rem 1rem;
+}
+
+.segmented-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) + 2px);
+  background: var(--input-bg);
+}
+
+.segmented-control button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 0.38rem 0.8rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.segmented-control button:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.segmented-control button.is-active {
+  color: var(--button-fg);
+  background: var(--accent);
+}
+
+.segmented-control-compact button {
+  font-size: 0.78rem;
+  padding: 0.32rem 0.62rem;
+}
+
+.systemd-col-unit {
+  width: 28%;
+  min-width: 10rem;
+}
+
+.systemd-col-description {
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.systemd-col-actions {
+  width: 11rem;
+  text-align: right;
+}
+
+.unit-name {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.unit-name-suffix {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.systemd-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.systemd-status-running {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.systemd-status-exited {
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  border-color: color-mix(in srgb, var(--muted) 22%, transparent);
+}
+
+.systemd-status-inactive {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  border-color: color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+.systemd-status-activating {
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.systemd-status-failed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.systemd-status-other {
+  color: var(--muted);
+  background: var(--hover);
+}
+
+.systemd-actions {
+  opacity: 0.92;
+}
+
+.systemd-action-btn {
+  font-size: 0.78rem;
+  padding: 0.28rem 0.55rem;
+  min-width: 4.1rem;
+}
+
+.systemd-table-card .vm-table tbody tr[data-active="false"] {
+  opacity: 0.88;
+}
+
+.systemd-table-card .vm-table tbody tr:hover {
+  background: var(--hover);
+}
+
+.systemd-table-card .vm-table tbody tr:hover .systemd-actions {
+  opacity: 1;
+}
+
+.systemd-row-clickable {
+  cursor: pointer;
+}
+
+.systemd-detail-dialog {
+  width: min(34rem, 92vw);
+}
+
+.systemd-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.systemd-detail-status {
+  display: flex;
+  align-items: center;
+}
+
+.systemd-detail-dialog .kv {
+  grid-template-columns: 8.5rem 1fr;
+}
+
+.systemd-detail-dialog .confirm-actions {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+@media (max-width: 900px) {
+  .systemd-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .systemd-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .systemd-toolbar-filters {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .systemd-search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .systemd-col-description {
+    max-width: 12rem;
+  }
 }

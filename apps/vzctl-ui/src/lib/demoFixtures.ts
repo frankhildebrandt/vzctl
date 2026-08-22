@@ -763,6 +763,20 @@ export async function mockApiRequest<T = unknown>(
       const units = DEMO_SYSTEMD_UNITS.filter((unit) => unit.type === unitType);
       return { units } as T;
     }
+    if (segments.length === 6 && method === "GET") {
+      const unitName = decodeURIComponent(segments[5] ?? "");
+      const unit = DEMO_SYSTEMD_UNITS.find((entry) => entry.name === unitName);
+      if (!unit) {
+        throw new Error(`unit not found: ${unitName}`);
+      }
+      return {
+        unit: {
+          ...unit,
+          unit_file: "enabled",
+          fragment: `/lib/systemd/system/${unit.name}`,
+        },
+      } as T;
+    }
     if (segments.length === 7 && method === "POST") {
       return {
         ok: true,

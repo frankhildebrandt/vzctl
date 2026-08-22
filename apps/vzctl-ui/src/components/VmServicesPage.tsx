@@ -1,16 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { SystemdUnitDetailDialog } from "@/components/vm-services/SystemdUnitDetailDialog";
+import { UnitStatusBadge } from "@/components/vm-services/UnitStatusBadge";
+import {
+  VmServicesToolbar,
+  type SystemdStateFilter,
+} from "@/components/vm-services/VmServicesToolbar";
 import {
   ActionRow,
   Alert,
+  Badge,
   Button,
+  DataTable,
   EmptyState,
   LoadingState,
   PageHeader,
-  StatusPill,
   TableCard,
-  Toolbar,
 } from "@/components/ui";
 import { useT } from "@/lib/i18n";
 import {
@@ -18,12 +24,12 @@ import {
   isUnitActive,
   listSystemdUnits,
   restartSystemdUnit,
+  splitUnitName,
   startSystemdUnit,
   stopSystemdUnit,
   systemdKeys,
   type SystemdUnit,
   type SystemdUnitType,
-  unitStatusLabel,
 } from "@/lib/systemd";
 import { inspectVm, isRunning, vmKeys } from "@/lib/vms";
 
@@ -34,18 +40,48 @@ type PendingConfirm =
 
 const UNIT_TYPES: SystemdUnitType[] = ["service", "timer", "socket"];
 
-export function VmServicesPage({
-  vmId,
-}: {
-  vmId: string;
-}) {
+function filterUnits(
+  units: SystemdUnit[],
+  query: string,
+  stateFilter: SystemdStateFilter,
+): SystemdUnit[] {
+  const needle = query.trim().toLowerCase();
+  let list = units;
+  if (stateFilter === "running") {
+    list = list.filter(isUnitActive);
+  } else if (stateFilter === "inactive") {
+    list = list.filter((unit) => !isUnitActive(unit));
+  }
+  if (needle) {
+    list = list.filter(
+      (unit) =>
+        unit.name.toLowerCase().includes(needle) ||
+        unit.description.toLowerCase().includes(needle),
+    );
+  }
+  return [...list].sort((a, b) => {
+    const aLive = isUnitActive(a);
+    const bLive = isUnitActive(b);
+    if (aLive !== bLive) return aLive ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function countRunning(units: SystemdUnit[]): number {
+  return units.reduce((sum, unit) => sum + (isUnitActive(unit) ? 1 : 0), 0);
+}
+
+export function VmServicesPage({ vmId }: { vmId: string }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [unitType, setUnitType] = useState<SystemdUnitType>("service");
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<SystemdStateFilter>("all");
   const [busyUnit, setBusyUnit] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingConfirm>(null);
+  const [selectedUnit, setSelectedUnit] = useState<SystemdUnit | null>(null);
 
   const vmQuery = useQuery({
     queryKey: vmKeys.detail(vmId),
@@ -102,15 +138,22 @@ export function VmServicesPage({
   });
 
   const units = unitsQuery.data ?? [];
+  const filteredUnits = useMemo(
+    () => filterUnits(units, query, stateFilter),
+    [units, query, stateFilter],
+  );
+  const runningCount = useMemo(() => countRunning(units), [units]);
   const systemdAvailable = statusQuery.data?.available === true;
 
-  const typeLabel = useMemo(
-    () => ({
-      service: t("systemd.tab.services"),
-      timer: t("systemd.tab.timers"),
-      socket: t("systemd.tab.sockets"),
-    }),
-    [t],
+  const tabCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        UNIT_TYPES.map((type) => [
+          type,
+          type === unitType ? units.length : undefined,
+        ]),
+      ) as Record<SystemdUnitType, number | undefined>,
+    [unitType, units.length],
   );
 
   if (!running) {
@@ -126,7 +169,7 @@ export function VmServicesPage({
     return (
       <>
         <PageHeader title={t("systemd.title")} />
-        <LoadingState message={t("common.loading")} />
+        <LoadingState message={t("common.loading")} card />
       </>
     );
   }
@@ -150,67 +193,116 @@ export function VmServicesPage({
   }
 
   return (
-    <>
+    <div className="systemd-page">
       <PageHeader
         title={t("systemd.title")}
-        subtitle={
-          statusQuery.data?.version
-            ? t("systemd.version", { version: statusQuery.data.version })
-            : undefined
+        subtitle={t("systemd.subtitle")}
+        actions={
+          statusQuery.data?.version ? (
+            <Badge tone="ok">
+              {t("systemd.version", { version: statusQuery.data.version })}
+            </Badge>
+          ) : null
         }
       />
 
+      <div className="systemd-stats">
+        <div className="systemd-stat">
+          <span className="systemd-stat-value">{units.length}</span>
+          <span className="systemd-stat-label">{t("systemd.statTotal")}</span>
+        </div>
+        <div className="systemd-stat systemd-stat-running">
+          <span className="systemd-stat-value">{runningCount}</span>
+          <span className="systemd-stat-label">{t("systemd.statRunning")}</span>
+        </div>
+        <div className="systemd-stat">
+          <span className="systemd-stat-value">{units.length - runningCount}</span>
+          <span className="systemd-stat-label">{t("systemd.statInactive")}</span>
+        </div>
+      </div>
+
       {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
-      {message ? <p className="ok-banner">{message}</p> : null}
+      {message ? (
+        <p className="systemd-toast" role="status">
+          {message}
+        </p>
+      ) : null}
 
-      <Toolbar>
-        {UNIT_TYPES.map((type) => (
-          <Button
-            key={type}
-            tone={unitType === type ? "primary" : "secondary"}
-            onClick={() => setUnitType(type)}
-          >
-            {typeLabel[type]}
-          </Button>
-        ))}
-      </Toolbar>
+      <TableCard className="systemd-table-card">
+        <VmServicesToolbar
+          unitType={unitType}
+          onUnitTypeChange={(type) => {
+            setUnitType(type);
+            setQuery("");
+            setStateFilter("all");
+          }}
+          counts={tabCounts}
+          query={query}
+          onQueryChange={setQuery}
+          stateFilter={stateFilter}
+          onStateFilterChange={setStateFilter}
+        />
 
-      {unitsQuery.isLoading ? (
-        <LoadingState message={t("common.loading")} />
-      ) : unitsQuery.isError ? (
-        <Alert title={t("common.error")}>{String(unitsQuery.error)}</Alert>
-      ) : units.length === 0 ? (
-        <EmptyState message={t("systemd.empty")} />
-      ) : (
-        <TableCard>
-          <table>
+        {unitsQuery.isLoading ? (
+          <div className="systemd-table-body">
+            <LoadingState message={t("common.loading")} />
+          </div>
+        ) : unitsQuery.isError ? (
+          <div className="systemd-table-body">
+            <Alert title={t("common.error")}>{String(unitsQuery.error)}</Alert>
+          </div>
+        ) : units.length === 0 ? (
+          <div className="systemd-table-body">
+            <EmptyState message={t("systemd.empty")} card={false} />
+          </div>
+        ) : filteredUnits.length === 0 ? (
+          <div className="systemd-table-body">
+            <EmptyState message={t("systemd.noMatches")} card={false} />
+          </div>
+        ) : (
+          <DataTable>
             <thead>
               <tr>
                 <th>{t("systemd.col.unit")}</th>
                 <th>{t("systemd.col.status")}</th>
                 <th>{t("systemd.col.description")}</th>
-                <th />
+                <th className="systemd-col-actions">{t("systemd.col.actions")}</th>
               </tr>
             </thead>
             <tbody>
-              {units.map((unit) => {
+              {filteredUnits.map((unit) => {
                 const active = isUnitActive(unit);
                 const busy = busyUnit === unit.name;
+                const { base, suffix } = splitUnitName(unit.name);
                 return (
-                  <tr key={unit.name}>
-                    <td>{unit.name}</td>
-                    <td>
-                      <StatusPill state={active ? "running" : "stopped"}>
-                        {unitStatusLabel(unit)}
-                      </StatusPill>
+                  <tr
+                    key={unit.name}
+                    data-active={active ? "true" : "false"}
+                    className="systemd-row-clickable"
+                    onClick={() => setSelectedUnit(unit)}
+                  >
+                    <td className="systemd-col-unit">
+                      <span className="unit-name" title={unit.name}>
+                        {base}
+                        {suffix ? <span className="unit-name-suffix">{suffix}</span> : null}
+                      </span>
                     </td>
-                    <td>{unit.description || "—"}</td>
                     <td>
-                      <ActionRow>
+                      <UnitStatusBadge unit={unit} />
+                    </td>
+                    <td className="systemd-col-description" title={unit.description}>
+                      {unit.description || t("common.emDash")}
+                    </td>
+                    <td
+                      className="systemd-col-actions"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <ActionRow align="end" gap="sm" className="systemd-actions">
                         {active ? (
                           <>
                             <Button
-                              tone="secondary"
+                              tone="quiet"
+                              className="systemd-action-btn"
                               disabled={busy || lifecycle.isPending}
                               onClick={() => setPending({ kind: "stop", unit })}
                             >
@@ -218,10 +310,9 @@ export function VmServicesPage({
                             </Button>
                             <Button
                               tone="secondary"
+                              className="systemd-action-btn"
                               disabled={busy || lifecycle.isPending}
-                              onClick={() =>
-                                setPending({ kind: "restart", unit })
-                              }
+                              onClick={() => setPending({ kind: "restart", unit })}
                             >
                               {busy ? t("common.ellipsis") : t("systemd.restart")}
                             </Button>
@@ -229,6 +320,7 @@ export function VmServicesPage({
                         ) : (
                           <Button
                             tone="secondary"
+                            className="systemd-action-btn"
                             disabled={busy || lifecycle.isPending}
                             onClick={() =>
                               lifecycle.mutate({
@@ -246,9 +338,17 @@ export function VmServicesPage({
                 );
               })}
             </tbody>
-          </table>
-        </TableCard>
-      )}
+          </DataTable>
+        )}
+      </TableCard>
+
+      <SystemdUnitDetailDialog
+        open={selectedUnit != null}
+        vmId={vmId}
+        unit={selectedUnit}
+        onClose={() => setSelectedUnit(null)}
+        onChanged={invalidate}
+      />
 
       <ConfirmDialog
         open={pending != null}
@@ -279,6 +379,6 @@ export function VmServicesPage({
           setPending(null);
         }}
       />
-    </>
+    </div>
   );
 }

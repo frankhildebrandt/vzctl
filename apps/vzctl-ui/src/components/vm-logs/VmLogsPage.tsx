@@ -4,11 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { VmLogsDetailDialog } from "@/components/vm-logs/VmLogsDetailDialog";
 import { VmLogsHelpDialog } from "@/components/vm-logs/VmLogsHelpDialog";
+import {
+  VmLogsLivePanel,
+  type VmLogsLiveStatus,
+  type VmLogsStreamActions,
+} from "@/components/vm-logs/VmLogsLivePanel";
 import { VmLogsShareDialog } from "@/components/vm-logs/VmLogsShareDialog";
-import { VmLogsStream } from "@/components/vm-logs/VmLogsStream";
 import { bumpMinLevel, VmLogsToolbar } from "@/components/vm-logs/VmLogsToolbar";
 import { Alert, EmptyState, PageHeader } from "@/components/ui";
-import { useGuestLogStream } from "@/hooks/useGuestLogStream";
 import {
   fetchGuestLogStatus,
   listGuestServices,
@@ -26,11 +29,27 @@ type Props = {
 
 type PendingConfirm = "restart" | "truncate" | null;
 
+const EMPTY_LIVE_STATUS: VmLogsLiveStatus = {
+  pendingLive: 0,
+  autoScroll: true,
+  processStatus: {},
+  observedFields: [],
+  groupValues: [],
+  streamError: null,
+  selectedIndex: -1,
+};
+
 export function VmLogsPage({ vmId, source: sourceParam }: Props) {
   const t = useT();
   const navigate = useNavigate();
   const queryInputRef = useRef<HTMLInputElement>(null);
   const lastEnterRef = useRef(0);
+  const streamActionsRef = useRef<VmLogsStreamActions>({
+    connectNow: () => {},
+    jumpLine: () => {},
+    selectLine: () => {},
+    setAutoScroll: () => {},
+  });
 
   const [q, setQ] = useState("");
   const [minLevel, setMinLevel] = useState("all");
@@ -46,6 +65,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
   const [shareContext, setShareContext] = useState<number | undefined>();
   const [helpOpen, setHelpOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [liveStatus, setLiveStatus] = useState<VmLogsLiveStatus>(EMPTY_LIVE_STATUS);
 
   const sourcesQuery = useQuery({
     queryKey: ["guest-services", vmId],
@@ -86,28 +106,49 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
     enabled: Boolean(selected),
   });
 
-  const stream = useGuestLogStream({
-    vmId,
-    source: selected,
-    filters,
-    enabled: Boolean(selected),
-  });
-
   const observedFields =
-    stream.observedFields.length > 0
-      ? stream.observedFields
+    liveStatus.observedFields.length > 0
+      ? liveStatus.observedFields
       : (statusQuery.data?.observedFields ?? []);
 
   const groupValues =
-    stream.groupValues.length > 0
-      ? stream.groupValues
+    liveStatus.groupValues.length > 0
+      ? liveStatus.groupValues
       : (statusQuery.data?.groupValues ?? []);
 
   const processStatus = {
     ...statusQuery.data,
-    ...stream.processStatus,
+    ...liveStatus.processStatus,
   };
 
+  const selectedIndexRef = useRef(-1);
+
+  const handleLiveStatusChange = useCallback((status: VmLogsLiveStatus) => {
+    selectedIndexRef.current = status.selectedIndex;
+    setLiveStatus((current) => {
+      if (
+        current.pendingLive === status.pendingLive &&
+        current.autoScroll === status.autoScroll &&
+        current.streamError === status.streamError &&
+        current.selectedIndex === status.selectedIndex &&
+        current.observedFields === status.observedFields &&
+        current.groupValues === status.groupValues &&
+        current.processStatus.process === status.processStatus.process &&
+        current.processStatus.bufferLen === status.processStatus.bufferLen &&
+        current.processStatus.bufferCap === status.processStatus.bufferCap
+      ) {
+        return current;
+      }
+      return status;
+    });
+  }, []);
+
+  const openShare = useCallback((context?: number) => {
+    const selectedIndex = selectedIndexRef.current;
+    if (selectedIndex < 0) return;
+    setShareContext(context);
+    setShareIndex(selectedIndex);
+  }, []);
   const actionMutation = useMutation({
     mutationFn: async (action: "/api/restart" | "/api/truncate" | "/api/separator" | "/api/open-url") => {
       setBusyAction(action.replace("/api/", ""));
@@ -119,7 +160,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
     },
     onSuccess: (_data, action) => {
       if (action === "/api/restart" || action === "/api/truncate") {
-        stream.connectNow();
+        streamActionsRef.current.connectNow();
       }
     },
   });
@@ -134,32 +175,6 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
       });
     },
     [navigate, vmId],
-  );
-
-  const jumpLine = useCallback(
-    (delta: number) => {
-      if (stream.lines.length === 0) return;
-      let index = stream.lines.findIndex((line) => line.index === stream.selectedIndex);
-      if (index < 0) index = delta > 0 ? -1 : stream.lines.length;
-      index = Math.max(0, Math.min(stream.lines.length - 1, index + delta));
-      const line = stream.lines[index];
-      if (line.index == null) return;
-      stream.selectLine(line.index);
-      const node = stream.listRef.current?.querySelector(
-        `[data-index="${line.index}"]`,
-      );
-      node?.scrollIntoView({ block: "nearest" });
-    },
-    [stream],
-  );
-
-  const openShare = useCallback(
-    (context?: number) => {
-      if (stream.selectedIndex < 0) return;
-      setShareContext(context);
-      setShareIndex(stream.selectedIndex);
-    },
-    [stream.selectedIndex],
   );
 
   useEffect(() => {
@@ -184,20 +199,21 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
       }
       if (typing) return;
 
+      const actions = streamActionsRef.current;
       if (event.key === "?") setHelpOpen((open) => !open);
       if (event.key === "r") setPendingConfirm("restart");
       if (event.key === "t") setPendingConfirm("truncate");
       if (event.key === "O") void actionMutation.mutate("/api/open-url");
       if (event.key === "+") {
         setMinLevel((current) => bumpMinLevel(current, 1));
-        stream.connectNow();
+        actions.connectNow();
       }
       if (event.key === "-") {
         setMinLevel((current) => bumpMinLevel(current, -1));
-        stream.connectNow();
+        actions.connectNow();
       }
-      if (event.key === "n") jumpLine(1);
-      if (event.key === "N") jumpLine(-1);
+      if (event.key === "n") actions.jumpLine(1);
+      if (event.key === "N") actions.jumpLine(-1);
       if (event.key === "y") openShare(0);
       if (event.key === "Y") openShare(20);
       if (event.key === "Enter") {
@@ -210,7 +226,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actionMutation, jumpLine, openShare, stream]);
+  }, [actionMutation, openShare]);
 
   return (
     <section className="vm-logs-page">
@@ -231,7 +247,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
             onSourceChange={handleSourceChange}
             q={q}
             onQChange={setQ}
-            onQCommit={stream.connectNow}
+            onQCommit={() => streamActionsRef.current.connectNow()}
             queryInputRef={queryInputRef}
             minLevel={minLevel}
             onMinLevelChange={setMinLevel}
@@ -269,11 +285,11 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
             observedFields={observedFields}
             groupValues={groupValues}
             processStatus={processStatus}
-            pendingLive={stream.pendingLive}
-            autoScroll={stream.autoScroll}
+            pendingLive={liveStatus.pendingLive}
+            autoScroll={liveStatus.autoScroll}
             onAutoScrollChange={(value) => {
-              stream.setAutoScroll(value);
-              if (value) stream.connectNow();
+              streamActionsRef.current.setAutoScroll(value);
+              if (value) streamActionsRef.current.connectNow();
             }}
             hiddenFields={hiddenFields}
             onHiddenFieldToggle={(field, visible) =>
@@ -293,18 +309,18 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
             onHelp={() => setHelpOpen(true)}
             busyAction={busyAction}
           />
-          {stream.streamError ? (
-            <Alert title={t("common.error")}>{stream.streamError}</Alert>
+          {liveStatus.streamError ? (
+            <Alert title={t("common.error")}>{liveStatus.streamError}</Alert>
           ) : null}
-          <VmLogsStream
-            lines={stream.lines}
-            observedFields={observedFields}
+          <VmLogsLivePanel
+            vmId={vmId}
+            source={selected}
+            filters={filters}
+            observedFields={statusQuery.data?.observedFields ?? []}
             hiddenFields={hiddenFields}
-            selectedIndex={stream.selectedIndex}
-            listRef={stream.listRef}
-            onScroll={stream.onScroll}
-            onSelectLine={stream.selectLine}
+            onStatusChange={handleLiveStatusChange}
             onOpenDetail={setDetailIndex}
+            actionsRef={streamActionsRef}
           />
         </div>
       )}

@@ -62,6 +62,26 @@ func TestParseShow(t *testing.T) {
 	}
 }
 
+func TestParseShowKeyValueOutput(t *testing.T) {
+	raw := `Id=cron.service
+Description=Regular background program processing daemon
+LoadState=loaded
+ActiveState=active
+SubState=running
+FragmentPath=/usr/lib/systemd/system/cron.service
+UnitFileState=enabled`
+	props, err := parseShow(raw, "cron.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if props["name"] != "cron.service" || props["load"] != "loaded" || props["unit_file"] != "enabled" {
+		t.Fatalf("props=%#v", props)
+	}
+	if props["fragment"] != "/usr/lib/systemd/system/cron.service" {
+		t.Fatalf("fragment=%q", props["fragment"])
+	}
+}
+
 func TestEventBufferSince(t *testing.T) {
 	buf := newEventBuffer(4)
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)

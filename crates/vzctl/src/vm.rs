@@ -2479,7 +2479,16 @@ fn services_vm_exec_fallback(
     let envelope = exec_vm(id, &cmd, None, &BTreeMap::new(), 30_000, socket_path)?;
     let mut out = envelope;
     out["command"] = json!("vm.services");
-    out["systemd"] = json!({ "available": true });
+    out["systemd"] = json!({ "available": false });
+    if let Some(exec) = out.get("exec") {
+        if exec.get("exit").and_then(Value::as_u64) == Some(0) {
+            if let Some(obj) = out.get_mut("systemd") {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert("available".into(), json!(true));
+                }
+            }
+        }
+    }
     out["services"] = out["exec"].clone();
     Ok(out)
 }

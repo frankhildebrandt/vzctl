@@ -61,15 +61,10 @@ func systemctlEnv() []string {
 	return append(os.Environ(), "LC_ALL=C")
 }
 
-// Available reports whether systemd is the guest init.
+// Available reports whether this guest uses systemd as init.
 func Available() bool {
-	if _, err := os.Stat("/run/systemd/system"); err != nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), defaultExecTimeout)
-	defer cancel()
-	_, exit, err := defaultSystemctlRunner(ctx, "--version")
-	return err == nil && exit == 0
+	_, err := os.Stat("/run/systemd/system")
+	return err == nil
 }
 
 // Status returns capability information for the guest.
@@ -79,10 +74,9 @@ func (m *Manager) Status(ctx context.Context) Status {
 	}
 	stdout, exit, err := m.run(ctx, "--version")
 	if err != nil || exit != 0 {
-		return Status{Available: false}
+		return Status{Available: true}
 	}
-	version := parseSystemctlVersion(stdout)
-	return Status{Available: true, Version: version}
+	return Status{Available: true, Version: parseSystemctlVersion(stdout)}
 }
 
 func parseSystemctlVersion(stdout string) string {
@@ -165,7 +159,6 @@ func (m *Manager) Show(ctx context.Context, unit string) (map[string]string, err
 	stdout, exit, err := m.run(ctx,
 		"show", unit,
 		"--property=LoadState,ActiveState,SubState,Description,UnitFileState,FragmentPath,Id",
-		"--output=json",
 		"--no-pager",
 	)
 	if err != nil {
@@ -182,14 +175,13 @@ func parseShow(stdout, unit string) (map[string]string, error) {
 	if stdout == "" {
 		return nil, fmt.Errorf("unit %q not found", unit)
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
-		return nil, fmt.Errorf("invalid systemctl show json: %w", err)
+	row, err := decodeShowOutput(stdout)
+	if err != nil {
+		return nil, err
 	}
-	if len(rows) == 0 {
+	if len(row) == 0 {
 		return nil, fmt.Errorf("unit %q not found", unit)
 	}
-	row := rows[0]
 	props := map[string]string{
 		"name":        stringField(row, "Id", "name", "unit"),
 		"load":        stringField(row, "LoadState", "load"),
@@ -204,6 +196,43 @@ func parseShow(stdout, unit string) (map[string]string, error) {
 	}
 	props["type"] = unitSuffixType(props["name"])
 	return props, nil
+}
+
+func decodeShowOutput(stdout string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+		var rows []map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &rows); err == nil {
+			if len(rows) == 0 {
+				return nil, nil
+			}
+			return rows[0], nil
+		}
+		var single map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
+			return single, nil
+		}
+	}
+	return parseShowKeyValues(trimmed), nil
+}
+
+func parseShowKeyValues(stdout string) map[string]any {
+	props := make(map[string]any)
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key == "" {
+			continue
+		}
+		props[key] = value
+	}
+	return props
 }
 
 func unitSuffixType(name string) string {

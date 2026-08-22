@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { memo } from "react";
 import { Button } from "@/components/ui";
 import { IWATCH_LEVELS, type IwatchLevel, type IwatchStatus } from "@/lib/guestLogs";
 import type { HiddenFields } from "@/lib/iwatchFormat";
@@ -53,7 +54,7 @@ function visibilityFields(observedFields: string[]): string[] {
   return ["raw", "source", ...observedFields];
 }
 
-export function VmLogsToolbar({
+export const VmLogsToolbar = memo(function VmLogsToolbar({
   sources,
   selectedSource,
   onSourceChange,
@@ -270,7 +271,7 @@ export function VmLogsToolbar({
       ) : null}
     </div>
   );
-}
+});
 
 export function bumpMinLevel(current: string, delta: number): IwatchLevel {
   const index = Math.max(

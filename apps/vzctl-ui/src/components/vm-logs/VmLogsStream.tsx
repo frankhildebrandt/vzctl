@@ -1,13 +1,10 @@
-import type { RefObject } from "react";
-import type { IwatchLine } from "@/lib/guestLogs";
-import type { HiddenFields } from "@/lib/iwatchFormat";
+import { memo, useCallback, type MouseEvent, type RefObject } from "react";
 import { VmLogLine } from "@/components/vm-logs/VmLogLine";
 import { useT } from "@/lib/i18n";
+import type { LogLineView } from "@/lib/logLineViews";
 
 type Props = {
-  lines: IwatchLine[];
-  observedFields: string[];
-  hiddenFields: HiddenFields;
+  lineViews: LogLineView[];
   selectedIndex: number;
   listRef: RefObject<HTMLUListElement | null>;
   onScroll: () => void;
@@ -15,10 +12,16 @@ type Props = {
   onOpenDetail: (index: number) => void;
 };
 
-export function VmLogsStream({
-  lines,
-  observedFields,
-  hiddenFields,
+function lineIndexFromTarget(target: EventTarget | null): number | null {
+  if (!(target instanceof Element)) return null;
+  const row = target.closest<HTMLElement>("[data-index]");
+  if (!row) return null;
+  const index = Number(row.dataset.index);
+  return Number.isFinite(index) ? index : null;
+}
+
+export const VmLogsStream = memo(function VmLogsStream({
+  lineViews,
   selectedIndex,
   listRef,
   onScroll,
@@ -27,31 +30,35 @@ export function VmLogsStream({
 }: Props) {
   const t = useT();
 
+  const onClick = useCallback(
+    (event: MouseEvent<HTMLUListElement>) => {
+      const index = lineIndexFromTarget(event.target);
+      if (index == null) return;
+      if (event.detail >= 2) onOpenDetail(index);
+      else onSelectLine(index);
+    },
+    [onOpenDetail, onSelectLine],
+  );
+
   return (
     <ul
       ref={listRef}
       className="vm-logs-list"
       aria-label={t("vmLogs.stream")}
       onScroll={onScroll}
+      onClick={onClick}
     >
-      {lines.length === 0 ? (
+      {lineViews.length === 0 ? (
         <li className="vm-logs-empty">{t("vmLogs.waiting")}</li>
       ) : (
-        lines.map((line) => {
-          const index = line.index ?? -1;
-          return (
-            <VmLogLine
-              key={`${line.session ?? 0}-${index}`}
-              line={line}
-              observedFields={observedFields}
-              hiddenFields={hiddenFields}
-              selected={selectedIndex === index}
-              onSelect={() => onSelectLine(index)}
-              onOpenDetail={() => onOpenDetail(index)}
-            />
-          );
-        })
+        lineViews.map((view) => (
+          <VmLogLine
+            key={view.key}
+            view={view}
+            selected={selectedIndex === view.index}
+          />
+        ))
       )}
     </ul>
   );
-}
+});

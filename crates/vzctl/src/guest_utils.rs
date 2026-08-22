@@ -200,10 +200,21 @@ fn sha256_file(path: &Path) -> Result<String, GuestUtilsError> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn bundle_fingerprint(deploy_sha256: &str, binary_sha256: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(deploy_sha256.as_bytes());
+    hasher.update(binary_sha256.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestUtilsError> {
     let agent_version = agent_version_string()?;
-    let content_sha256 = content_fingerprint(&agent_version);
-    let id = bundle_id(&agent_version, &content_sha256);
+    let deploy_sha256 = content_fingerprint(&agent_version);
+    let staging = build_agent_staging(&agent_version)?;
+    let staging_binary = staging.join("vzctl-agent");
+    let binary_sha256 = sha256_file(&staging_binary)?;
+    let bundle_sha256 = bundle_fingerprint(&deploy_sha256, &binary_sha256);
+    let id = bundle_id(&agent_version, &bundle_sha256);
     let cache_dir = state_dir.join("guest-utils").join(&id);
     let binary_path = cache_dir.join("vzctl-agent");
     if !binary_path.is_file() {
@@ -213,7 +224,6 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
                 cache_dir.display()
             ))
         })?;
-        let staging = build_agent_staging(&agent_version)?;
         for name in [
             "vzctl-agent",
             "vzctl-agent.service",
@@ -227,13 +237,12 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
                 GuestUtilsError::new(format!("populate guest-utils cache: {error}"))
             })?;
         }
-        let _ = fs::remove_dir_all(&staging);
     }
-    let binary_sha256 = sha256_file(&binary_path)?;
+    let _ = fs::remove_dir_all(&staging);
     Ok(GuestUtilsBundle {
         bundle_id: id,
         agent_version,
-        content_sha256,
+        content_sha256: deploy_sha256,
         binary_sha256,
         cache_dir,
     })
@@ -323,6 +332,7 @@ where
         "agent_version": bundle.agent_version,
         "iwatch_version": crate::iwatch_bin::iwatch_version_string().ok(),
         "content_sha256": bundle.content_sha256,
+        "binary_sha256": bundle.binary_sha256,
         "updated_at": time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".to_string()),
