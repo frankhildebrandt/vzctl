@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["crates/vzctl", "crates/vzctl-oidc-simple"]
+members = ["crates/vzctl", "crates/vzctl-oidc-simple", "crates/vzctl-mcp"]
 exclude = ["apps/vzctl-ui/src-tauri"]

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vzctl": {
+      "command": "vzctl-mcp",
+      "env": {
+        "VZCTL_BIN": "vzctl"
+      }
+    }
+  }
+}

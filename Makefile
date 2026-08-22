@@ -109,6 +109,10 @@ install: release ui-build ## CLI, Daemons und Tauri-App installieren/aktualisier
 		install -m 755 target/release/vzctl-oidc-simple "$(RUNTIME_BIN)/vzctl-oidc-simple"; \
 		echo "installed: $(RUNTIME_BIN)/vzctl-oidc-simple"; \
 	fi
+	@if [ -x target/release/vzctl-mcp ]; then \
+		install -m 755 target/release/vzctl-mcp "$(BINDIR)/vzctl-mcp"; \
+		echo "installed: $(BINDIR)/vzctl-mcp"; \
+	fi
 	@if [ -x "$(CADDY_VENDOR)" ] && [ -x "$(DEX_VENDOR)" ]; then \
 		$(MAKE) install-vendor; \
 	else \
