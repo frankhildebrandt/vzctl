@@ -24,7 +24,9 @@ Artifact-Pins; mehrere Tags dürfen parallel existieren.
 - Pull-Objekte bleiben immutable.
 - Bake kopiert das Pull-Objekt nach `baked/<canonical>@<tag>.raw`, customized nur die Kopie.
 - `image seal --tag` materialisiert aus dem Bake-Tag wenn vorhanden, sonst aus `objects/`.
-- Bake auf **dasselbe** schon sealed Tag → `unchanged` (kein Fehler).
+- Bake auf **dasselbe** schon sealed Tag → `unchanged`, außer die Guest-Toolkit-Version
+  (`guest-agent/VERSION`) ist älter als der Host; dann Rebake erlaubt. Explizit:
+  `image rebake <alias> --tag <tag>` oder `image bake --force` + `image seal --force`.
 - Bake auf ein anderes Tag bleibt erlaubt.
 - Idempotent: gleiches Tag + gleicher `agent_version` → `summary.change=unchanged`.
 

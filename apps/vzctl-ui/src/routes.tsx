@@ -72,6 +72,7 @@ import {
   projectKeys,
   rememberProject,
 } from "@/lib/projects";
+import { StackDebugPage } from "@/components/stack-debug/StackDebugPage";
 import { deriveStackStatus, parseStackInventory } from "@/lib/stackStatus";
 import { decodeVmIdParam } from "@/lib/vms";
 import {
@@ -111,7 +112,7 @@ function RootLayout() {
 
 type EnvSearch = {
   path: string;
-  tab?: "topology" | "ops" | "config";
+  tab?: "topology" | "ops" | "config" | "debug";
 };
 
 export const indexRoute = createRoute({
@@ -172,8 +173,14 @@ export const vmLogsRoute = createRoute({
   }),
   component: function VmLogsRoute() {
     const { vmId: rawVmId } = vmDetailRoute.useParams();
-    const { source } = vmLogsRoute.useSearch();
-    return <VmLogsPage vmId={decodeVmIdParam(rawVmId)} source={source} />;
+    const { source, stackPath } = vmLogsRoute.useSearch();
+    return (
+      <VmLogsPage
+        vmId={decodeVmIdParam(rawVmId)}
+        source={source}
+        stackPath={stackPath}
+      />
+    );
   },
 });
 
@@ -325,7 +332,10 @@ export const envRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): EnvSearch => ({
     path: typeof search.path === "string" ? search.path : "",
     tab:
-      search.tab === "topology" || search.tab === "ops" || search.tab === "config"
+      search.tab === "topology" ||
+      search.tab === "ops" ||
+      search.tab === "config" ||
+      search.tab === "debug"
         ? search.tab
         : undefined,
   }),
@@ -999,6 +1009,8 @@ function ProjectDetailPage() {
           />
           <ProjectOidcUplinkSection projectPath={path} />
         </section>
+      ) : tab === "debug" ? (
+        <StackDebugPage stackPath={path} />
       ) : (
         <>
       <StackStatusCard

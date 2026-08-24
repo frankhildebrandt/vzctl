@@ -134,8 +134,9 @@ Stack-`id` ist ein stabiler Key (Default: Directory-Basename); Registry in SQLit
 |---|---|---|
 | `GET` | `/v1/images` | List |
 | `POST` | `/v1/images/{alias}/pull` | Pull → Job |
-| `POST` | `/v1/images/{alias}/bake` | Bake → Job; Body `{ "tag": "v1" }` Pflicht |
-| `POST` | `/v1/images/{alias}/seal` | Seal → Job; Body `{ "tag": "v1" }` Pflicht |
+| `POST` | `/v1/images/{alias}/bake` | Bake → Job; Body `{ "tag": "v1", "force"?: true }` |
+| `POST` | `/v1/images/{alias}/seal` | Seal → Job; Body `{ "tag": "v1", "force"?: true }` |
+| `POST` | `/v1/images/{alias}/rebake` | Rebake+Seal → Job; Body `{ "tag": "v1" }` |
 
 ### Docker
 

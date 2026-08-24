@@ -111,10 +111,10 @@ kein Breaking Change innerhalb v1.
 
 ## Geplante Erweiterungen
 
-- **NATS Viewer**: Tools auf Guest-Service oder Stack-Ingress
-- **Postgres Viewer**: Read-only SQL via published guest API oder `vm_exec` + `psql`
 - REST-`vm_exec` wenn Supervisor-Endpoint landet (heute CLI)
 - Optional: SSE-Events als MCP Resources/Subscriptions
+
+Debug data sources (`debug_*` tools) sind implementiert — siehe [debug-sources-v1.md](debug-sources-v1.md).
 
 ## Compatibility
 

@@ -1931,6 +1931,27 @@ fn exec_vm(
     timeout_ms: u64,
     socket_path: &Path,
 ) -> Result<Value, Failure> {
+    let outcome = exec_in_vm(id, cmd, cwd, env, timeout_ms, socket_path)
+        .map_err(|message| Failure::new(EXIT_SUPERVISOR, message))?;
+    Ok(exec_envelope(id, cmd, &outcome))
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ExecOutcome {
+    pub exit: u8,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
+}
+
+pub(crate) fn exec_in_vm(
+    id: &str,
+    cmd: &[String],
+    cwd: Option<&str>,
+    env: &BTreeMap<String, String>,
+    timeout_ms: u64,
+    socket_path: &Path,
+) -> Result<ExecOutcome, String> {
     let mut params = json!({
         "vm_id": id,
         "cmd": cmd,
@@ -1942,30 +1963,35 @@ fn exec_vm(
     if !env.is_empty() {
         params["env"] = json!(env);
     }
-    let result = rpc(socket_path, "vm.exec", params)?;
-    let exit = result["exit"].as_u64().unwrap_or(1) as u8;
-    let truncated = result["truncated"].as_bool().unwrap_or(false);
-    let stdout = result["stdout"].as_str().unwrap_or("").to_string();
-    let stderr = result["stderr"].as_str().unwrap_or("").to_string();
-    Ok(json!({
+    let result = rpc(socket_path, "vm.exec", params).map_err(|failure| failure.message)?;
+    Ok(ExecOutcome {
+        exit: result["exit"].as_u64().unwrap_or(1) as u8,
+        truncated: result["truncated"].as_bool().unwrap_or(false),
+        stdout: result["stdout"].as_str().unwrap_or("").to_string(),
+        stderr: result["stderr"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+fn exec_envelope(id: &str, cmd: &[String], outcome: &ExecOutcome) -> Value {
+    json!({
         "apiVersion": API_VERSION,
         "command": "vm.exec",
-        "status": if exit == 0 { "ok" } else { "fail" },
-        "exit_code": exit,
+        "status": if outcome.exit == 0 { "ok" } else { "fail" },
+        "exit_code": outcome.exit,
         "summary": {
-            "message": format!("exit {exit}"),
+            "message": format!("exit {}", outcome.exit),
             "vm_id": id,
-            "exit": exit,
-            "truncated": truncated,
+            "exit": outcome.exit,
+            "truncated": outcome.truncated,
         },
         "exec": {
             "cmd": cmd,
-            "exit": exit,
-            "stdout": stdout,
-            "stderr": stderr,
-            "truncated": truncated,
+            "exit": outcome.exit,
+            "stdout": outcome.stdout,
+            "stderr": outcome.stderr,
+            "truncated": outcome.truncated,
         },
-    }))
+    })
 }
 
 fn exec_tty_vm(
@@ -2756,17 +2782,94 @@ fn follow_serial_log(path: &Path) -> Result<(), Failure> {
     }
 }
 
-fn list_log_sources(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+fn journald_units_for_vm(id: &str, socket_path: &Path) -> Vec<String> {
+    let (project, _) = match crate::config::split_runtime_vm_id(id) {
+        Some(parts) => parts,
+        None => return Vec::new(),
+    };
+    let stacks = match rpc(socket_path, "stacks.list", json!({})) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    for stack in stacks["stacks"].as_array().into_iter().flatten() {
+        let path = stack["path"].as_str().unwrap_or_default();
+        if path.is_empty() {
+            continue;
+        }
+        if let Ok(environment) = crate::config::validate_path(Path::new(path)) {
+            if environment.spec.project == project {
+                return crate::config::journald_units_for_runtime_vm(&environment, id);
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn merge_log_sources(id: &str, socket_path: &Path) -> Result<Vec<Value>, Failure> {
     validate_vm_id(id)?;
+    let mut sources = Vec::new();
+    for unit in journald_units_for_vm(id, socket_path) {
+        sources.push(json!({
+            "name": unit,
+            "kind": "journald",
+        }));
+    }
     let result = rpc(
         socket_path,
         "vm.agent.services.list",
         json!({ "vm_id": id }),
     )?;
-    let sources = result
-        .get("services")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
+    for service in result["services"].as_array().into_iter().flatten() {
+        let name = service["name"].as_str().unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let kind = service["kind"].as_str().unwrap_or("iwatch");
+        if kind != "iwatch" {
+            continue;
+        }
+        if sources.iter().any(|entry| entry["name"].as_str() == Some(name)) {
+            continue;
+        }
+        let mut entry = service.clone();
+        if entry.get("kind").is_none() {
+            entry["kind"] = json!("iwatch");
+        }
+        sources.push(entry);
+    }
+    Ok(sources)
+}
+
+fn log_source_kind(id: &str, source: &str, socket_path: &Path) -> Option<String> {
+    if journald_units_for_vm(id, socket_path).iter().any(|unit| unit == source) {
+        return Some("journald".to_string());
+    }
+    let result = rpc(
+        socket_path,
+        "vm.agent.services.list",
+        json!({ "vm_id": id }),
+    );
+    if let Ok(value) = result {
+        for service in value["services"].as_array().into_iter().flatten() {
+            if service["name"].as_str() == Some(source) {
+                return Some(
+                    service["kind"]
+                        .as_str()
+                        .unwrap_or("iwatch")
+                        .to_string(),
+                );
+            }
+        }
+    }
+    if crate::config::is_valid_systemd_unit(source) {
+        Some("journald".to_string())
+    } else {
+        None
+    }
+}
+
+fn list_log_sources(id: &str, socket_path: &Path) -> Result<Value, Failure> {
+    let sources = merge_log_sources(id, socket_path)?;
     Ok(json!({
         "apiVersion": API_VERSION,
         "command": "vm.logs",
@@ -2832,6 +2935,12 @@ fn guest_logs_vm(
 ) -> Result<Value, Failure> {
     validate_vm_id(id)?;
     if restart {
+        if log_source_kind(id, source, socket_path).as_deref() == Some("journald") {
+            return Err(Failure::new(
+                EXIT_INVALID,
+                format!("cannot restart journald source {source}"),
+            ));
+        }
         restart_guest_log_source(id, source, socket_path)?;
         if !follow {
             return Ok(json!({

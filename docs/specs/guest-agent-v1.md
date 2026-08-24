@@ -266,6 +266,17 @@ cap) and `services.stream` (mux stdout after `{upgraded:true}`, like
 `exec_tty`). Paths must be root-relative (`/api/...`) and stay on the
 registered origin.
 
+### Builtin journald (`kind: journald`)
+
+When `services.http` / `services.stream` target a name that is **not** in the
+guest_publish registry but matches a systemd unit (e.g. `nginx.service`), the
+agent serves an iwatch-compatible loopback API via `journalctl` (lazy: snapshot
+on `GET /api/logs`, follow process only for open SSE streams). `journalctl` runs
+via `sudo -n` (same NOPASSWD sudoers as other helpers). Requires systemd
+as PID 1. Control endpoints (`POST /api/restart`, truncate, …) return 404.
+Declared units also appear in UI/CLI navigation from `hypernetwork.config.yaml`
+`vms.*.logs.journald` (merged with runtime `iwatch` in `--list-sources`).
+
 ### `network_probe`
 
 Die optionale Capability trennt DNS-, TCP-, TLS- und HTTP-Phase.

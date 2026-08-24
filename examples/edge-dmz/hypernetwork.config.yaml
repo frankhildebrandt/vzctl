@@ -151,6 +151,9 @@ spec:
         - oidc
       ports: []
       mounts: []
+      logs:
+        journald:
+          - caddy.service
     docker:
       from: ubuntu-base
       clone: linked

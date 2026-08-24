@@ -72,6 +72,12 @@ export const VmConfigSchema = z.preprocess((value) => {
   requires: z.array(z.string()).default([]),
   ports: z.array(z.string()).default([]),
   mounts: z.array(VmMountSchema).default([]),
+  logs: z
+    .object({
+      journald: z.array(z.string().min(1)).default([]),
+    })
+    .strict()
+    .optional(),
 }));
 
 export const ImageConfigSchema = z.object({
@@ -132,6 +138,69 @@ export const ResilienceSchema = z
   })
   .strict();
 
+const SqlDataSourceEntrySchema = z
+  .object({
+    host: z.string().min(1),
+    port: z.number().int().min(1).max(65535),
+    database: z.string().min(1),
+    user: z.string().min(1),
+    passwordFile: z.string().optional(),
+    via: z.string().optional(),
+  })
+  .strict();
+
+const NatsDataSourceEntrySchema = z
+  .object({
+    host: z.string().min(1),
+    port: z.number().int().min(1).max(65535).default(4222),
+    user: z.string().optional(),
+    passwordFile: z.string().optional(),
+    tokenFile: z.string().optional(),
+    credsFile: z.string().optional(),
+    via: z.string().optional(),
+  })
+  .strict();
+
+const SqlDataSourceTypeSchema = z
+  .object({
+    default: nameId,
+    via: z.string().min(1),
+    entries: z.record(z.string(), SqlDataSourceEntrySchema),
+  })
+  .strict();
+
+const NatsDataSourceTypeSchema = z
+  .object({
+    default: nameId,
+    via: z.string().min(1),
+    entries: z.record(z.string(), NatsDataSourceEntrySchema),
+  })
+  .strict();
+
+export const ObservabilityProbeSchema = z
+  .object({
+    name: nameId,
+    from: z.string().min(1),
+    target: z.string().min(1),
+    expect: z.enum(["tcp", "http_2xx", "dns"]),
+  })
+  .strict();
+
+export const ObservabilitySchema = z
+  .object({
+    probes: z.array(ObservabilityProbeSchema).default([]),
+    dataSources: z
+      .object({
+        postgres: SqlDataSourceTypeSchema.optional(),
+        mysql: SqlDataSourceTypeSchema.optional(),
+        nats: NatsDataSourceTypeSchema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .optional();
+
 export const OidcUplinkSchema = z
   .object({
     type: z.enum(["oidc", "github", "microsoft", "discord"]).optional(),
@@ -179,6 +248,7 @@ export const SpecSchema = z.object({
   ingress: z.unknown().optional(),
   oidc: OidcConfigSchema.optional(),
   resilience: ResilienceSchema.optional(),
+  observability: ObservabilitySchema,
 });
 
 export const EnvironmentSchema = z.object({

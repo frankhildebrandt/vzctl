@@ -218,7 +218,7 @@ final class EdgeServer: @unchecked Sendable {
     private func apply(_ value: JSONValue, generation: Int64) throws {
         let desired = try object(value)
         let snapshot = try parseSnapshot(desired["network_snapshot"] ?? .object([:]))
-        let hostServices = try strings(desired["host_services"] ?? .array([]))
+        let hostServices = try parseIngressHostServices(desired["host_services"] ?? .array([]))
         let dnsRecords = try array(desired["dns_records"] ?? .array([])).map(parseDNSRecord)
         let ports = try array(desired["port_forwards"] ?? .array([])).map(parsePort)
         let ingress = try array(desired["ingress"] ?? .array([]))
@@ -341,7 +341,10 @@ final class EdgeServer: @unchecked Sendable {
                 "ingress listener \(failure.0.gatewayIP):\(failure.0.port): \(failure.1)"
             )
         }
-        dnsServer.setHostServices(hostServices)
+        dnsServer.setIngressHostServices(
+            hosts: hostServices.hosts,
+            guestAddresses: hostServices.guestAddresses
+        )
         dnsServer.setRuntimeRecords(dnsRecords)
         let dns = dnsServer.reload(snapshot: snapshot)
         guard dns.ok else { throw EdgeServerError.invalid(dns.lastError ?? "DNS reconcile failed") }
@@ -499,6 +502,41 @@ private func strings(_ value: JSONValue) throws -> [String] {
         guard case let .string(item) = $0 else { throw EdgeServerError.invalid("string array required") }
         return item
     }
+}
+
+private struct IngressHostServiceEntry {
+    let hosts: [String]
+    let guestAddresses: [String: [String: String]]
+}
+
+private func parseIngressHostServices(_ value: JSONValue) throws -> IngressHostServiceEntry {
+    var hosts: [String] = []
+    var guestAddresses: [String: [String: String]] = [:]
+    for item in try array(value) {
+        switch item {
+        case let .string(name):
+            hosts.append(name)
+        case let .object(fields):
+            let host = try string("host", fields)
+            hosts.append(host)
+            if let guestField = fields["guest"] {
+                let guestObject = try object(guestField)
+                var perNetwork: [String: String] = [:]
+                for (network, ipValue) in guestObject {
+                    guard case let .string(ip) = ipValue, !ip.isEmpty else {
+                        throw EdgeServerError.invalid("ingress guest address must be a non-empty string")
+                    }
+                    perNetwork[network] = ip
+                }
+                if !perNetwork.isEmpty {
+                    guestAddresses[DNSZoneBuilder.canonicalName(host)] = perNetwork
+                }
+            }
+        default:
+            throw EdgeServerError.invalid("host_services entry must be string or object")
+        }
+    }
+    return IngressHostServiceEntry(hosts: hosts, guestAddresses: guestAddresses)
 }
 
 private func mergeFirewallBinding(

@@ -3,13 +3,16 @@ import { memo } from "react";
 import { Button } from "@/components/ui";
 import { IWATCH_LEVELS, type IwatchLevel, type IwatchStatus } from "@/lib/guestLogs";
 import type { HiddenFields } from "@/lib/iwatchFormat";
+import type { LogStreamKind } from "@/lib/logStreams";
 import { useT } from "@/lib/i18n";
 
-type Source = { name: string };
+type Source = { name: string; kind: LogStreamKind };
 
 type Props = {
   sources: Source[];
   selectedSource: string;
+  selectedKind: LogStreamKind;
+  showIwatchActions: boolean;
   onSourceChange: (source: string) => void;
   q: string;
   onQChange: (value: string) => void;
@@ -57,6 +60,8 @@ function visibilityFields(observedFields: string[]): string[] {
 export const VmLogsToolbar = memo(function VmLogsToolbar({
   sources,
   selectedSource,
+  selectedKind,
+  showIwatchActions,
   onSourceChange,
   q,
   onQChange,
@@ -109,11 +114,16 @@ export const VmLogsToolbar = memo(function VmLogsToolbar({
             >
               {sources.map((item) => (
                 <option key={item.name} value={item.name}>
-                  {item.name}
+                  {item.name} ({item.kind})
                 </option>
               ))}
             </select>
           </label>
+        ) : sources.length === 1 ? (
+          <span className="vm-logs-source-badge">
+            <span className="vm-logs-source-name">{selectedSource}</span>
+            <span className="vm-logs-kind-badge">{selectedKind}</span>
+          </span>
         ) : null}
         <label className="vm-logs-control vm-logs-query">
           <span className="vm-logs-label">{t("vmLogs.query")}</span>
@@ -161,22 +171,26 @@ export const VmLogsToolbar = memo(function VmLogsToolbar({
           </span>
         </span>
         <div className="vm-logs-actions">
-          <Button
-            tone="secondary"
-            disabled={busyAction != null}
-            onClick={onRestart}
-          >
-            {busyAction === "restart" ? t("vmLogs.restartBusy") : t("vmLogs.restart")}
-          </Button>
-          <Button tone="secondary" disabled={busyAction != null} onClick={onTruncate}>
-            {t("vmLogs.truncate")}
-          </Button>
-          <Button tone="secondary" disabled={busyAction != null} onClick={onSeparator}>
-            {t("vmLogs.separator")}
-          </Button>
-          <Button tone="secondary" disabled={busyAction != null} onClick={onOpenUrl}>
-            {t("vmLogs.openUrl")}
-          </Button>
+          {showIwatchActions ? (
+            <>
+              <Button
+                tone="secondary"
+                disabled={busyAction != null}
+                onClick={onRestart}
+              >
+                {busyAction === "restart" ? t("vmLogs.restartBusy") : t("vmLogs.restart")}
+              </Button>
+              <Button tone="secondary" disabled={busyAction != null} onClick={onTruncate}>
+                {t("vmLogs.truncate")}
+              </Button>
+              <Button tone="secondary" disabled={busyAction != null} onClick={onSeparator}>
+                {t("vmLogs.separator")}
+              </Button>
+              <Button tone="secondary" disabled={busyAction != null} onClick={onOpenUrl}>
+                {t("vmLogs.openUrl")}
+              </Button>
+            </>
+          ) : null}
           <Button tone="secondary" onClick={onToggleFieldVisibility}>
             {t("vmLogs.fields")}
           </Button>

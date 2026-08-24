@@ -4,6 +4,7 @@ import {
   catalogOsGroups,
   defaultCatalogSelection,
   IMAGE_ALIAS_HINTS,
+  imageNeedsRebake,
   imageStateLabel,
   parseCatalogAlias,
   resolveCatalogSelection,
@@ -43,6 +44,26 @@ describe("images helpers", () => {
     expect(imageStateLabel(sampleImage({ baked: true }))).toBe("baked");
     expect(imageStateLabel(sampleImage({ baked: true, sealed: true }))).toBe(
       "sealed",
+    );
+  });
+
+  it("detects stale guest toolkit on sealed images", () => {
+    expect(
+      imageNeedsRebake(
+        sampleImage({ sealed: true, baked: true, agent_version: "0.1.0" }),
+        "0.1.7",
+        "v1",
+      ),
+    ).toBe(true);
+    expect(
+      imageNeedsRebake(
+        sampleImage({ sealed: true, baked: true, agent_version: "0.1.7" }),
+        "0.1.7",
+        "v1",
+      ),
+    ).toBe(false);
+    expect(imageNeedsRebake(sampleImage({ baked: true }), "0.1.7", "v1")).toBe(
+      false,
     );
   });
 

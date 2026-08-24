@@ -185,6 +185,59 @@ import VzDaemonKit
     #expect(zone.addresses(for: "web.dmz.edge-dmz.vz.test", horizon: guestHorizon()) == ["10.80.0.10"])
 }
 
+@Test func ingressGuestAddressesOverrideBridgeAlias() {
+    let snapshot = NetworkSnapshot(
+        networks: [
+            NetworkRecord(
+                name: "core",
+                cidr: "10.90.0.0/24",
+                project: "neti"
+            ),
+            NetworkRecord(
+                name: "external",
+                cidr: "10.91.0.0/24",
+                project: "neti"
+            ),
+        ],
+        attachments: [
+            NetworkAttachmentRecord(
+                vmID: "main-node",
+                networkName: "core",
+                ip: "10.90.0.2",
+                project: "neti"
+            ),
+            NetworkAttachmentRecord(
+                vmID: "main-node",
+                networkName: "external",
+                ip: "10.91.0.2",
+                project: "neti"
+            ),
+        ]
+    )
+
+    let zone = DNSZoneBuilder.build(
+        snapshot: snapshot,
+        ttl: 15,
+        hostServices: ["main-node.svc.neti.vz.test"],
+        ingressGuestAddresses: [
+            "main-node.svc.neti.vz.test": [
+                "core": "10.90.0.2",
+                "external": "10.91.0.2",
+            ],
+        ]
+    )
+
+    #expect(zone.addresses(for: "main-node.svc.neti.vz.test", horizon: .host) == ["127.0.0.1"])
+    #expect(zone.addresses(
+        for: "main-node.svc.neti.vz.test",
+        horizon: guestHorizon(network: "core", project: "neti", gateway: "10.90.0.0")
+    ) == ["10.90.0.2"])
+    #expect(zone.addresses(
+        for: "main-node.svc.neti.vz.test",
+        horizon: guestHorizon(network: "external", project: "neti", gateway: "10.91.0.0")
+    ) == ["10.91.0.2"])
+}
+
 @Test func hostServiceWireResponseHonorsHorizonParameter() {
     let server = DNSServer(configuration: DNSConfiguration(
         hostAddress: "127.0.0.1",

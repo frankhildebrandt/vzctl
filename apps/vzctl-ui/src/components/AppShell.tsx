@@ -58,6 +58,15 @@ export function AppShell({ children }: { children: ReactNode }) {
               {nav.items.map((item) => (
                 <NavLink key={item.id} item={item} />
               ))}
+
+              {nav.groups?.map((group) => (
+                <div key={group.id} className="sidebar-group">
+                  <div className="sidebar-context">{group.label}</div>
+                  {group.items.map((item) => (
+                    <NavLink key={item.id} item={item} />
+                  ))}
+                </div>
+              ))}
             </div>
           </nav>
 
@@ -107,6 +116,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+function NavLinkContent({ item }: { item: SidebarNavItem }) {
+  return (
+    <>
+      <span className="sidebar-link-label">{item.label}</span>
+      {item.badge ? (
+        <span className="sidebar-link-badge">{item.badge}</span>
+      ) : null}
+    </>
+  );
+}
+
 function NavLink({ item }: { item: SidebarNavItem }) {
   if (item.kind === "action") {
     return (
@@ -120,7 +140,7 @@ function NavLink({ item }: { item: SidebarNavItem }) {
         disabled={item.disabled}
         onClick={() => invokeSidebarAction(item.id)}
       >
-        {item.label}
+        <NavLinkContent item={item} />
       </button>
     );
   }
@@ -143,7 +163,7 @@ function NavLink({ item }: { item: SidebarNavItem }) {
           if (item.disabled) event.preventDefault();
         }}
       >
-        {item.label}
+        <NavLinkContent item={item} />
       </Link>
     );
   }
@@ -161,7 +181,7 @@ function NavLink({ item }: { item: SidebarNavItem }) {
         if (item.disabled) event.preventDefault();
       }}
     >
-      {item.label}
+      <NavLinkContent item={item} />
     </Link>
   );
 }

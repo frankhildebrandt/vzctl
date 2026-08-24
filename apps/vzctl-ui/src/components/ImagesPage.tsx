@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ConsoleLog, type ConsoleLine } from "@/components/ApplyProgress";
 import {
   ActionRow,
@@ -29,9 +30,11 @@ import {
   bakeImage,
   DEFAULT_IMAGE_TAG,
   imageKeys,
+  imageNeedsRebake,
   imageStateLabel,
   listImages,
   pullImage,
+  rebakeImage,
   sealImage,
   validImageTag,
   type ImageListItem,
@@ -49,6 +52,7 @@ export function ImagesPage() {
   const [pullAlias, setPullAlias] = useState("ubuntu-latest");
   const [imageTag, setImageTag] = useState(DEFAULT_IMAGE_TAG);
   const [sealTarget, setSealTarget] = useState("");
+  const [rebakeTarget, setRebakeTarget] = useState<ImageListItem | null>(null);
   const [jobLines, setJobLines] = useState<ConsoleLine[]>([]);
   const [jobMeter, setJobMeter] = useState<JobProgress | null>(null);
   const logCursor = useRef(0);
@@ -161,9 +165,33 @@ export function ImagesPage() {
     onSettled: () => setBusyAlias(null),
   });
 
+  const rebakeMutation = useMutation({
+    mutationFn: ({ alias, tag }: { alias: string; tag: string }) =>
+      rebakeImage(alias, tag, jobOpts),
+    onMutate: ({ alias }) => {
+      setError(null);
+      setActionMsg(null);
+      setBusyAlias(alias);
+      resetJobLog();
+    },
+    onSuccess: (_data, { alias, tag }) => {
+      setActionMsg(t("images.rebakeOk", { alias, tag }));
+      invalidate();
+    },
+    onError: (err) => setError(String(err)),
+    onSettled: () => {
+      setBusyAlias(null);
+      setRebakeTarget(null);
+    },
+  });
+
   const images = listQuery.data?.images ?? [];
+  const hostAgentVersion = listQuery.data?.hostAgentVersion ?? null;
   const jobPending =
-    pullMutation.isPending || bakeMutation.isPending || sealMutation.isPending;
+    pullMutation.isPending ||
+    bakeMutation.isPending ||
+    sealMutation.isPending ||
+    rebakeMutation.isPending;
   const busy = jobPending || listQuery.isFetching;
   const showJobLog = jobPending || jobLines.length > 0;
 
@@ -202,6 +230,31 @@ export function ImagesPage() {
         <Alert title={t("common.error")}>{String(listQuery.error)}</Alert>
       ) : null}
       {error ? <Alert title={t("common.error")}>{error}</Alert> : null}
+
+      <ConfirmDialog
+        open={rebakeTarget !== null}
+        title={t("images.rebakeConfirmTitle")}
+        message={
+          rebakeTarget
+            ? t("images.rebakeConfirmMessage", {
+                alias: rebakeTarget.alias,
+                tag,
+                current: rebakeTarget.agent_version ?? t("common.emDash"),
+                host: hostAgentVersion ?? t("common.emDash"),
+              })
+            : ""
+        }
+        confirmLabel={t("images.rebake")}
+        tone="default"
+        busy={rebakeMutation.isPending}
+        error={rebakeMutation.isError ? String(rebakeMutation.error) : null}
+        onCancel={() => setRebakeTarget(null)}
+        onConfirm={() => {
+          if (rebakeTarget && tagOk) {
+            rebakeMutation.mutate({ alias: rebakeTarget.alias, tag });
+          }
+        }}
+      />
 
       {showJobLog ? (
         <div style={{ marginBottom: "1rem" }}>
@@ -342,6 +395,8 @@ export function ImagesPage() {
                   image={image}
                   busy={busy}
                   tagOk={tagOk}
+                  tag={tag}
+                  hostAgentVersion={hostAgentVersion}
                   rowBusy={busyAlias === image.alias}
                   onBake={() =>
                     tagOk && bakeMutation.mutate({ alias: image.alias, tag })
@@ -349,6 +404,7 @@ export function ImagesPage() {
                   onSeal={() =>
                     tagOk && sealMutation.mutate({ target: image.alias, tag })
                   }
+                  onRebake={() => setRebakeTarget(image)}
                 />
               ))}
             </tbody>
@@ -363,23 +419,35 @@ function ImageRow({
   image,
   busy,
   tagOk,
+  tag,
+  hostAgentVersion,
   rowBusy,
   onBake,
   onSeal,
+  onRebake,
 }: {
   image: ImageListItem;
   busy: boolean;
   tagOk: boolean;
+  tag: string;
+  hostAgentVersion: string | null;
   rowBusy: boolean;
   onBake: () => void;
   onSeal: () => void;
+  onRebake: () => void;
 }) {
   const t = useT();
   const state = imageStateLabel(image);
+  const stale = imageNeedsRebake(image, hostAgentVersion, tag);
   return (
     <tr>
       <td>
         <span className="project-name">{image.alias}</span>
+        {stale ? (
+          <div style={{ marginTop: "0.25rem" }}>
+            <Badge tone="warn">{t("images.toolkitStale")}</Badge>
+          </div>
+        ) : null}
         {image.canonical_alias !== image.alias ? (
           <div className="muted" style={{ fontSize: "0.85rem" }}>
             → {image.canonical_alias}
@@ -399,11 +467,20 @@ function ImageRow({
       <td className="muted">{image.agent_version ?? t("common.emDash")}</td>
       <td>
         <ActionRow align="end" gap="sm">
+          {stale ? (
+            <Button
+              disabled={busy || !tagOk}
+              title={t("images.rebakeHint")}
+              onClick={onRebake}
+            >
+              {rowBusy ? t("common.ellipsis") : t("images.rebake")}
+            </Button>
+          ) : null}
           <Button
             tone="secondary"
-            disabled={busy || image.sealed || !tagOk}
+            disabled={busy || (image.sealed && !stale) || !tagOk}
             title={
-              image.sealed
+              image.sealed && !stale
                 ? t("images.bakeSealed")
                 : !tagOk
                   ? t("images.tagInvalid")

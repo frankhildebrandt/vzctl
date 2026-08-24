@@ -10,6 +10,9 @@ use std::path::Path;
 pub(crate) struct RenderedIngress {
     pub(crate) caddyfile: String,
     pub(crate) hosts: Vec<String>,
+    /// Guest-horizon A records for ingress hosts that bypass the bridge `.1` gateway
+    /// (non-gateway backend ports). Keyed by ingress host → attachment network → VM IP.
+    pub(crate) guest_dns: BTreeMap<String, BTreeMap<String, String>>,
     /// vmnet host-service `.1` addresses (+ loopback bind) for HostGatewayIngressProxy.
     /// Guest TCP to bridge `.0` is blackholed on macOS vmnet; `.1` is reachable.
     pub(crate) gateways: Vec<String>,
@@ -48,6 +51,7 @@ pub(crate) fn render(
         return Ok(RenderedIngress {
             caddyfile: String::new(),
             hosts: Vec::new(),
+            guest_dns: BTreeMap::new(),
             gateways: Vec::new(),
             gateway_bindings: Vec::new(),
             http_port: 80,
@@ -152,16 +156,18 @@ pub(crate) fn render(
         "{{\n\tauto_https off\n\thttp_port {caddy_http_port}\n\thttps_port {caddy_https_port}\n\tdefault_bind {bind}\n}}\n\n"
     );
     let mut hosts = Vec::new();
+    let mut guest_dns = BTreeMap::new();
 
     for route in &ingress.routes {
         hosts.push(route.host.clone());
         let upstream = IngressUpstream::parse(&route.to)?;
-        let backend = match upstream {
+        let uses_gateway_alias = ingress_guest_uses_gateway_alias(&upstream, ingress);
+        let backend = match &upstream {
             IngressUpstream::Vm { name, port } => {
-                let runtime = crate::runtime_vm_id(&environment.spec.project, &name);
+                let runtime = crate::runtime_vm_id(&environment.spec.project, name);
                 let ip = vm_ips
                     .get(&runtime)
-                    .or_else(|| vm_ips.get(&name))
+                    .or_else(|| vm_ips.get(name))
                     .ok_or_else(|| {
                         format!(
                             "ingress route {} needs attachment IP for VM {runtime}",
@@ -198,11 +204,40 @@ pub(crate) fn render(
             key.display(),
             backend
         ));
+
+        if uses_gateway_alias {
+            continue;
+        }
+        let IngressUpstream::Vm { name, .. } = upstream else {
+            continue;
+        };
+        let runtime = crate::runtime_vm_id(&environment.spec.project, &name);
+        let mut per_network = BTreeMap::new();
+        for item in attachments {
+            if item["project"] != environment.spec.project {
+                continue;
+            }
+            let vm = item["vm_id"].as_str();
+            if vm != Some(runtime.as_str()) && vm != Some(name.as_str()) {
+                continue;
+            }
+            let network = item["network"]
+                .as_str()
+                .or_else(|| item["network_name"].as_str());
+            let ip = item["ip"].as_str();
+            if let (Some(net), Some(ip)) = (network, ip) {
+                per_network.insert(net.to_string(), ip.to_string());
+            }
+        }
+        if !per_network.is_empty() {
+            guest_dns.insert(route.host.clone(), per_network);
+        }
     }
 
     Ok(RenderedIngress {
         caddyfile: blocks,
         hosts,
+        guest_dns,
         gateways: gateways.into_keys().collect(),
         gateway_bindings: binding_sources
             .into_iter()
@@ -220,6 +255,19 @@ pub(crate) fn render(
 
 pub(crate) fn short_localhost(host: &str) -> Option<String> {
     host.split('.').next().map(|s| format!("{s}.localhost"))
+}
+
+/// Ingress routes fronted on the bridge `.1` alias use split-horizon gateway DNS in guests.
+fn ingress_guest_uses_gateway_alias(
+    upstream: &IngressUpstream,
+    ingress: &crate::config::IngressConfig,
+) -> bool {
+    match upstream {
+        IngressUpstream::Oidc { .. } => true,
+        IngressUpstream::Vm { port, .. } => {
+            *port == ingress.http_port || *port == ingress.https_port
+        }
+    }
 }
 
 #[cfg(test)]
@@ -294,5 +342,59 @@ spec:
                 },
             ]
         );
+        assert_eq!(
+            rendered.guest_dns.get("app.svc.demo.vz.test").and_then(|m| m.get("lan")),
+            Some(&"10.90.0.10".to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_alias_ingress_hosts_skip_guest_vm_dns() {
+        let environment = crate::config::validate_source(
+            r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: demo }
+spec:
+  project: demo
+  domain: demo.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
+  networks:
+    dmz: { cidr: 10.80.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  ingress:
+    enabled: true
+    routes:
+      - { host: web.svc.demo.vz.test, to: "web:80" }
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 40G
+      networks:
+        - { name: dmz, ip: 10.80.0.10 }
+"#,
+        )
+        .unwrap();
+        let attachments = vec![json!({
+            "vm_id": "demo/web",
+            "network": "dmz",
+            "ip": "10.80.0.10",
+            "project": "demo"
+        })];
+        let rendered = render(
+            &environment,
+            &[],
+            &attachments,
+            &std::env::temp_dir(),
+        )
+        .unwrap();
+        assert!(rendered.guest_dns.is_empty());
     }
 }

@@ -190,7 +190,11 @@ pub fn build_agent_staging(agent_version: &str) -> Result<PathBuf, GuestUtilsErr
         format!("{{\"agent_version\":\"{agent_version}\",\"protocol\":1,\"vsock_port\":21950}}\n"),
     )
     .map_err(|error| GuestUtilsError::new(error.to_string()))?;
-    crate::iwatch_bin::stage_iwatch_binary(&staging.join("iwatch"))?;
+    match crate::iwatch_bin::stage_iwatch_binary(&staging.join("iwatch")) {
+        Ok(_) => {}
+        Err(err) if crate::iwatch_bin::iwatch_fetch_required() => return Err(err),
+        Err(err) => eprintln!("warning: guest-utils bundle without iwatch: {err}"),
+    }
     Ok(staging)
 }
 
@@ -233,7 +237,11 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
             "image-metadata.json",
             "iwatch",
         ] {
-            fs::copy(staging.join(name), cache_dir.join(name)).map_err(|error| {
+            let src = staging.join(name);
+            if !src.is_file() {
+                continue;
+            }
+            fs::copy(&src, cache_dir.join(name)).map_err(|error| {
                 GuestUtilsError::new(format!("populate guest-utils cache: {error}"))
             })?;
         }
@@ -460,6 +468,9 @@ where
     F: FnMut(&str, Value) -> Result<Value, String>,
 {
     let binary_path = bundle.cache_dir.join("iwatch");
+    if !binary_path.is_file() {
+        return Ok(());
+    }
     let bytes = fs::read(&binary_path)
         .map_err(|error| GuestUtilsError::new(format!("read host iwatch binary: {error}")))?;
     deploy_guest_binary(

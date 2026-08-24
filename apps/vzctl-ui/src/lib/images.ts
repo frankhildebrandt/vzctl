@@ -37,6 +37,7 @@ export type ImageListResult = {
   catalog: ImageCatalogEntry[];
   imagesDir: string;
   count: number;
+  hostAgentVersion: string | null;
 };
 
 export const IMAGE_ALIAS_HINTS = [
@@ -262,6 +263,19 @@ export function imageStateLabel(image: ImageListItem): "sealed" | "baked" | "pul
   return "pulled";
 }
 
+/** True when a sealed image pin is behind the host guest-toolkit version. */
+export function imageNeedsRebake(
+  image: ImageListItem,
+  hostAgentVersion: string | null | undefined,
+  tag: string,
+): boolean {
+  if (!hostAgentVersion || !validImageTag(tag.trim())) return false;
+  if (!image.sealed) return false;
+  const recorded = image.agent_version?.trim();
+  if (!recorded) return true;
+  return recorded !== hostAgentVersion;
+}
+
 /** Matches CLI/REST: 1–64 `[A-Za-z0-9][A-Za-z0-9._-]*`. */
 export function validImageTag(tag: string): boolean {
   if (tag.length < 1 || tag.length > 64) return false;
@@ -282,17 +296,21 @@ export async function listImages(): Promise<ImageListResult> {
     catalog: asCatalog(envelope.catalog),
     imagesDir: asString(summary.images_dir),
     count: typeof summary.count === "number" ? summary.count : asImages(envelope.images).length,
+    hostAgentVersion:
+      typeof summary.host_agent_version === "string"
+        ? summary.host_agent_version
+        : null,
   };
 }
 
 async function imageJob(
   alias: string,
-  action: "pull" | "bake" | "seal",
+  action: "pull" | "bake" | "seal" | "rebake",
   tag?: string,
   options: ImageJobOptions = {},
 ): Promise<VzctlEnvelope> {
   const body =
-    action === "bake" || action === "seal"
+    action === "bake" || action === "seal" || action === "rebake"
       ? { tag: (tag ?? "").trim() }
       : undefined;
   if (body && !validImageTag(body.tag)) {
@@ -330,6 +348,14 @@ export async function sealImage(
   options: ImageJobOptions = {},
 ): Promise<VzctlEnvelope> {
   return imageJob(target, "seal", tag, options);
+}
+
+export async function rebakeImage(
+  alias: string,
+  tag: string,
+  options: ImageJobOptions = {},
+): Promise<VzctlEnvelope> {
+  return imageJob(alias, "rebake", tag, options);
 }
 
 /** Re-export for callers that map job polls into UI. */

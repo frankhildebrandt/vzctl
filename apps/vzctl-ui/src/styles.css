@@ -289,6 +289,10 @@ button.secondary:hover:not(:disabled) {
   display: none;
 }
 
+.sidebar-group {
+  margin-top: 0.5rem;
+}
+
 .sidebar-hint {
   margin: 0.35rem 0.55rem 0.45rem;
   padding: 0.5rem 0.6rem;
@@ -301,11 +305,34 @@ button.secondary:hover:not(:disabled) {
 }
 
 .sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  justify-content: space-between;
   color: var(--sidebar-text);
   text-decoration: none;
   padding: 0.65rem 0.75rem;
   border-radius: var(--radius);
   font-weight: 500;
+}
+
+.sidebar-link-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-link-badge {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
 }
 
 .sidebar-link:hover {
@@ -2273,6 +2300,27 @@ button.sidebar-link.tone-danger:hover:not(:disabled) {
   color: var(--text-muted, #8b93a7);
 }
 
+.vm-logs-source-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.vm-logs-source-name {
+  font-weight: 600;
+}
+
+.vm-logs-kind-badge {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: lowercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
+}
+
 .vm-logs-control input,
 .vm-logs-control select,
 .vm-logs-field-row input,
@@ -3553,4 +3601,29 @@ button:focus-visible,
   .systemd-col-description {
     max-width: 12rem;
   }
+}
+
+.debug-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.debug-sql,
+.debug-result {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  width: 100%;
+}
+
+.debug-result {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  overflow: auto;
+  max-height: 24rem;
+  background: var(--surface-2, #111);
+  border-radius: 0.5rem;
+}
+
+.debug-nats-actions {
+  margin: 0.75rem 0;
 }

@@ -16,6 +16,8 @@ struct DNSZone: Equatable, Sendable {
     let ptrRecords: [String: [String]]
     /// Host-horizon A records for ingress/OIDC names (loopback for Mac clients).
     let hostRecords: [String: [String]]
+    /// Guest-horizon ingress overrides: host → listener network → backend VM IP.
+    let ingressGuestAddresses: [String: [String: String]]
     /// Project ownership for host-managed ingress/OIDC names.
     let ingressProjects: [String: String]
     let zones: Set<String>
@@ -32,6 +34,9 @@ struct DNSZone: Equatable, Sendable {
         case let .guest(context):
             if hostRecords[canonical] != nil {
                 guard ingressProjects[canonical] == context.project else { return nil }
+                if let networkIP = ingressGuestAddresses[canonical]?[context.network] {
+                    return [networkIP]
+                }
                 return [context.hostService]
             }
             if let exact = records[canonical] ?? wildcardAddresses(for: canonical) {
@@ -102,6 +107,7 @@ enum DNSZoneBuilder {
         snapshot: NetworkSnapshot,
         ttl: UInt32,
         hostServices: [String] = [],
+        ingressGuestAddresses: [String: [String: String]] = [:],
         runtimeRecords: [DNSRuntimeRecord] = []
     ) -> DNSZone {
         let networks = Dictionary(uniqueKeysWithValues: snapshot.networks.map { ($0.name, $0) })
@@ -211,6 +217,7 @@ enum DNSZoneBuilder {
             },
             ptrRecords: ptrRecords.mapValues { $0.sorted() },
             hostRecords: hostRecords,
+            ingressGuestAddresses: ingressGuestAddresses,
             ingressProjects: ingressProjects,
             zones: zones.filter { !$0.isEmpty },
             ttl: min(30, max(5, ttl))
@@ -383,6 +390,7 @@ final class DNSServer: @unchecked Sendable {
     private var desiredListeners: Set<String> = []
     private var guestContexts: [DNSGuestContext] = []
     private var hostServices: [String] = []
+    private var ingressGuestAddresses: [String: [String: String]] = [:]
     private var runtimeRecords: [DNSRuntimeRecord] = []
     private var lastError: String?
     private var stopped = false
@@ -401,16 +409,30 @@ final class DNSServer: @unchecked Sendable {
             shortRecords: [:],
             ptrRecords: [:],
             hostRecords: [:],
+            ingressGuestAddresses: [:],
             ingressProjects: [:],
             zones: [],
             ttl: min(30, max(5, configuration.ttl))
         )
     }
 
-    func setHostServices(_ names: [String]) {
+    func setIngressHostServices(
+        hosts: [String],
+        guestAddresses: [String: [String: String]] = [:]
+    ) {
         lock.withLock {
-            hostServices = names.map(DNSZoneBuilder.canonicalName)
+            hostServices = hosts.map(DNSZoneBuilder.canonicalName)
+            ingressGuestAddresses = Dictionary(
+                uniqueKeysWithValues: guestAddresses.map {
+                    (DNSZoneBuilder.canonicalName($0.key), $0.value)
+                }
+            )
         }
+    }
+
+    /// Legacy host-only ingress list; guests resolve via bridge `.1` for every host.
+    func setHostServices(_ names: [String]) {
+        setIngressHostServices(hosts: names)
     }
 
     func setRuntimeRecords(_ records: [DNSRuntimeRecord]) {
@@ -419,12 +441,13 @@ final class DNSServer: @unchecked Sendable {
 
     @discardableResult
     func reload(snapshot: NetworkSnapshot) -> DNSHealth {
-        let state = lock.withLock { (hostServices, runtimeRecords) }
+        let state = lock.withLock { (hostServices, ingressGuestAddresses, runtimeRecords) }
         let nextZone = DNSZoneBuilder.build(
             snapshot: snapshot,
             ttl: configuration.ttl,
             hostServices: state.0,
-            runtimeRecords: state.1
+            ingressGuestAddresses: state.1,
+            runtimeRecords: state.2
         )
         let contexts = snapshot.networks.compactMap { network -> DNSGuestContext? in
             guard network.runtimeState == "active", !network.isDockerBackend else { return nil }

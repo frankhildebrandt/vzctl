@@ -251,28 +251,182 @@ enum RestStatusBundle {
     }
 
     private static func ingressFromConfig(_ yaml: String, project: String?) -> JSONValue {
-        let enabled = yaml.contains("ingress:") && yaml.contains("enabled: true")
-        // Best-effort host extraction
-        var routes: [JSONValue] = []
-        let pattern = #"host:\s*([^\s#]+)"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
-            let range = NSRange(yaml.startIndex..., in: yaml)
-            for match in regex.matches(in: yaml, range: range) {
-                if let r = Range(match.range(at: 1), in: yaml) {
-                    let host = String(yaml[r]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                    routes.append(
-                        .object([
-                            "host": .string(host),
-                            "url": .string("https://\(host)"),
-                        ])
-                    )
+        var inIngress = false
+        var ingressIndent = 0
+        var inRoutes = false
+        var routesIndent = 0
+        var enabled = true
+        var hostAliases = true
+        var httpsPort: UInt16 = 443
+        var routeMaps: [[String: JSONValue]] = []
+        var current: [String: JSONValue]?
+
+        func flushRoute() {
+            guard let map = current,
+                  case let .string(host) = map["host"],
+                  !host.isEmpty
+            else {
+                current = nil
+                return
+            }
+            routeMaps.append(map)
+            current = nil
+        }
+
+        for rawLine in yaml.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            let trimmedEnd = line.trimmingCharacters(in: .newlines)
+            if trimmedEnd.trimmingCharacters(in: .whitespaces).isEmpty {
+                continue
+            }
+            let indent = line.prefix(while: { $0 == " " }).count
+            let content = trimmedEnd.trimmingCharacters(in: .whitespaces)
+            if content.hasPrefix("#") {
+                continue
+            }
+
+            if !inIngress {
+                if content == "ingress:" || content.hasPrefix("ingress:") {
+                    inIngress = true
+                    ingressIndent = indent
+                }
+                continue
+            }
+
+            if indent <= ingressIndent {
+                break
+            }
+
+            if inRoutes {
+                let routeBase = routesIndent
+                if indent <= routeBase {
+                    flushRoute()
+                    inRoutes = false
+                } else if content.hasPrefix("- ") {
+                    flushRoute()
+                    var map: [String: JSONValue] = [:]
+                    let rest = String(content.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                    if let colon = rest.firstIndex(of: ":") {
+                        let key = String(rest[..<colon]).trimmingCharacters(in: .whitespaces)
+                        let value = yamlScalar(String(rest[rest.index(after: colon)...]))
+                        ingressRouteField(key: key, value: value, into: &map)
+                    }
+                    current = map
+                    continue
+                } else if var map = current {
+                    if let colon = content.firstIndex(of: ":") {
+                        let key = String(content[..<colon]).trimmingCharacters(in: .whitespaces)
+                        let value = yamlScalar(String(content[content.index(after: colon)...]))
+                        ingressRouteField(key: key, value: value, into: &map)
+                        current = map
+                    }
+                    continue
+                }
+            }
+
+            if content == "routes:" || content.hasPrefix("routes:") {
+                flushRoute()
+                inRoutes = true
+                routesIndent = indent
+                continue
+            }
+
+            if let colon = content.firstIndex(of: ":") {
+                let key = String(content[..<colon]).trimmingCharacters(in: .whitespaces)
+                let value = yamlScalar(String(content[content.index(after: colon)...]))
+                switch key {
+                case "enabled":
+                    enabled = yamlBool(value, default: true)
+                case "hostAliases":
+                    hostAliases = yamlBool(value, default: true)
+                case "httpsPort":
+                    if let port = UInt16(value) {
+                        httpsPort = port
+                    }
+                default:
+                    break
                 }
             }
         }
+        flushRoute()
+
+        var seenHosts = Set<String>()
+        var routes: [JSONValue] = []
+        for map in routeMaps {
+            guard case let .string(host) = map["host"], !host.isEmpty else { continue }
+            if seenHosts.contains(host) {
+                continue
+            }
+            seenHosts.insert(host)
+            let to: JSONValue = map["to"] ?? .string("")
+            let requires: JSONValue = map["requires"] ?? .array([])
+            let url = httpsURL(host: host, port: httpsPort)
+            var route: [String: JSONValue] = [
+                "host": .string(host),
+                "url": .string(url),
+                "to": to,
+                "requires": requires,
+            ]
+            if hostAliases, let short = host.split(separator: ".").first {
+                let aliasHost = "\(short).localhost"
+                route["alias"] = .object([
+                    "host": .string(aliasHost),
+                    "url": .string(httpsURL(host: aliasHost, port: httpsPort)),
+                ])
+            } else {
+                route["alias"] = .null
+            }
+            routes.append(.object(route))
+        }
+
         return .object([
             "enabled": .bool(enabled),
+            "https_port": .number(Double(httpsPort)),
+            "host_aliases": .bool(hostAliases),
             "project": project.map(JSONValue.string) ?? .null,
             "routes": .array(routes),
         ])
+    }
+
+    private static func ingressRouteField(key: String, value: String, into map: inout [String: JSONValue]) {
+        switch key {
+        case "host", "to":
+            map[key] = .string(value)
+        case "requires":
+            map["requires"] = parseRequiresInline(value)
+        default:
+            break
+        }
+    }
+
+    private static func yamlScalar(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func yamlBool(_ raw: String, default defaultValue: Bool) -> Bool {
+        switch yamlScalar(raw).lowercased() {
+        case "true", "yes", "on": return true
+        case "false", "no", "off": return false
+        default: return defaultValue
+        }
+    }
+
+    private static func parseRequiresInline(_ raw: String) -> JSONValue {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("["), trimmed.hasSuffix("]") {
+            let inner = trimmed.dropFirst().dropLast()
+            let items = inner.split(separator: ",")
+                .map { yamlScalar(String($0)) }
+                .filter { !$0.isEmpty }
+                .map(JSONValue.string)
+            return .array(items)
+        }
+        let one = yamlScalar(trimmed)
+        return one.isEmpty ? .array([]) : .array([.string(one)])
+    }
+
+    private static func httpsURL(host: String, port: UInt16) -> String {
+        port == 443 ? "https://\(host)" : "https://\(host):\(port)"
     }
 }

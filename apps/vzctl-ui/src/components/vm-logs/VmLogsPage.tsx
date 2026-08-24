@@ -14,17 +14,18 @@ import { bumpMinLevel, VmLogsToolbar } from "@/components/vm-logs/VmLogsToolbar"
 import { Alert, EmptyState, PageHeader } from "@/components/ui";
 import {
   fetchGuestLogStatus,
-  listGuestServices,
   postGuestLogAction,
   type LogsQuery,
 } from "@/lib/guestLogs";
 import type { HiddenFields } from "@/lib/iwatchFormat";
 import { useT } from "@/lib/i18n";
-import { encodeVmIdParam } from "@/lib/vms";
+import { listVmLogStreams, logStreamKeys } from "@/lib/logStreams";
+import { encodeVmIdParam, inspectVm, isRunning, vmKeys } from "@/lib/vms";
 
 type Props = {
   vmId: string;
   source?: string;
+  stackPath?: string;
 };
 
 type PendingConfirm = "restart" | "truncate" | null;
@@ -41,7 +42,7 @@ const EMPTY_LIVE_STATUS: VmLogsLiveStatus = {
 
 const EMPTY_OBSERVED_FIELDS: string[] = [];
 
-export function VmLogsPage({ vmId, source: sourceParam }: Props) {
+export function VmLogsPage({ vmId, source: sourceParam, stackPath }: Props) {
   const t = useT();
   const navigate = useNavigate();
   const queryInputRef = useRef<HTMLInputElement>(null);
@@ -69,16 +70,27 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<VmLogsLiveStatus>(EMPTY_LIVE_STATUS);
 
-  const sourcesQuery = useQuery({
-    queryKey: ["guest-services", vmId],
-    queryFn: () => listGuestServices(vmId),
+  const inspectQuery = useQuery({
+    queryKey: vmKeys.detail(vmId),
+    queryFn: () => inspectVm(vmId),
+    staleTime: 30_000,
+  });
+  const running = isRunning(inspectQuery.data?.vm.state);
+
+  const streamsQuery = useQuery({
+    queryKey: logStreamKeys.vm(vmId, stackPath),
+    queryFn: () => listVmLogStreams(vmId, stackPath, running),
+    enabled: Boolean(vmId),
+    refetchInterval: running ? 10_000 : false,
+    staleTime: 5_000,
   });
 
-  const sources = sourcesQuery.data ?? [];
-  const selected =
-    (source && sources.some((item) => item.name === source)
-      ? source
-      : sources[0]?.name) ?? "";
+  const streams = streamsQuery.data ?? [];
+  const selectedStream =
+    streams.find((item) => item.source === source) ?? streams[0];
+  const selected = selectedStream?.source ?? "";
+  const selectedKind = selectedStream?.kind ?? "iwatch";
+  const showIwatchActions = selectedKind === "iwatch";
 
   const filters = useMemo(
     () => ({
@@ -203,9 +215,9 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
 
       const actions = streamActionsRef.current;
       if (event.key === "?") setHelpOpen((open) => !open);
-      if (event.key === "r") setPendingConfirm("restart");
-      if (event.key === "t") setPendingConfirm("truncate");
-      if (event.key === "O") void actionMutation.mutate("/api/open-url");
+      if (showIwatchActions && event.key === "r") setPendingConfirm("restart");
+      if (showIwatchActions && event.key === "t") setPendingConfirm("truncate");
+      if (showIwatchActions && event.key === "O") void actionMutation.mutate("/api/open-url");
       if (event.key === "+") {
         setMinLevel((current) => bumpMinLevel(current, 1));
         actions.connectNow();
@@ -228,24 +240,34 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actionMutation, openShare]);
+  }, [actionMutation, openShare, showIwatchActions]);
+
+  const emptyMessage =
+    streams.some((item) => item.kind === "journald") && !running
+      ? t("vmLogs.journaldStartVm")
+      : t("vmLogs.emptyHint");
 
   return (
     <section className="vm-logs-page">
       <PageHeader layout="detail" title={t("vmLogs.title")} />
-      {sourcesQuery.isError ? (
-        <Alert title={t("common.error")}>{String(sourcesQuery.error)}</Alert>
+      {streamsQuery.isError ? (
+        <Alert title={t("common.error")}>{String(streamsQuery.error)}</Alert>
       ) : null}
-      {sources.length === 0 && !sourcesQuery.isLoading ? (
+      {streams.length === 0 && !streamsQuery.isLoading ? (
         <EmptyState
           title={t("vmLogs.emptyTitle")}
-          message={t("vmLogs.emptyHint")}
+          message={emptyMessage}
         />
       ) : (
         <div className="vm-logs-panel">
           <VmLogsToolbar
-            sources={sources}
+            sources={streams.map((item) => ({
+              name: item.source,
+              kind: item.kind,
+            }))}
             selectedSource={selected}
+            selectedKind={selectedKind}
+            showIwatchActions={showIwatchActions}
             onSourceChange={handleSourceChange}
             q={q}
             onQChange={setQ}
@@ -316,6 +338,7 @@ export function VmLogsPage({ vmId, source: sourceParam }: Props) {
           <VmLogsLivePanel
             vmId={vmId}
             source={selected}
+            enabled={running && Boolean(selected)}
             filters={filters}
             observedFields={statusQuery.data?.observedFields ?? EMPTY_OBSERVED_FIELDS}
             hiddenFields={hiddenFields}

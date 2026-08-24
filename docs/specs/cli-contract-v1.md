@@ -428,14 +428,15 @@ Exit `3`). Fehlendes Bundle liefert Exit `3`, fehlende Serial-Log-Datei Exit
 `10` („is the VM started?“).
 
 `--source serial` ist das heutige Serial-Verhalten (Default ohne `--source`).
-`--source <name>` liest die von `iwatch --listen --name` publizierte API
-(Filter `--q`, `--min-level`, `--group-field`/`--group-value`, wiederholbares
-`--filter k=v`). Unbekannter Name → Exit `18`, Helper fehlt → Exit `10`.
-Filter ohne `--source` (≠ serial) → Exit `3`. `--list-sources` listet
-Guest-Namen. `--restart` sendet `POST /api/restart` an die Quelle (neustartet
-den beobachteten Prozess, nicht die VM) und braucht `--source`; mit `-f`
-danach Follow. JSON-Snapshot: `source` plus `lines[]` im iwatch-`LineEvent`-
-Format. Follow+JSON bleibt Exit `3`.
+`--source <name>` liest die iwatch- oder journald-API (builtin `journalctl` für
+Units aus `hypernetwork.config.yaml` `logs.journald`, lazy on-demand).
+Filter `--q`, `--min-level`, `--group-field`/`--group-value`, wiederholbares
+`--filter k=v` (journald mappt auf `journalctl --grep` / `-p`). Unbekannter Name
+→ Exit `18`, Helper fehlt → Exit `10`. Filter ohne `--source` (≠ serial) → Exit
+`3`. `--list-sources` listet `{name, kind}` (`iwatch` | `journald`). `--restart`
+nur für `iwatch` (journald → Exit `3`); sendet `POST /api/restart` an die Quelle.
+Mit `-f` danach Follow. JSON-Snapshot: `source` plus `lines[]` im iwatch-
+`LineEvent`-Format. Follow+JSON bleibt Exit `3`.
 
 `exec` proxied über Supervisor `vm.exec`
 zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).

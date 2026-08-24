@@ -1,4 +1,5 @@
 use crate::guest_utils::GuestUtilsError;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,19 @@ pub fn iwatch_version_string() -> Result<String, GuestUtilsError> {
         }
     }
     fetch_latest_iwatch_tag()
+}
+
+/// True when the host must supply or resolve an iwatch binary (env pin).
+pub fn iwatch_fetch_required() -> bool {
+    configured_iwatch_version().is_some() || configured_iwatch_bin().is_some()
+}
+
+fn configured_iwatch_bin() -> Option<PathBuf> {
+    std::env::var("VZCTL_IWATCH_BIN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn configured_iwatch_version() -> Option<String> {
@@ -41,6 +55,46 @@ pub fn parse_latest_tag(url: &str) -> Result<String, GuestUtilsError> {
 }
 
 fn fetch_latest_iwatch_tag() -> Result<String, GuestUtilsError> {
+    fetch_latest_iwatch_tag_api().or_else(|api_err| {
+        fetch_latest_iwatch_tag_redirect().map_err(|redirect_err| {
+            GuestUtilsError::new(format!(
+                "no published iwatch release on github.com/{IWATCH_REPO} (api: {api_err}; redirect: {redirect_err}); publish a release or set VZCTL_IWATCH_VERSION / VZCTL_IWATCH_BIN"
+            ))
+        })
+    })
+}
+
+fn fetch_latest_iwatch_tag_api() -> Result<String, GuestUtilsError> {
+    let url = format!("https://api.github.com/repos/{IWATCH_REPO}/releases/latest");
+    let output = Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H",
+            "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .map_err(|error| GuestUtilsError::new(format!("curl {url}: {error}")))?;
+    if !output.status.success() {
+        return Err(GuestUtilsError::new(format!(
+            "HTTP {} from GitHub API",
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        GuestUtilsError::new(format!("invalid GitHub releases JSON: {error}"))
+    })?;
+    let tag = value
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty() && !tag.contains('/'));
+    tag.map(|tag| tag.to_string()).ok_or_else(|| {
+        GuestUtilsError::new("GitHub releases/latest JSON has no tag_name")
+    })
+}
+
+fn fetch_latest_iwatch_tag_redirect() -> Result<String, GuestUtilsError> {
     let url = format!("https://github.com/{IWATCH_REPO}/releases/latest");
     let output = Command::new("curl")
         .args(["-fsSL", "-o", "/dev/null", "-w", "%{url_effective}", &url])
@@ -51,7 +105,8 @@ fn fetch_latest_iwatch_tag() -> Result<String, GuestUtilsError> {
             "cannot resolve latest iwatch release from {url}"
         )));
     }
-    parse_latest_tag(&String::from_utf8_lossy(&output.stdout))
+    let effective = String::from_utf8_lossy(&output.stdout);
+    parse_latest_tag(effective.trim())
 }
 
 /// GoReleaser archive filename for the linux/arm64 guest binary.
@@ -100,8 +155,7 @@ pub fn parse_checksums(text: &str, archive: &str) -> Result<String, GuestUtilsEr
 
 /// Place a linux/arm64 `iwatch` binary at `dest`, returning its SHA256 hex.
 pub fn stage_iwatch_binary(dest: &Path) -> Result<String, GuestUtilsError> {
-    if let Ok(path) = std::env::var("VZCTL_IWATCH_BIN") {
-        let path = PathBuf::from(path.trim());
+    if let Some(path) = configured_iwatch_bin() {
         if path.is_file() {
             fs::copy(&path, dest).map_err(|error| {
                 GuestUtilsError::new(format!("copy VZCTL_IWATCH_BIN: {error}"))
@@ -256,6 +310,18 @@ mod tests {
             "https://github.com/frankhildebrandt/iwatch/releases/latest"
         )
         .is_err());
+        assert!(parse_latest_tag(
+            "https://github.com/frankhildebrandt/iwatch/releases"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fetch_latest_tag_api_parses_tag_name() {
+        let body = r#"{"tag_name":"v0.3.1","name":"v0.3.1"}"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let tag = value["tag_name"].as_str().unwrap();
+        assert_eq!(tag, "v0.3.1");
     }
 
     #[test]

@@ -25,6 +25,7 @@ export type VmLogsStreamActions = {
 type Props = {
   vmId: string;
   source: string;
+  enabled?: boolean;
   filters: GuestLogFilters;
   observedFields: string[];
   hiddenFields: HiddenFields;
@@ -67,6 +68,7 @@ function isBufferStatusChange(
 export const VmLogsLivePanel = memo(function VmLogsLivePanel({
   vmId,
   source,
+  enabled = true,
   filters,
   observedFields,
   hiddenFields,
@@ -80,7 +82,7 @@ export const VmLogsLivePanel = memo(function VmLogsLivePanel({
     filters,
     observedFields,
     hiddenFields,
-    enabled: Boolean(source),
+    enabled: enabled && Boolean(source),
   });
 
   const previousStatusRef = useRef<VmLogsLiveStatus | null>(null);

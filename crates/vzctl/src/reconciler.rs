@@ -604,9 +604,16 @@ fn ensure_images(
     environment: &Environment,
     progress: &mut ProgressReporter,
 ) -> Result<(), Failure> {
+    let agent_version = crate::guest_utils::agent_version_string()
+        .map_err(|error| Failure::new(EXIT_STEP, error.message))?;
     for image in environment.spec.images.values() {
-        if crate::image::tagged_seal_ready(&crate::images_dir(), &image.from, &image.tag)
-            .map_err(|error| Failure::new(EXIT_STEP, error))?
+        if crate::image::tagged_seal_current(
+            &crate::images_dir(),
+            &image.from,
+            &image.tag,
+            &agent_version,
+        )
+        .map_err(|error| Failure::new(EXIT_STEP, error))?
         {
             continue;
         }
@@ -2074,10 +2081,21 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
             "gateway_bindings": rendered.gateway_bindings,
         }),
     )?;
+    let host_entries: Vec<Value> = rendered
+        .hosts
+        .iter()
+        .map(|host| {
+            if let Some(networks) = rendered.guest_dns.get(host) {
+                json!({ "host": host, "guest": networks })
+            } else {
+                json!({ "host": host })
+            }
+        })
+        .collect();
     rpc(
         socket_path,
         "dns.host_services.ensure",
-        json!({ "project": environment.spec.project, "hosts": rendered.hosts }),
+        json!({ "project": environment.spec.project, "hosts": host_entries }),
     )?;
     Ok(())
 }

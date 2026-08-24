@@ -109,6 +109,73 @@ pub(crate) struct Spec {
 pub(crate) struct ObservabilityConfig {
     #[serde(default)]
     pub(crate) probes: Vec<ObservabilityProbe>,
+    #[serde(default, rename = "dataSources")]
+    pub(crate) data_sources: DataSourcesConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DataSourcesConfig {
+    #[serde(default)]
+    pub(crate) postgres: Option<SqlDataSourceTypeConfig>,
+    #[serde(default)]
+    pub(crate) mysql: Option<SqlDataSourceTypeConfig>,
+    #[serde(default)]
+    pub(crate) nats: Option<NatsDataSourceTypeConfig>,
+}
+
+impl DataSourcesConfig {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.postgres.is_none() && self.mysql.is_none() && self.nats.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SqlDataSourceTypeConfig {
+    pub(crate) default: String,
+    pub(crate) via: String,
+    #[serde(default)]
+    pub(crate) entries: BTreeMap<String, SqlDataSourceEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SqlDataSourceEntry {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) database: String,
+    pub(crate) user: String,
+    #[serde(default, rename = "passwordFile")]
+    pub(crate) password_file: Option<String>,
+    #[serde(default)]
+    pub(crate) via: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NatsDataSourceTypeConfig {
+    pub(crate) default: String,
+    pub(crate) via: String,
+    #[serde(default)]
+    pub(crate) entries: BTreeMap<String, NatsDataSourceEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NatsDataSourceEntry {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    #[serde(default)]
+    pub(crate) user: Option<String>,
+    #[serde(default, rename = "passwordFile")]
+    pub(crate) password_file: Option<String>,
+    #[serde(default, rename = "tokenFile")]
+    pub(crate) token_file: Option<String>,
+    #[serde(default, rename = "credsFile")]
+    pub(crate) creds_file: Option<String>,
+    #[serde(default)]
+    pub(crate) via: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -480,6 +547,14 @@ pub(crate) enum Protocol {
     Icmp,
 }
 
+/// Declarative journald units surfaced in UI/CLI log navigation (`logs.journald`).
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VmLogsConfig {
+    #[serde(default)]
+    pub(crate) journald: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VmConfig {
@@ -517,6 +592,9 @@ pub(crate) struct VmConfig {
     /// Declarative default containers (docker-role VMs only); key = container name.
     #[serde(default)]
     pub(crate) containers: BTreeMap<String, ContainerConfig>,
+    /// Optional log sources (journald units for navigation and `vm logs --list-sources`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) logs: Option<VmLogsConfig>,
 }
 
 /// Declared container under a docker-role VM (`ensure_containers`, ensure-only).
@@ -1021,6 +1099,9 @@ fn validate_references(
             &mut issues,
         );
         validate_vm_containers(vm_name, vm, &vm_base, config_dir, &mut issues);
+        if let Some(logs) = &vm.logs {
+            validate_vm_logs(&vm_base, logs, &mut issues);
+        }
         if (!vm.compose_files.is_empty() || !vm.containers.is_empty())
             && !vm.networks.iter().any(|attachment| {
                 environment
@@ -1284,6 +1365,186 @@ fn validate_observability(environment: &Environment, issues: &mut Vec<Validation
                     ));
                 }
             }
+        }
+    }
+    validate_data_sources(environment, issues);
+}
+
+fn valid_data_source_host(host: &str) -> bool {
+    if host.ends_with(".vz.test") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let octets = ip.octets();
+        return octets[0] == 10
+            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+            || (octets[0] == 192 && octets[1] == 168);
+    }
+    false
+}
+
+fn validate_data_sources(environment: &Environment, issues: &mut Vec<ValidationIssue>) {
+    let base = "$.spec.observability.dataSources";
+    let data_sources = &environment.spec.observability.data_sources;
+    if data_sources.is_empty() {
+        return;
+    }
+
+    if let Some(postgres) = &data_sources.postgres {
+        validate_sql_data_source_type(environment, &format!("{base}.postgres"), postgres, issues);
+    }
+    if let Some(mysql) = &data_sources.mysql {
+        validate_sql_data_source_type(environment, &format!("{base}.mysql"), mysql, issues);
+    }
+    if let Some(nats) = &data_sources.nats {
+        validate_nats_data_source_type(environment, &format!("{base}.nats"), nats, issues);
+    }
+}
+
+fn validate_sql_data_source_type(
+    environment: &Environment,
+    base: &str,
+    type_config: &SqlDataSourceTypeConfig,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if type_config.entries.is_empty() {
+        issues.push(ValidationIssue::new(
+            base,
+            "data source type requires at least one entry",
+            "semantic",
+        ));
+        return;
+    }
+    if !type_config.entries.contains_key(&type_config.default) {
+        issues.push(ValidationIssue::new(
+            format!("{base}.default"),
+            format!(
+                "default source {:?} is not defined in entries",
+                type_config.default
+            ),
+            "semantic",
+        ));
+    }
+    if !environment.spec.vms.contains_key(&type_config.via) {
+        issues.push(ValidationIssue::new(
+            format!("{base}.via"),
+            format!("via references unknown VM {:?}", type_config.via),
+            "semantic",
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for (name, entry) in &type_config.entries {
+        let entry_base = format!("{base}.entries.{name}");
+        if !names.insert(name.as_str()) {
+            issues.push(ValidationIssue::new(
+                entry_base.clone(),
+                format!("duplicate data source name {:?}", name),
+                "semantic",
+            ));
+        }
+        if !valid_name(name) {
+            issues.push(ValidationIssue::new(
+                entry_base.clone(),
+                format!("invalid data source name {:?}", name),
+                "semantic",
+            ));
+        }
+        if let Some(via) = &entry.via {
+            if !environment.spec.vms.contains_key(via) {
+                issues.push(ValidationIssue::new(
+                    format!("{entry_base}.via"),
+                    format!("via references unknown VM {:?}", via),
+                    "semantic",
+                ));
+            }
+        }
+        if !valid_data_source_host(&entry.host) {
+            issues.push(ValidationIssue::new(
+                format!("{entry_base}.host"),
+                "host must end with .vz.test or be a private RFC1918 IPv4 address",
+                "semantic",
+            ));
+        }
+        if entry.database.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{entry_base}.database"),
+                "database must not be empty",
+                "semantic",
+            ));
+        }
+        if entry.user.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{entry_base}.user"),
+                "user must not be empty",
+                "semantic",
+            ));
+        }
+    }
+}
+
+fn validate_nats_data_source_type(
+    environment: &Environment,
+    base: &str,
+    type_config: &NatsDataSourceTypeConfig,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if type_config.entries.is_empty() {
+        issues.push(ValidationIssue::new(
+            base,
+            "data source type requires at least one entry",
+            "semantic",
+        ));
+        return;
+    }
+    if !type_config.entries.contains_key(&type_config.default) {
+        issues.push(ValidationIssue::new(
+            format!("{base}.default"),
+            format!(
+                "default source {:?} is not defined in entries",
+                type_config.default
+            ),
+            "semantic",
+        ));
+    }
+    if !environment.spec.vms.contains_key(&type_config.via) {
+        issues.push(ValidationIssue::new(
+            format!("{base}.via"),
+            format!("via references unknown VM {:?}", type_config.via),
+            "semantic",
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for (name, entry) in &type_config.entries {
+        let entry_base = format!("{base}.entries.{name}");
+        if !names.insert(name.as_str()) {
+            issues.push(ValidationIssue::new(
+                entry_base.clone(),
+                format!("duplicate data source name {:?}", name),
+                "semantic",
+            ));
+        }
+        if !valid_name(name) {
+            issues.push(ValidationIssue::new(
+                entry_base.clone(),
+                format!("invalid data source name {:?}", name),
+                "semantic",
+            ));
+        }
+        if let Some(via) = &entry.via {
+            if !environment.spec.vms.contains_key(via) {
+                issues.push(ValidationIssue::new(
+                    format!("{entry_base}.via"),
+                    format!("via references unknown VM {:?}", via),
+                    "semantic",
+                ));
+            }
+        }
+        if !valid_data_source_host(&entry.host) {
+            issues.push(ValidationIssue::new(
+                format!("{entry_base}.host"),
+                "host must end with .vz.test or be a private RFC1918 IPv4 address",
+                "semantic",
+            ));
         }
     }
 }
@@ -1837,6 +2098,88 @@ fn validate_name_keys<'a>(
             ));
         }
     }
+}
+
+fn validate_vm_logs(vm_base: &str, logs: &VmLogsConfig, issues: &mut Vec<ValidationIssue>) {
+    let mut seen = BTreeSet::new();
+    for (index, unit) in logs.journald.iter().enumerate() {
+        let path = format!("{vm_base}.logs.journald[{index}]");
+        if !valid_systemd_unit(unit) {
+            issues.push(ValidationIssue::new(
+                path.clone(),
+                "journald unit must be 1-256 chars: alphanumeric start, then letters, digits, @._-\\, with a type suffix (e.g. .service)",
+                "semantic",
+            ));
+        }
+        if !seen.insert(unit.as_str()) {
+            issues.push(ValidationIssue::new(
+                path,
+                format!("duplicate journald unit {:?}", unit),
+                "semantic",
+            ));
+        }
+    }
+}
+
+/// Whether `unit` is a syntactically valid systemd unit name for journald config.
+pub(crate) fn is_valid_systemd_unit(unit: &str) -> bool {
+    valid_systemd_unit(unit)
+}
+
+fn valid_systemd_unit(unit: &str) -> bool {
+    if unit.is_empty() || unit.len() > 256 || !unit.contains('.') {
+        return false;
+    }
+    let mut chars = unit.bytes();
+    let first = chars.next().unwrap_or(0);
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    chars.all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'.' | b'-' | b'_' | b'\\')
+    })
+}
+
+/// Journald units declared for a VM config key in hypernetwork.config.yaml.
+pub(crate) fn journald_units_for_vm_config(vm: &VmConfig) -> &[String] {
+    vm.logs
+        .as_ref()
+        .map(|logs| logs.journald.as_slice())
+        .unwrap_or(&[])
+}
+
+/// Resolve journald units for a runtime VM id (`{project}/{vm}`) from a stack environment.
+pub(crate) fn journald_units_for_runtime_vm(
+    environment: &Environment,
+    vm_id: &str,
+) -> Vec<String> {
+    let Some((project, vm_key)) = split_runtime_vm_id(vm_id) else {
+        return Vec::new();
+    };
+    if environment.spec.project != project {
+        return Vec::new();
+    }
+    environment
+        .spec
+        .vms
+        .get(&vm_key)
+        .map(|vm| journald_units_for_vm_config(vm).to_vec())
+        .unwrap_or_default()
+}
+
+/// Split `{project}/{vm}` runtime id into config project segment and VM key.
+pub(crate) fn split_runtime_vm_id(vm_id: &str) -> Option<(String, String)> {
+    let slash = vm_id.find('/')?;
+    let project = vm_id[..slash].to_string();
+    let vm_key = vm_id[slash + 1..].to_string();
+    if project.is_empty()
+        || vm_key.is_empty()
+        || !valid_name(&project)
+        || !valid_name(&vm_key)
+    {
+        return None;
+    }
+    Some((project, vm_key))
 }
 
 fn valid_name(name: &str) -> bool {
@@ -2561,7 +2904,7 @@ pub(crate) fn serialize_environment_yaml(environment: &Environment) -> String {
             serde_json::to_value(&spec.oidc).unwrap(),
         );
     }
-    if !spec.observability.probes.is_empty() {
+    if !spec.observability.probes.is_empty() || !spec.observability.data_sources.is_empty() {
         spec_map.insert(
             "observability".to_string(),
             serde_json::to_value(&spec.observability).unwrap(),
@@ -2726,6 +3069,7 @@ pub(crate) fn add_vm(
             mounts: Vec::new(),
             compose_files: Vec::new(),
             containers: BTreeMap::new(),
+            logs: None,
         },
     );
     Ok(())
@@ -2890,6 +3234,46 @@ pub(crate) fn remove_mount(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journald_units_validate_and_resolve() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/edge-dmz/hypernetwork.config.yaml");
+        let environment = validate_path(&path).unwrap();
+        let units = journald_units_for_runtime_vm(&environment, "edge-dmz/web");
+        assert!(units.iter().any(|unit| unit == "caddy.service"));
+
+        let issues = validate_source(
+            r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: lab }
+spec:
+  project: lab
+  domain: lab.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: 127.0.0.1:15353
+    forward: { enabled: true, upstream: system }
+  images:
+    base: { from: ubuntu-latest, role: base, tag: v1 }
+  networks:
+    lan: { cidr: 10.0.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  vms:
+    web:
+      from: base
+      disk: 10G
+      networks: [{ name: lan, ip: 10.0.0.10 }]
+      logs:
+        journald: [badname]
+"#,
+        )
+        .unwrap_err();
+        assert!(issues.iter().any(|issue| issue.path.contains("journald")));
+    }
 
     #[test]
     fn exported_schema_rejects_missing_required_sections() {
@@ -3346,6 +3730,46 @@ spec:
         let issues = validate_source(source).unwrap_err();
         assert!(issues.iter().any(|issue| {
             issue.path.contains("observability.probes") && issue.message.contains("unknown VM")
+        }));
+    }
+
+    #[test]
+    fn observability_data_sources_require_valid_default_and_via() {
+        let source = r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: lab }
+spec:
+  project: lab
+  domain: lab.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: "127.0.0.1:15353", forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
+  networks: { lan: { cidr: 10.90.0.0/24, mode: shared } }
+  routes: []
+  policies: []
+  observability:
+    dataSources:
+      postgres:
+        default: missing
+        via: unknown-vm
+        entries:
+          app:
+            host: postgres.core.lab.vz.test
+            port: 5432
+            database: app
+            user: ro
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 4G
+      networks: [{ name: lan, ip: 10.90.0.10 }]
+"#;
+        let issues = validate_source(source).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains("dataSources.postgres.default")
+        }));
+        assert!(issues.iter().any(|issue| {
+            issue.path.contains("dataSources.postgres.via") && issue.message.contains("unknown VM")
         }));
     }
 

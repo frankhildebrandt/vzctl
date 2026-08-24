@@ -1,6 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
+import { useStackLogStreams } from "@/hooks/useStackLogStreams";
+import { useVmLogStreams } from "@/hooks/useVmLogStreams";
 import { getT, useT, type TFunction } from "@/lib/i18n";
+import {
+  isLogStreamActive,
+  type StackLogStream,
+  type VmLogStream,
+} from "@/lib/logStreams";
 import { getProject } from "@/lib/projects";
 import { basename } from "@/lib/vzctl";
 import {
@@ -25,6 +32,14 @@ export type SidebarNavItem = {
   kind?: "link" | "action";
   tone?: "danger";
   disabled?: boolean;
+  /** Small source badge (`iwatch`, `journald`). */
+  badge?: string;
+};
+
+export type SidebarNavGroup = {
+  id: string;
+  label: string;
+  items: SidebarNavItem[];
 };
 
 export type SidebarBack = {
@@ -43,6 +58,7 @@ export type SidebarNavModel = {
   /** Escape to dashboard — only in nested contexts. */
   showDashboard: boolean;
   items: SidebarNavItem[];
+  groups?: SidebarNavGroup[];
   /** Settings link in sidebar-bottom (root only). */
   showSettingsBottom: boolean;
 };
@@ -76,6 +92,10 @@ function vmTail(pathname: string): string {
   return match?.[1] ?? "";
 }
 
+function isVmLogsPath(pathname: string): boolean {
+  return /^\/vms\/[^/]+\/logs/.test(pathname);
+}
+
 function parseVmSection(tail: string): {
   section: VmSection;
   containerLevel?: "list" | "detail";
@@ -102,13 +122,14 @@ function parseVmSection(tail: string): {
 }
 
 function parseLocation(input: SidebarLocationInput): {
-  kind: "root" | "stack" | "vm" | "settings";
+  kind: "root" | "stack" | "stack-logs" | "vm" | "settings";
   vmId?: string;
   containerLevel?: "list" | "detail";
   section?: VmSection;
   stackPath?: string;
   envPath?: string;
-  tab?: "ops" | "topology" | "config";
+  tab?: "ops" | "topology" | "config" | "debug";
+  logSource?: string;
 } {
   const { pathname, search } = input;
 
@@ -118,13 +139,29 @@ function parseLocation(input: SidebarLocationInput): {
   if (pathname === "/env" || pathname.startsWith("/env/")) {
     const tabRaw = search.tab;
     const tab =
-      tabRaw === "topology" || tabRaw === "ops" || tabRaw === "config"
+      tabRaw === "topology" ||
+      tabRaw === "ops" ||
+      tabRaw === "config" ||
+      tabRaw === "debug"
         ? tabRaw
         : "ops";
     return {
       kind: "stack",
       envPath: asString(search.path),
       tab,
+    };
+  }
+
+  const stackPath = asString(search.stackPath);
+  const logSource = asString(search.source);
+
+  if (input.routeVmId && isVmLogsPath(pathname) && stackPath) {
+    return {
+      kind: "stack-logs",
+      vmId: input.routeVmId,
+      stackPath,
+      logSource,
+      section: "logs",
     };
   }
 
@@ -135,24 +172,82 @@ function parseLocation(input: SidebarLocationInput): {
       vmId: input.routeVmId,
       containerLevel: parsed.containerLevel,
       section: parsed.section,
-      stackPath: asString(search.stackPath),
+      stackPath,
+      logSource: parsed.section === "logs" ? logSource : undefined,
     };
   }
 
-  // Fallback for pure resolveSidebarNav callers (tests / no matches).
   const vmMatch = pathname.match(/^\/vms\/([^/]+)(?:\/(.*))?$/);
   if (vmMatch) {
     const parsed = parseVmSection(vmMatch[2] ?? "");
+    const vmId = decodeVmIdParam(vmMatch[1]);
+    if (isVmLogsPath(pathname) && stackPath) {
+      return {
+        kind: "stack-logs",
+        vmId,
+        stackPath,
+        logSource,
+        section: "logs",
+      };
+    }
     return {
       kind: "vm",
-      vmId: decodeVmIdParam(vmMatch[1]),
+      vmId,
       containerLevel: parsed.containerLevel,
       section: parsed.section,
-      stackPath: asString(search.stackPath),
+      stackPath,
+      logSource: parsed.section === "logs" ? logSource : undefined,
     };
   }
 
   return { kind: "root" };
+}
+
+function buildVmLogStreamNavItems(
+  vmId: string,
+  streams: VmLogStream[],
+  opts: {
+    stackPath?: string;
+    section: VmSection;
+    activeSource?: string;
+    running: boolean;
+  },
+): SidebarNavItem[] {
+  const encoded = encodeVmIdParam(vmId);
+  const baseSearch = opts.stackPath ? { stackPath: opts.stackPath } : {};
+
+  return streams.map((stream) => ({
+    id: `log:${stream.source}`,
+    label: stream.source,
+    badge: stream.kind,
+    to: "/vms/$vmId/logs",
+    params: { vmId: encoded },
+    search: { ...baseSearch, source: stream.source },
+    active: isLogStreamActive(
+      opts.section,
+      stream.source,
+      opts.activeSource,
+      streams,
+    ),
+    disabled: !opts.running,
+  }));
+}
+
+function buildStackLogStreamNavItems(
+  streams: StackLogStream[],
+  stackPath: string,
+  activeLog?: { vmId: string; source: string },
+): SidebarNavItem[] {
+  return streams.map((stream) => ({
+    id: `log:${stream.vmId}:${stream.source}`,
+    label: stream.label,
+    badge: stream.kind,
+    to: "/vms/$vmId/logs",
+    params: { vmId: encodeVmIdParam(stream.vmId) },
+    search: { stackPath, source: stream.source },
+    active:
+      activeLog?.vmId === stream.vmId && activeLog?.source === stream.source,
+  }));
 }
 
 function buildRootItems(t: TFunction): SidebarNavItem[] {
@@ -184,7 +279,6 @@ function buildSettings(t: TFunction): SidebarNavModel {
     context: "settings",
     contextKey: "settings",
     title: t("nav.settings"),
-    // Kein Zurück: Escape ist bereits „← Dashboard“ in der Brand-Zeile.
     back: null,
     showDashboard: true,
     items: [
@@ -203,13 +297,27 @@ function buildSettings(t: TFunction): SidebarNavModel {
 function buildStack(
   t: TFunction,
   envPath: string | undefined,
-  tab: "ops" | "topology" | "config",
-  titleOverride?: string | null,
+  tab: "ops" | "topology" | "config" | "debug",
+  opts?: {
+    titleOverride?: string | null;
+    stackLogStreams?: StackLogStream[];
+    activeLog?: { vmId: string; source: string };
+  },
 ): SidebarNavModel {
   const title =
-    titleOverride ??
+    opts?.titleOverride ??
     (envPath ? basename(envPath) : t("nav.stackFallback"));
   const searchBase = envPath ? { path: envPath } : { path: "" };
+  const streams = opts?.stackLogStreams ?? [];
+  const groups: SidebarNavGroup[] = [];
+
+  if (streams.length > 0 && envPath) {
+    groups.push({
+      id: "log-streams",
+      label: t("nav.logStreams"),
+      items: buildStackLogStreamNavItems(streams, envPath, opts?.activeLog),
+    });
+  }
 
   return {
     context: "stack",
@@ -239,7 +347,15 @@ function buildStack(
         search: { ...searchBase, tab: "config" },
         active: tab === "config",
       },
+      {
+        id: "debug",
+        label: t("nav.debug"),
+        to: "/env",
+        search: { ...searchBase, tab: "debug" },
+        active: tab === "debug",
+      },
     ],
+    groups,
     showSettingsBottom: false,
   };
 }
@@ -253,10 +369,20 @@ function buildVm(
     containerLevel?: "list" | "detail";
     showContainers: boolean;
     running: boolean;
+    logSource?: string;
+    vmLogStreams?: VmLogStream[];
   },
 ): SidebarNavModel {
-  const { vmId, stackPath, section, containerLevel, showContainers, running } =
-    opts;
+  const {
+    vmId,
+    stackPath,
+    section,
+    containerLevel,
+    showContainers,
+    running,
+    logSource,
+    vmLogStreams = [],
+  } = opts;
   const encoded = encodeVmIdParam(vmId);
   const vmSearch = stackPath ? { stackPath } : {};
   const onContainers = containerLevel != null;
@@ -288,15 +414,6 @@ function buildVm(
       params: { vmId: encoded },
       search: vmSearch,
       active: section === "overview",
-    },
-    {
-      id: "logs",
-      label: t("nav.logs"),
-      to: "/vms/$vmId/logs",
-      params: { vmId: encoded },
-      search: vmSearch,
-      active: section === "logs",
-      disabled: !running,
     },
     {
       id: "services",
@@ -372,6 +489,20 @@ function buildVm(
     tone: "danger",
   });
 
+  const groups: SidebarNavGroup[] = [];
+  if (vmLogStreams.length > 0) {
+    groups.push({
+      id: "logs",
+      label: t("nav.logs"),
+      items: buildVmLogStreamNavItems(vmId, vmLogStreams, {
+        stackPath,
+        section,
+        activeSource: logSource,
+        running,
+      }),
+    });
+  }
+
   return {
     context: "vm",
     contextKey: `vm:${vmId}`,
@@ -379,6 +510,7 @@ function buildVm(
     back,
     showDashboard: true,
     items,
+    groups,
     showSettingsBottom: false,
   };
 }
@@ -389,6 +521,9 @@ export function resolveSidebarNav(
     hasDockerRole?: boolean;
     running?: boolean;
     stackTitle?: string | null;
+    vmLogStreams?: VmLogStream[];
+    stackLogStreams?: StackLogStream[];
+    activeLog?: { vmId: string; source: string };
     t?: TFunction;
   },
 ): SidebarNavModel {
@@ -397,7 +532,21 @@ export function resolveSidebarNav(
 
   if (parsed.kind === "settings") return buildSettings(t);
   if (parsed.kind === "stack") {
-    return buildStack(t, parsed.envPath, parsed.tab ?? "ops", opts?.stackTitle);
+    return buildStack(t, parsed.envPath, parsed.tab ?? "ops", {
+      titleOverride: opts?.stackTitle,
+      stackLogStreams: opts?.stackLogStreams,
+      activeLog: opts?.activeLog,
+    });
+  }
+  if (parsed.kind === "stack-logs" && parsed.stackPath) {
+    return buildStack(t, parsed.stackPath, "ops", {
+      titleOverride: opts?.stackTitle,
+      stackLogStreams: opts?.stackLogStreams,
+      activeLog:
+        parsed.vmId && parsed.logSource
+          ? { vmId: parsed.vmId, source: parsed.logSource }
+          : opts?.activeLog,
+    });
   }
   if (parsed.kind === "vm" && parsed.vmId) {
     const onContainers = parsed.containerLevel != null;
@@ -410,6 +559,8 @@ export function resolveSidebarNav(
       containerLevel: parsed.containerLevel,
       showContainers,
       running: opts?.running === true,
+      logSource: parsed.logSource,
+      vmLogStreams: opts?.vmLogStreams,
     });
   }
   return buildRoot(t);
@@ -459,13 +610,14 @@ export function useSidebarNav(): SidebarNavModel {
   };
 
   const parsed = parseLocation(location);
-  const vmId = parsed.kind === "vm" ? parsed.vmId : undefined;
+  const vmId = parsed.vmId;
   const onContainers = parsed.kind === "vm" && parsed.containerLevel != null;
+  const needsVmInspect = parsed.kind === "vm" && Boolean(vmId);
 
   const inspectQuery = useQuery({
     queryKey: vmKeys.detail(vmId ?? ""),
     queryFn: () => inspectVm(vmId!),
-    enabled: Boolean(vmId),
+    enabled: Boolean(vmId) && needsVmInspect,
     staleTime: 30_000,
   });
 
@@ -474,15 +626,33 @@ export function useSidebarNav(): SidebarNavModel {
     inspectQuery.data?.vm.roles?.includes("docker") === true;
   const running = isRunning(inspectQuery.data?.vm.state);
 
+  const stackPathForStreams =
+    parsed.kind === "stack"
+      ? parsed.envPath
+      : parsed.kind === "stack-logs"
+        ? parsed.stackPath
+        : undefined;
+
+  const stackLogStreamsQuery = useStackLogStreams(stackPathForStreams);
+
+  const vmLogStreamsQuery = useVmLogStreams(
+    parsed.kind === "vm" ? vmId : undefined,
+    parsed.stackPath,
+    running,
+  );
+
   let stackTitle: string | null | undefined;
-  if (parsed.kind === "stack" && parsed.envPath) {
-    stackTitle = getProject(parsed.envPath)?.name ?? basename(parsed.envPath);
+  if ((parsed.kind === "stack" || parsed.kind === "stack-logs") && stackPathForStreams) {
+    stackTitle =
+      getProject(stackPathForStreams)?.name ?? basename(stackPathForStreams);
   }
 
   return resolveSidebarNav(location, {
     hasDockerRole,
     running,
     stackTitle,
+    vmLogStreams: vmLogStreamsQuery.data,
+    stackLogStreams: stackLogStreamsQuery.data,
     t,
   });
 }

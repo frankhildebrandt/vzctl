@@ -144,7 +144,7 @@ fn subscribe_guest_logs(
     if !channel.starts_with("vzctl-guest-log-")
         || !channel
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/' || b == b'.')
     {
         return Err("invalid guest log channel".into());
     }
@@ -429,7 +429,7 @@ fn validate_vzctl_argv(args: &[String]) -> Result<(), String> {
                 "list", "start", "stop", "delete", "create", "modify", "inspect", "mount",
                 "unmount", "mounts", "logs", "exec", "services", "ps", "transfer",
             ];
-            let allowed_image = ["list", "pull", "bake", "seal"];
+            let allowed_image = ["list", "pull", "bake", "seal", "rebake"];
             let allowed = if group == "vm" {
                 &allowed_vm[..]
             } else {
@@ -1587,13 +1587,14 @@ fn ingress_from_config(config_path: &Path) -> Value {
     flush(&mut routes, &mut current);
 
     let mut enriched = Vec::new();
+    let mut seen_hosts = std::collections::BTreeSet::new();
     for route in routes {
         let host = route
             .get("host")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if host.is_empty() {
+        if host.is_empty() || !seen_hosts.insert(host.clone()) {
             continue;
         }
         let to = route

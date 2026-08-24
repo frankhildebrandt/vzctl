@@ -73,6 +73,7 @@ pub(crate) fn print_topic(topic: &str) -> bool {
         "net" => print_net(),
         "route" => print_route(),
         "dns" => print_dns(),
+        "debug" => print_debug(),
         "docker" => print_docker(),
         "port" => print_port(),
         "doctor" => print_doctor(),
@@ -107,7 +108,7 @@ Commands:
   image            Pull, bake, seal ARM64 base images
   vm, ps           VM lifecycle and host process list
   net, route       Networks and guest forwarding
-  dns, docker, port
+  dns, docker, port, debug
   doctor, version, services, certs, oidc, events, status
   skill            Print or install the agent skill
 
@@ -143,6 +144,7 @@ vzctl exit codes
   23  image architecture unsupported
   24  reconciler or VM lifecycle operation failed
   25  host service lifecycle failed
+  26  debug data source exec or prerequisites failed
 
 stdout is data; stderr is diagnostics. JSON uses apiVersion vzctl.dev/v1
 (except vm.create: vzctl.dev/v2). WARN stays exit 0 unless documented as hard-fail."
@@ -316,6 +318,26 @@ vzctl route — guest nftables forward policy
 
 Reads spec.policies from the environment file (default ./hypernetwork.config.yaml).
 `plan` does not mutate the guest. `via` is required when several routers match."
+    );
+}
+
+fn print_debug() {
+    println!(
+        "\
+vzctl debug — read-only observability queries via configured via-VMs
+
+  sources list [-C dir] [--type postgres|mysql|nats] [--format human|json]
+  doctor [-C dir] [--format human|json]
+  postgres query [-C dir] [--source NAME] [--max-rows N] [--timeout 30s] -- SQL
+  mysql query [-C dir] [--source NAME] [--max-rows N] [--timeout 30s] -- SQL
+  nats streams [-C dir] [--source NAME] [--format human|json]
+  nats sub [-C dir] [--source NAME] --subject SUBJ [--count N] [--timeout 30s]
+  nats kv get [-C dir] [--source NAME] --bucket B --key K
+  nats kv watch [-C dir] [--source NAME] --bucket B [--key K] [--timeout 30s]
+
+Sources are declared under observability.dataSources in hypernetwork.config.yaml.
+Secrets use passwordFile/tokenFile/credsFile (never inline). Queries run in the
+via VM using psql, mysql, or nats CLI."
     );
 }
 

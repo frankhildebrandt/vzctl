@@ -13,6 +13,19 @@ export type IngressInfo = {
   routes: IngressRouteLink[];
 };
 
+export function dedupeIngressRoutes(
+  routes: IngressRouteLink[],
+): IngressRouteLink[] {
+  const seen = new Set<string>();
+  const out: IngressRouteLink[] = [];
+  for (const route of routes) {
+    if (seen.has(route.host)) continue;
+    seen.add(route.host);
+    out.push(route);
+  }
+  return out;
+}
+
 export function parseIngressInfo(
   statusRaw: string | null | undefined,
 ): IngressInfo | null {
@@ -24,27 +37,28 @@ export function parseIngressInfo(
     const data = parsed.sections?.ingress?.data;
     if (!data || typeof data !== "object") return null;
     const routes = Array.isArray(data.routes) ? data.routes : [];
+    const mapped = routes
+      .filter((route) => route && typeof route.host === "string" && route.host)
+      .map((route) => ({
+        host: String(route.host),
+        url: String(route.url ?? `https://${route.host}`),
+        to: route.to != null ? String(route.to) : undefined,
+        requires: Array.isArray(route.requires)
+          ? route.requires.map(String)
+          : [],
+        alias:
+          route.alias && typeof route.alias === "object"
+            ? {
+                host: String(route.alias.host ?? ""),
+                url: String(route.alias.url ?? ""),
+              }
+            : null,
+      }));
     return {
       enabled: Boolean(data.enabled),
       https_port: data.https_port,
       host_aliases: data.host_aliases,
-      routes: routes
-        .filter((route) => route && typeof route.host === "string" && route.host)
-        .map((route) => ({
-          host: String(route.host),
-          url: String(route.url ?? `https://${route.host}`),
-          to: route.to != null ? String(route.to) : undefined,
-          requires: Array.isArray(route.requires)
-            ? route.requires.map(String)
-            : [],
-          alias:
-            route.alias && typeof route.alias === "object"
-              ? {
-                  host: String(route.alias.host ?? ""),
-                  url: String(route.alias.url ?? ""),
-                }
-              : null,
-        })),
+      routes: dedupeIngressRoutes(mapped),
     };
   } catch {
     return null;

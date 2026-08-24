@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/frankhildebrandt/vzctl/guest-agent/journald"
 )
 
 const maxServiceHTTPBytes = 256 * 1024
@@ -32,9 +34,23 @@ func handleServicesList(req request, registry *serviceRegistry) response {
 }
 
 func handleServicesHTTP(ctx context.Context, req request, registry *serviceRegistry) response {
-	params, service, errResp := parseServiceHTTP(req, registry)
+	params, service, journaldUnit, errResp := parseServiceHTTP(req, registry)
 	if errResp != nil {
 		return *errResp
+	}
+	if journaldUnit != "" {
+		status, headers, body, err := journald.ServeHTTP(ctx, journaldUnit, params.Method, params.Path)
+		if err != nil {
+			return errorResponse(req.ID, "internal", "journald request failed", nil)
+		}
+		return successResponse(req.ID, map[string]any{
+			"status":    status,
+			"headers":   headers,
+			"body_b64":  base64.StdEncoding.EncodeToString(body),
+			"truncated": false,
+			"name":      journaldUnit,
+			"kind":      "journald",
+		})
 	}
 	httpReq, err := buildServiceRequest(ctx, service.URL, params)
 	if err != nil {
@@ -59,29 +75,39 @@ func handleServicesHTTP(ctx context.Context, req request, registry *serviceRegis
 	})
 }
 
-func parseServiceHTTP(req request, registry *serviceRegistry) (servicesHTTPParams, publishedService, *response) {
+func parseServiceHTTP(req request, registry *serviceRegistry) (servicesHTTPParams, publishedService, string, *response) {
 	var params servicesHTTPParams
 	if err := decodeParams(req.Params, &params); err != nil {
 		resp := errorResponse(req.ID, "proto", "invalid services.http parameters", nil)
-		return params, publishedService{}, &resp
+		return params, publishedService{}, "", &resp
 	}
 	if registry == nil {
 		resp := errorResponse(req.ID, "not_found", "service not found", map[string]any{"name": params.Name})
-		return params, publishedService{}, &resp
+		return params, publishedService{}, "", &resp
 	}
 	service, ok := registry.get(params.Name)
 	if !ok {
+		if journald.ValidUnit(params.Name) {
+			if err := validateServicePath(params.Path); err != nil {
+				resp := errorResponse(req.ID, "proto", err.Error(), nil)
+				return params, publishedService{}, "", &resp
+			}
+			if params.Method == "" {
+				params.Method = http.MethodGet
+			}
+			return params, publishedService{}, params.Name, nil
+		}
 		resp := errorResponse(req.ID, "not_found", "service not found", map[string]any{"name": params.Name})
-		return params, publishedService{}, &resp
+		return params, publishedService{}, "", &resp
 	}
 	if err := validateServicePath(params.Path); err != nil {
 		resp := errorResponse(req.ID, "proto", err.Error(), nil)
-		return params, publishedService{}, &resp
+		return params, publishedService{}, "", &resp
 	}
 	if params.Method == "" {
 		params.Method = http.MethodGet
 	}
-	return params, service, nil
+	return params, service, "", nil
 }
 
 func validateServicePath(raw string) error {

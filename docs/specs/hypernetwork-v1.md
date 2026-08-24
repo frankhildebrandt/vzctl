@@ -83,6 +83,21 @@ blockieren ihn. Die aufgelöste Policy wird beim Apply in SQLite persistiert.
 zur Stack-Config und wird beim Create mit dem System-NoCloud-Seed gemerged
 (System-Felder gewinnen bei Skalar-Konflikten; Listen werden angehängt).
 
+VM-Logs (journald, lazy on-demand — kein Apply-`ensure`):
+
+```yaml
+vms:
+  web:
+    logs:
+      journald:
+        - nginx.service
+        - caddy.service
+```
+
+- Units erscheinen in UI/CLI-Navigation (`kind: journald`); `iwatch` bleibt runtime-only.
+- Source-ID = voller Unit-Name (`nginx.service`); Follow nur bei offenem Stream/CLI-Follow.
+- `q` / `minLevel` / Feld-Filter mappen auf `journalctl` (`--grep`, `-p`, Post-Filter).
+
 Docker-Container (nur bei `roles` inkl. `docker`):
 
 ```yaml
@@ -184,11 +199,23 @@ observability:
   probes:
     - { name: router-nats, from: sat, target: "main-node.core.lab.vz.test:4222", expect: tcp }
     - { name: host-ingress, from: host, target: "https://main-node.svc.lab.vz.test/", expect: http_2xx }
+  dataSources:
+    postgres:
+      default: app
+      via: debug-tools
+      entries:
+        app:
+          host: postgres.core.lab.vz.test
+          port: 5432
+          database: app
+          user: app_ro
+          passwordFile: ./secrets/pg.ro
 ```
 
 `from` ist `host` oder ein VM-Key unter `spec.vms`. `expect` ist `tcp`,
-`http_2xx` oder `dns`. Unbekannte VM-Refs und Credentials im Target sind
-Validate-Fehler. `vzctl stack status` führt die Probes aus.
+`http_2xx` oder `dns`. `dataSources` deklariert Postgres/MySQL/NATS für
+read-only Debug-Queries via Via-VM — siehe [debug-sources-v1.md](debug-sources-v1.md).
+`vzctl stack status` führt die Probes aus.
 
 ## Semantische Regeln
 

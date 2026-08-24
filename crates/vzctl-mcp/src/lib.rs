@@ -119,6 +119,65 @@ struct StackApplyParams {
     abort: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugStackPathParams {
+    stack_path: String,
+    #[serde(default)]
+    source_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugSourceParams {
+    stack_path: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugSqlQueryParams {
+    stack_path: String,
+    sql: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    max_rows: Option<u32>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugNatsSubParams {
+    stack_path: String,
+    subject: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    count: Option<u32>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugNatsKvGetParams {
+    stack_path: String,
+    bucket: String,
+    key: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DebugNatsKvWatchParams {
+    stack_path: String,
+    bucket: String,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
 fn parse_env_pairs(pairs: &[String]) -> Result<Vec<(&str, &str)>, String> {
     let mut out = Vec::new();
     for pair in pairs {
@@ -430,6 +489,206 @@ impl VzctlMcp {
     ) -> Result<String, String> {
         let path = format!("/v1/projects/{}/containers", encode_id(&project));
         api_json(&self.api, &path)
+    }
+
+    // --- Debug data sources ---
+
+    #[tool(description = "List observability.dataSources for a stack directory.")]
+    fn debug_sources_list(
+        &self,
+        Parameters(DebugStackPathParams {
+            stack_path,
+            source_type,
+        }): Parameters<DebugStackPathParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "debug".to_string(),
+            "sources".to_string(),
+            "list".to_string(),
+            "-C".to_string(),
+            stack_path,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(kind) = source_type {
+            args.push("--type".into());
+            args.push(kind);
+        }
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(json_pretty(&self.cli.run_json(&argv)?))
+    }
+
+    #[tool(description = "Check debug via-VM prerequisites (psql/mysql/nats in PATH).")]
+    fn debug_doctor(
+        &self,
+        Parameters(DebugStackPathParams { stack_path, .. }): Parameters<DebugStackPathParams>,
+    ) -> Result<String, String> {
+        let args = [
+            "debug",
+            "doctor",
+            "-C",
+            stack_path.as_str(),
+            "--format",
+            "json",
+        ];
+        Ok(json_pretty(&self.cli.run_json(&args)?))
+    }
+
+    #[tool(description = "Read-only Postgres query via configured via-VM.")]
+    fn debug_postgres_query(
+        &self,
+        Parameters(DebugSqlQueryParams {
+            stack_path,
+            sql,
+            source,
+            max_rows,
+            timeout_ms,
+        }): Parameters<DebugSqlQueryParams>,
+    ) -> Result<String, String> {
+        extensions::run_sql_query(
+            &self.cli,
+            "postgres",
+            &stack_path,
+            &sql,
+            &source,
+            max_rows,
+            timeout_ms,
+        )
+    }
+
+    #[tool(description = "Read-only MySQL query via configured via-VM.")]
+    fn debug_mysql_query(
+        &self,
+        Parameters(DebugSqlQueryParams {
+            stack_path,
+            sql,
+            source,
+            max_rows,
+            timeout_ms,
+        }): Parameters<DebugSqlQueryParams>,
+    ) -> Result<String, String> {
+        extensions::run_sql_query(
+            &self.cli,
+            "mysql",
+            &stack_path,
+            &sql,
+            &source,
+            max_rows,
+            timeout_ms,
+        )
+    }
+
+    #[tool(description = "List NATS streams (read-only) via configured via-VM.")]
+    fn debug_nats_streams(
+        &self,
+        Parameters(DebugSourceParams { stack_path, source }): Parameters<DebugSourceParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "debug".into(),
+            "nats".into(),
+            "streams".into(),
+            "-C".into(),
+            stack_path,
+            "--format".into(),
+            "json".into(),
+        ];
+        extensions::push_source(&mut args, &source);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(json_pretty(&self.cli.run_json(&argv)?))
+    }
+
+    #[tool(description = "Batch-subscribe to a NATS subject (read-only).")]
+    fn debug_nats_subscribe(
+        &self,
+        Parameters(DebugNatsSubParams {
+            stack_path,
+            subject,
+            source,
+            count,
+            timeout_ms,
+        }): Parameters<DebugNatsSubParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "debug".into(),
+            "nats".into(),
+            "sub".into(),
+            "-C".into(),
+            stack_path,
+            "--format".into(),
+            "json".into(),
+            "--subject".into(),
+            subject,
+        ];
+        extensions::push_source(&mut args, &source);
+        if let Some(value) = count {
+            args.push("--count".into());
+            args.push(value.to_string());
+        }
+        extensions::push_timeout_ms(&mut args, &timeout_ms);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(json_pretty(&self.cli.run_json(&argv)?))
+    }
+
+    #[tool(description = "Read a NATS KV entry (read-only).")]
+    fn debug_nats_kv_get(
+        &self,
+        Parameters(DebugNatsKvGetParams {
+            stack_path,
+            bucket,
+            key,
+            source,
+        }): Parameters<DebugNatsKvGetParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "debug".into(),
+            "nats".into(),
+            "kv".into(),
+            "get".into(),
+            "-C".into(),
+            stack_path,
+            "--format".into(),
+            "json".into(),
+            "--bucket".into(),
+            bucket,
+            "--key".into(),
+            key,
+        ];
+        extensions::push_source(&mut args, &source);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(json_pretty(&self.cli.run_json(&argv)?))
+    }
+
+    #[tool(description = "Watch NATS KV changes until timeout (read-only).")]
+    fn debug_nats_kv_watch(
+        &self,
+        Parameters(DebugNatsKvWatchParams {
+            stack_path,
+            bucket,
+            key,
+            source,
+            timeout_ms,
+        }): Parameters<DebugNatsKvWatchParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "debug".into(),
+            "nats".into(),
+            "kv".into(),
+            "watch".into(),
+            "-C".into(),
+            stack_path,
+            "--format".into(),
+            "json".into(),
+            "--bucket".into(),
+            bucket,
+        ];
+        if let Some(key) = key {
+            args.push("--key".into());
+            args.push(key);
+        }
+        extensions::push_source(&mut args, &source);
+        extensions::push_timeout_ms(&mut args, &timeout_ms);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(json_pretty(&self.cli.run_json(&argv)?))
     }
 }
 

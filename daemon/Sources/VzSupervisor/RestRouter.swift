@@ -206,7 +206,148 @@ final class RestRouter: @unchecked Sendable {
                 break
             }
         }
+
+        if rest.count >= 4, rest[2] == "debug" {
+            return try routeStackDebug(
+                stackPath: stack.path,
+                method: method,
+                rest: Array(rest.dropFirst(2)),
+                request: request
+            )
+        }
         throw RestRouteError(404, .notFound, "stack sub-route")
+    }
+
+    private func routeStackDebug(
+        stackPath: String,
+        method: String,
+        rest: [String],
+        request: RestHTTPRequest
+    ) throws -> RestHTTPResponse {
+        var base = ["debug", "-C", stackPath, "--format", "json"]
+        if rest == ["sources", "list"], method == "GET" {
+            if let source = request.query["type"], !source.isEmpty {
+                base += ["sources", "list", "--type", source]
+            } else {
+                base += ["sources", "list"]
+            }
+            return try workerJSON(base)
+        }
+        if rest == ["doctor"], method == "GET" {
+            base.append("doctor")
+            return try workerJSON(base)
+        }
+        if rest == ["postgres", "query"], method == "POST" {
+            let obj = try bodyObject(request)
+            guard case let .string(sql)? = obj["sql"], !sql.isEmpty else {
+                throw RestRouteError(400, .badRequest, "sql required")
+            }
+            base += ["postgres", "query"]
+            appendDebugQueryFlags(&base, obj: obj, request: request)
+            base += ["--", sql]
+            return try workerJSON(base)
+        }
+        if rest == ["mysql", "query"], method == "POST" {
+            let obj = try bodyObject(request)
+            guard case let .string(sql)? = obj["sql"], !sql.isEmpty else {
+                throw RestRouteError(400, .badRequest, "sql required")
+            }
+            base += ["mysql", "query"]
+            appendDebugQueryFlags(&base, obj: obj, request: request)
+            base += ["--", sql]
+            return try workerJSON(base)
+        }
+        if rest == ["nats", "streams"], method == "GET" {
+            base += ["nats", "streams"]
+            if let source = request.query["source"], !source.isEmpty {
+                base += ["--source", source]
+            }
+            return try workerJSON(base)
+        }
+        if rest == ["nats", "sub"], method == "POST" {
+            let obj = try bodyObject(request)
+            guard case let .string(subject)? = obj["subject"], !subject.isEmpty else {
+                throw RestRouteError(400, .badRequest, "subject required")
+            }
+            base += ["nats", "sub", "--subject", subject]
+            appendDebugNatsFlags(&base, obj: obj, request: request)
+            return try workerJSON(base)
+        }
+        if rest == ["nats", "kv", "get"], method == "POST" {
+            let obj = try bodyObject(request)
+            guard case let .string(bucket)? = obj["bucket"], !bucket.isEmpty else {
+                throw RestRouteError(400, .badRequest, "bucket required")
+            }
+            guard case let .string(key)? = obj["key"], !key.isEmpty else {
+                throw RestRouteError(400, .badRequest, "key required")
+            }
+            base += ["nats", "kv", "get", "--bucket", bucket, "--key", key]
+            if let source = optionalString(obj["source"]) ?? request.query["source"] {
+                base += ["--source", source]
+            }
+            return try workerJSON(base)
+        }
+        if rest == ["nats", "kv", "watch"], method == "POST" {
+            let obj = try bodyObject(request)
+            guard case let .string(bucket)? = obj["bucket"], !bucket.isEmpty else {
+                throw RestRouteError(400, .badRequest, "bucket required")
+            }
+            base += ["nats", "kv", "watch", "--bucket", bucket]
+            if let key = optionalString(obj["key"]) {
+                base += ["--key", key]
+            }
+            appendDebugNatsFlags(&base, obj: obj, request: request)
+            return try workerJSON(base)
+        }
+        throw RestRouteError(404, .notFound, "stack debug route")
+    }
+
+    private func appendDebugQueryFlags(
+        _ base: inout [String],
+        obj: [String: JSONValue],
+        request: RestHTTPRequest
+    ) {
+        if let source = optionalString(obj["source"]) ?? request.query["source"] {
+            base += ["--source", source]
+        }
+        if let maxRows = optionalInt(obj["maxRows"]) {
+            base += ["--max-rows", String(maxRows)]
+        }
+        if let timeoutMs = optionalInt(obj["timeoutMs"]) {
+            base += ["--timeout-ms", String(timeoutMs)]
+        }
+    }
+
+    private func appendDebugNatsFlags(
+        _ base: inout [String],
+        obj: [String: JSONValue],
+        request: RestHTTPRequest
+    ) {
+        if let source = optionalString(obj["source"]) ?? request.query["source"] {
+            base += ["--source", source]
+        }
+        if let count = optionalInt(obj["count"]) {
+            base += ["--count", String(count)]
+        }
+        if let timeoutMs = optionalInt(obj["timeoutMs"]) {
+            base += ["--timeout-ms", String(timeoutMs)]
+        }
+    }
+
+    private func optionalString(_ value: JSONValue?) -> String? {
+        guard case let .string(raw)? = value, !raw.isEmpty else { return nil }
+        return raw
+    }
+
+    private func optionalInt(_ value: JSONValue?) -> Int? {
+        switch value {
+        case let .number(raw)?:
+            return Int(raw)
+        case let .string(raw)?:
+            return Int(raw)
+        default:
+            return nil
+        }
     }
 
     private func createStack(_ request: RestHTTPRequest) throws -> RestHTTPResponse {
@@ -537,16 +678,21 @@ final class RestRouter: @unchecked Sendable {
         }
         let alias = rest[1]
         let action = rest[2]
-        guard ["pull", "bake", "seal"].contains(action) else {
+        guard ["pull", "bake", "seal", "rebake"].contains(action) else {
             throw RestRouteError(404, .notFound, "unknown image action")
         }
         var arguments = ["image", action, alias]
-        if action == "bake" || action == "seal" {
+        if action == "bake" || action == "seal" || action == "rebake" {
             let body = try bodyObject(request)
             guard case let .string(tag)? = body["tag"], !tag.isEmpty else {
                 throw RestRouteError(400, .badRequest, "image \(action) requires body.tag")
             }
             arguments += ["--tag", tag]
+            if action == "rebake" {
+                // rebake always forces bake+seal
+            } else if case let .bool(force)? = body["force"], force {
+                arguments.append("--force")
+            }
         }
         arguments += ["--format", "json"]
         let jobId = jobs.start(

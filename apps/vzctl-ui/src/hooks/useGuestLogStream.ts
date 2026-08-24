@@ -427,7 +427,7 @@ export function useGuestLogStream({
     let cancelled = false;
     let unlisten: UnlistenFn | undefined;
     const subscriptionId = crypto.randomUUID();
-    const channel = `vzctl-guest-log-${vmId}-${source}-${subscriptionId}`;
+    const channel = `vzctl-guest-log-${subscriptionId}`;
     activeSubscriptionRef.current = subscriptionId;
 
     setStreamError(null);

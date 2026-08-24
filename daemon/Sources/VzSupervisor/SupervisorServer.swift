@@ -846,23 +846,18 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
                 let hostsValue = params["hosts"] ?? .array([])
-                guard case let .array(items) = hostsValue else {
+                guard case .array = hostsValue else {
                     return JSONRPCResponse(
                         error: JSONRPCError(code: -32602, message: "hosts must be an array"),
                         id: request.id ?? .null
                     )
                 }
-                let hosts = items.compactMap { item -> String? in
-                    if case let .string(value) = item { return value }
-                    return nil
-                }
-                let hostsJSON = JSONValue.array(hosts.map(JSONValue.string))
-                try database.setEdgeHostServices(project: project, hosts: hostsJSON)
+                try database.setEdgeHostServices(project: project, hosts: hostsValue)
                 let edge = try reconcileEdgeThrowing(reason: "dns.host_services.ensure")
                 return JSONRPCResponse(
                     result: .object([
                         "project": .string(project),
-                        "hosts": hostsJSON,
+                        "hosts": hostsValue,
                         "dns": edgeDNS(from: edge),
                     ]),
                     id: request.id ?? .null
@@ -1232,6 +1227,16 @@ final class SupervisorServer: @unchecked Sendable {
                 result: .object(["ok": .bool(true)]),
                 id: request.id ?? .null
             )
+        case "stacks.list":
+            do {
+                let rows = try database.listStacks().map(\.json)
+                return JSONRPCResponse(
+                    result: .object(["stacks": .array(rows)]),
+                    id: request.id ?? .null
+                )
+            } catch {
+                return reconcileErrorResponse(error, request: request)
+            }
         case "stack.inspect":
             do {
                 let params = try objectParams(request.params, context: "stack.inspect")

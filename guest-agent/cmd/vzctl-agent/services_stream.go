@@ -4,12 +4,31 @@ import (
 	"context"
 	"io"
 	"net/http"
+
+	"github.com/frankhildebrandt/vzctl/guest-agent/journald"
 )
 
 func prepareServiceStream(ctx context.Context, req request, registry *serviceRegistry) (response, *http.Response) {
-	params, service, errResp := parseServiceHTTP(req, registry)
+	params, service, journaldUnit, errResp := parseServiceHTTP(req, registry)
 	if errResp != nil {
 		return *errResp, nil
+	}
+	if journaldUnit != "" {
+		body, err := journald.OpenSSE(ctx, journaldUnit, params.Path)
+		if err != nil {
+			return errorResponse(req.ID, "internal", err.Error(), nil), nil
+		}
+		return successResponse(req.ID, map[string]any{
+			"upgraded":     true,
+			"status":       200,
+			"content_type": "text/event-stream",
+			"name":         journaldUnit,
+			"kind":         "journald",
+		}), &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       body,
+		}
 	}
 	httpReq, err := buildServiceRequest(ctx, service.URL, params)
 	if err != nil {

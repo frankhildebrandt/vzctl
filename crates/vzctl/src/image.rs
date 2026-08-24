@@ -1648,6 +1648,44 @@ pub fn resolve_alias_tag(
     Ok(None)
 }
 
+/// Recorded guest-toolkit version for a tagged artifact, when present.
+pub fn tagged_agent_version(
+    images_dir: &Path,
+    alias: &str,
+    tag: &str,
+) -> Result<Option<String>, String> {
+    if !valid_image_tag(tag) {
+        return Err(format!("invalid image tag {tag}"));
+    }
+    let Some(manifest) = read_alias_manifest(images_dir, alias)? else {
+        return Ok(None);
+    };
+    let Some(entry) = manifest.pointer(&format!("/tags/{tag}")) else {
+        return Ok(None);
+    };
+    Ok(entry
+        .pointer("/baked_image/agent_version")
+        .and_then(Value::as_str)
+        .or_else(|| entry.pointer("/sealed_image/agent_version").and_then(Value::as_str))
+        .map(str::to_string))
+}
+
+/// True when `alias`/`tag` is sealed and matches the current guest-toolkit version.
+pub fn tagged_seal_current(
+    images_dir: &Path,
+    alias: &str,
+    tag: &str,
+    agent_version: &str,
+) -> Result<bool, String> {
+    if !tagged_seal_ready(images_dir, alias, tag)? {
+        return Ok(false);
+    }
+    let Some(recorded) = tagged_agent_version(images_dir, alias, tag)? else {
+        return Ok(false);
+    };
+    Ok(recorded == agent_version)
+}
+
 /// True when `alias`/`tag` already has a sealed raw + seal marker (apply skip path).
 pub fn tagged_seal_ready(images_dir: &Path, alias: &str, tag: &str) -> Result<bool, String> {
     if !valid_image_tag(tag) {
@@ -1704,6 +1742,7 @@ pub fn prepare_alias_for_seal(
     images_dir: &Path,
     alias: &str,
     tag: &str,
+    force: bool,
 ) -> Result<Option<PathBuf>, String> {
     if !valid_image_tag(tag) {
         return Err(format!("invalid image tag {tag}"));
@@ -1712,7 +1751,7 @@ pub fn prepare_alias_for_seal(
         return Ok(None);
     };
     if let Some(entry) = manifest.pointer(&format!("/tags/{tag}")) {
-        if entry.get("sealed") == Some(&Value::Bool(true)) {
+        if entry.get("sealed") == Some(&Value::Bool(true)) && !force {
             return resolve_alias_tag(images_dir, alias, tag);
         }
     }
@@ -1781,6 +1820,8 @@ pub fn prepare_alias_for_bake(
     images_dir: &Path,
     alias: &str,
     tag: &str,
+    agent_version: &str,
+    force: bool,
 ) -> Result<(PathBuf, Value, PathBuf), String> {
     if !is_safe_alias(alias) {
         return Err(format!("invalid image alias {alias}"));
@@ -1795,9 +1836,15 @@ pub fn prepare_alias_for_bake(
     };
     if let Some(entry) = manifest.pointer(&format!("/tags/{tag}")) {
         if entry.get("sealed") == Some(&Value::Bool(true)) {
-            return Err(format!(
-                "alias {alias} tag {tag} is already sealed; choose another tag, or pull a fresh image"
-            ));
+            let recorded = entry
+                .pointer("/baked_image/agent_version")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !force && recorded == agent_version {
+                return Err(format!(
+                    "alias {alias} tag {tag} is already sealed with guest toolkit {recorded}; rebake with --force or bump guest-agent/VERSION"
+                ));
+            }
         }
     }
     let canonical = manifest["canonical_alias"]
@@ -1893,6 +1940,22 @@ pub fn mark_aliases_baked(
         if !manifest.get("tags").map(Value::is_object).unwrap_or(false) {
             manifest["tags"] = json!({});
         }
+        if let Some(previous) = manifest.pointer(&format!("/tags/{tag}")) {
+            if previous.get("sealed") == Some(&Value::Bool(true)) {
+                if let Some(marker) = previous
+                    .pointer("/sealed_image/marker")
+                    .and_then(Value::as_str)
+                {
+                    let marker_path = PathBuf::from(marker);
+                    let resolved = if marker_path.is_absolute() {
+                        marker_path
+                    } else {
+                        images_dir.join(marker_path)
+                    };
+                    let _ = fs::remove_file(resolved);
+                }
+            }
+        }
         manifest["tags"][tag] = json!({
             "baked": true,
             "baked_image": {
@@ -1905,6 +1968,18 @@ pub fn mark_aliases_baked(
         // Convenience mirrors for tools that still read flat fields.
         manifest["baked"] = Value::Bool(true);
         manifest["baked_image"] = manifest["tags"][tag]["baked_image"].clone();
+        let any_sealed = manifest["tags"]
+            .as_object()
+            .map(|tags| {
+                tags.values().any(|entry| entry.get("sealed") == Some(&Value::Bool(true)))
+            })
+            .unwrap_or(false);
+        manifest["sealed"] = Value::Bool(any_sealed);
+        if !any_sealed {
+            if let Some(object) = manifest.as_object_mut() {
+                object.remove("sealed_image");
+            }
+        }
         write_json_atomic(&manifest_path, &manifest).map_err(|error| error.message)?;
     }
     Ok(())
@@ -1931,7 +2006,13 @@ pub fn already_baked(
         return Ok(None);
     }
     if entry.get("sealed") == Some(&Value::Bool(true)) {
-        // Sealed tag is already past bake; treat as unchanged bake for apply.
+        let recorded = entry
+            .pointer("/baked_image/agent_version")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if recorded != agent_version {
+            return Ok(None);
+        }
         let path = images_dir.join(
             safe_relative_image_path(entry, &["sealed_image", "path"], "sealed")
                 .map_err(|error| error.message)?,
@@ -2453,7 +2534,7 @@ mod tests {
             .unwrap();
         }
 
-        let sealed = prepare_alias_for_seal(&directory, "test-short", "v1")
+        let sealed = prepare_alias_for_seal(&directory, "test-short", "v1", false)
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(&sealed).unwrap(), b"pristine");
@@ -2564,6 +2645,63 @@ mod tests {
         assert!(already_baked(&directory, "test-latest", "v2", "9.9.9")
             .unwrap()
             .is_none());
+        assert!(tagged_seal_current(&directory, "test-latest", "v1", "9.9.9").unwrap());
+        assert!(!tagged_seal_current(&directory, "test-latest", "v1", "0.0.1").unwrap());
+        assert!(already_baked(&directory, "test-latest", "v1", "0.0.1")
+            .unwrap()
+            .is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn prepare_alias_for_bake_allows_stale_sealed_toolkit() {
+        let directory = temporary_directory("rebake-stale");
+        fs::create_dir_all(directory.join("objects")).unwrap();
+        fs::create_dir_all(directory.join("aliases")).unwrap();
+        fs::create_dir_all(directory.join("sealed")).unwrap();
+        let object_digest = hash_file_from_bytes(b"object");
+        let relative_object = format!("objects/{object_digest}.raw");
+        fs::write(directory.join(&relative_object), b"object").unwrap();
+        let marker = directory.join("test-v1.sealed.json");
+        fs::write(&marker, b"{}").unwrap();
+        write_json_atomic(
+            &directory.join("aliases/test-latest.json"),
+            &json!({
+                "apiVersion": "vzctl.dev/image-alias/v1",
+                "canonical_alias": "test-latest",
+                "aliases": ["test-latest"],
+                "distribution": "Test",
+                "release": "1",
+                "architecture": "arm64",
+                "tags": {
+                    "v1": {
+                        "baked": true,
+                        "sealed": true,
+                        "baked_image": {
+                            "path": "baked/test-latest@v1.raw",
+                            "format": "raw",
+                            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "agent_version": "0.1.0",
+                        },
+                        "sealed_image": {
+                            "path": "sealed/test-latest@v1.raw",
+                            "format": "raw",
+                            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                            "marker": marker,
+                        }
+                    }
+                },
+                "image": {
+                    "path": relative_object,
+                    "format": "raw",
+                    "sha256": object_digest,
+                },
+            }),
+        )
+        .unwrap();
+        assert!(prepare_alias_for_bake(&directory, "test-latest", "v1", "0.1.7", false).is_ok());
+        assert!(prepare_alias_for_bake(&directory, "test-latest", "v1", "0.1.0", false).is_err());
+        assert!(prepare_alias_for_bake(&directory, "test-latest", "v1", "0.1.0", true).is_ok());
         fs::remove_dir_all(directory).unwrap();
     }
 

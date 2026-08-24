@@ -18,11 +18,12 @@ unprivilegierte `vz-edge`-LaunchAgent nutzt den Root-LaunchDaemon
   `mDNSResponder` mit seinem Wildcard-Listener nicht den Host-Horizont liefern.
 - **TCP** (`:80`/`:443`): Helper legt bei Bedarf Host-Service-Alias `.1` auf dem
   Bridge an, bindet+listens und streamt akzeptierte Client-FDs über dieselbe
-  UDS-Verbindung. Ingress-`*.svc` ist Split-Horizon:
+  UDS-Verbindung.   Ingress-`*.svc` ist Split-Horizon:
   Host-Listener (`127.0.0.1:15353`) → `127.0.0.1` (Mac kann Bridge-`.1` nicht
-  dialen: `EHOSTDOWN`); Guest-Listener (`.0:53`) → Host-Service-`.1` (vmnet
-  verwirft Guest-TCP zu `.0`; der PF-Redirect verhindert, dass mDNSResponder
-  stattdessen die Host-Loopback-Antwort liefert).
+  dialen: `EHOSTDOWN`); Guest-Listener (`.0:53`) → Host-Service-`.1` für Routen,
+  die über Caddy auf `httpPort`/`httpsPort` am Bridge-Alias erreichbar sind.
+  Ingress-Routen mit anderen Backend-Ports (z. B. `router:18080`) liefern in
+  Gästen stattdessen die Attachment-IP der Ziel-VM je Netzwerk.
 
 `vz-edge` ordnet jedem Guest-Listener fest sein vmnet und Projekt zu. Eine
 Ingress-Query an `10.90.0.0:53` liefert deshalb ausschließlich `10.90.0.1`;
