@@ -559,18 +559,25 @@ fn ensure_dns(
         let path = config::config_path(config_path)
             .to_string_lossy()
             .into_owned();
-        run_self_privileged(
-            &[
-                "dns",
-                "install-resolver",
-                "--config",
-                &path,
-                "--format",
-                "json",
-            ],
-            progress,
-        )
-        .map(|_| ())?;
+        let mut args: Vec<String> = [
+            "dns",
+            "install-resolver",
+            "--config",
+            &path,
+            "--format",
+            "json",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        // Runtime CIDRs (incl. the default network) scope the reverse resolver
+        // files; the elevated child cannot query the user's supervisor itself.
+        for cidr in runtime_project_cidrs(socket_path, &environment.spec.project) {
+            args.push("--cidr".into());
+            args.push(cidr);
+        }
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_self_privileged(&arg_refs, progress).map(|_| ())?;
     } else {
         run_self_privileged(
             &[
@@ -598,6 +605,29 @@ fn ensure_dns(
         }),
     )
     .map(|_| ())
+}
+
+/// Active network CIDRs owned by `project` plus unowned (default) networks.
+/// Best effort: resolver install still proceeds when the supervisor is down.
+fn runtime_project_cidrs(socket_path: &Path, project: &str) -> Vec<String> {
+    let Ok(snapshot) = rpc(socket_path, "net.list", json!({})) else {
+        return Vec::new();
+    };
+    let mut cidrs: Vec<String> = snapshot["networks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|network| network["runtime_state"].as_str() == Some("active"))
+        .filter(|network| match network["project"].as_str() {
+            Some(owner) => owner == project,
+            None => true,
+        })
+        .filter_map(|network| network["cidr"].as_str())
+        .map(str::to_string)
+        .collect();
+    cidrs.sort();
+    cidrs.dedup();
+    cidrs
 }
 
 fn ensure_images(
@@ -2066,7 +2096,18 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../daemon/Vendor/caddy/caddy")
     };
-    rpc(
+    let host_entries: Vec<Value> = rendered
+        .hosts
+        .iter()
+        .map(|host| {
+            if let Some(networks) = rendered.guest_dns.get(host) {
+                json!({ "host": host, "guest": networks })
+            } else {
+                json!({ "host": host })
+            }
+        })
+        .collect();
+    rpc_retrying(
         socket_path,
         "ingress.ensure",
         json!({
@@ -2079,23 +2120,8 @@ fn ensure_ingress(environment: &Environment, socket_path: &Path) -> Result<(), F
             "backend_https_port": rendered.caddy_https_port,
             "gateways": rendered.gateways,
             "gateway_bindings": rendered.gateway_bindings,
+            "hosts": host_entries,
         }),
-    )?;
-    let host_entries: Vec<Value> = rendered
-        .hosts
-        .iter()
-        .map(|host| {
-            if let Some(networks) = rendered.guest_dns.get(host) {
-                json!({ "host": host, "guest": networks })
-            } else {
-                json!({ "host": host })
-            }
-        })
-        .collect();
-    rpc(
-        socket_path,
-        "dns.host_services.ensure",
-        json!({ "project": environment.spec.project, "hosts": host_entries }),
     )?;
     Ok(())
 }
@@ -2677,6 +2703,42 @@ fn checkpoint(
     .map(|_| ())
 }
 
+/// Retry supervisor RPCs while transient edge-reconcile failures occur.
+fn rpc_retrying(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        match rpc(socket_path, method, params.clone()) {
+            Ok(value) => return Ok(value),
+            Err(failure) if rpc_transient_failure(&failure.message) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
+}
+
+fn rpc_transient_failure(message: &str) -> bool {
+    message.contains("os error 35")
+        || message.contains("WouldBlock")
+        || message.contains("Timed out")
+        || message.contains("timeout")
+        || message.contains("Connection reset")
+        || message.contains("Connection refused")
+        || message.contains("vz-edge")
+        || message.contains("dns-bind")
+        || message.contains("did not respond")
+        || message.contains("Resource temporarily unavailable")
+}
+
+fn edge_reconcile_rpc_timeout_secs(method: &str) -> Option<u64> {
+    match method {
+        "ingress.ensure" | "ingress.purge" | "oidc.ensure" | "oidc.purge"
+        | "dns.host_services.ensure" | "dns.records.ensure" | "dns.records.purge"
+        | "port.ensure" | "port.purge" => Some(90),
+        _ => None,
+    }
+}
+
 fn rpc(socket_path: &Path, method: &str, params: Value) -> Result<Value, Failure> {
     let mut stream = UnixStream::connect(socket_path).map_err(|error| {
         Failure::new(
@@ -2724,6 +2786,8 @@ fn rpc_timeout_secs(method: &str, params: &Value) -> u64 {
             .and_then(Value::as_u64)
             .map(|ms| (ms / 1000).saturating_add(10).max(15))
             .unwrap_or(40)
+    } else if let Some(timeout) = edge_reconcile_rpc_timeout_secs(method) {
+        timeout
     } else {
         10
     }
@@ -3285,6 +3349,23 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_reconcile_rpc_uses_extended_timeout() {
+        assert_eq!(edge_reconcile_rpc_timeout_secs("ingress.ensure"), Some(90));
+        assert_eq!(rpc_timeout_secs("ingress.ensure", &json!({})), 90);
+        assert_eq!(rpc_timeout_secs("vm.list", &json!({})), 10);
+    }
+
+    #[test]
+    fn rpc_transient_failure_matches_ingress_timeout_and_edge_errors() {
+        assert!(rpc_transient_failure(
+            "ingress.ensure: Resource temporarily unavailable (os error 35)"
+        ));
+        assert!(rpc_transient_failure("vz-edge did not respond"));
+        assert!(rpc_transient_failure("dns-bind connect: Connection refused"));
+        assert!(!rpc_transient_failure("invalid Caddyfile"));
+    }
 
     #[test]
     fn ca_is_ensured_before_vm_creation() {

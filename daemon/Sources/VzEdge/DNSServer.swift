@@ -20,11 +20,17 @@ struct DNSZone: Equatable, Sendable {
     let ingressGuestAddresses: [String: [String: String]]
     /// Project ownership for host-managed ingress/OIDC names.
     let ingressProjects: [String: String]
+    /// Octet-aligned reverse zones covering the hypernetwork CIDRs (guest
+    /// horizon). PTR queries outside these zones are forwarded upstream.
+    let reverseZones: Set<String>
     let zones: Set<String>
     let ttl: UInt32
 
     func addresses(for name: String, horizon: DNSHorizon) -> [String]? {
         let canonical = DNSZoneBuilder.canonicalName(name)
+        if let ip = DNSZoneBuilder.ipv4Literal(canonical) {
+            return [ip]
+        }
         switch horizon {
         case .host:
             if let host = hostRecords[canonical] {
@@ -56,10 +62,49 @@ struct DNSZone: Equatable, Sendable {
 
     func isAuthoritative(for name: String, horizon: DNSHorizon) -> Bool {
         let canonical = DNSZoneBuilder.canonicalName(name)
-        return addresses(for: canonical, horizon: horizon) != nil
+        if addresses(for: canonical, horizon: horizon) != nil
             || ptrRecords[canonical] != nil
             || canonical == "vz.test"
             || canonical.hasSuffix(".vz.test")
+        {
+            return true
+        }
+        guard DNSZoneBuilder.isIPv4Reverse(canonical) else { return false }
+        switch horizon {
+        case .host:
+            // Loop guard: a stale `/etc/resolver/in-addr.arpa` may still route
+            // the whole reverse tree here; forwarding via the system resolver
+            // would recurse back into vz-edge (SERVFAIL loop).
+            return true
+        case .guest:
+            return matchingReverseZone(for: canonical) != nil
+        }
+    }
+
+    /// Longest reverse zone covering `name`, or nil when outside the
+    /// hypernetwork reverse zones. Zones are octet-aligned
+    /// (`a` / `b.a` / `c.b.a` + `.in-addr.arpa`, i.e. 3–5 labels).
+    func matchingReverseZone(for name: String) -> String? {
+        let labels = DNSZoneBuilder.canonicalName(name).split(separator: ".")
+        guard labels.count >= 3 else { return nil }
+        for take in stride(from: min(5, labels.count), through: 3, by: -1) {
+            let candidate = labels.suffix(take).joined(separator: ".")
+            if reverseZones.contains(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// SOA owner for negative answers (enables negative caching, RFC 2308).
+    func authorityZone(for name: String) -> String {
+        let canonical = DNSZoneBuilder.canonicalName(name)
+        if DNSZoneBuilder.isIPv4Reverse(canonical) {
+            return matchingReverseZone(for: canonical) ?? "in-addr.arpa"
+        }
+        var best: String?
+        for zone in zones where canonical == zone || canonical.hasSuffix(".\(zone)") {
+            if zone.count > (best?.count ?? -1) { best = zone }
+        }
+        return best ?? "vz.test"
     }
 
     private func wildcardAddresses(for name: String) -> [String]? {
@@ -177,6 +222,11 @@ enum DNSZoneBuilder {
             )
         }
 
+        var reverseZones: Set<String> = []
+        for network in snapshot.networks where network.runtimeState == "active" {
+            reverseZones.formUnion(self.reverseZones(forCIDR: network.cidr))
+        }
+
         var hostRecords: [String: [String]] = [:]
         var ingressProjects: [String: String] = [:]
         for raw in hostServices {
@@ -219,9 +269,32 @@ enum DNSZoneBuilder {
             hostRecords: hostRecords,
             ingressGuestAddresses: ingressGuestAddresses,
             ingressProjects: ingressProjects,
+            reverseZones: reverseZones,
             zones: zones.filter { !$0.isEmpty },
             ttl: min(30, max(5, ttl))
         )
+    }
+
+    /// Octet-aligned IPv4 reverse zones covering `cidr`, e.g. `10.0.80.0/24` →
+    /// `80.0.10.in-addr.arpa`. Prefixes between octet boundaries expand into
+    /// multiple zones (a /23 claims two /24 zones); prefixes longer than /24
+    /// claim the enclosing /24 zone.
+    static func reverseZones(forCIDR cidr: String) -> [String] {
+        guard let parsed = try? IPv4CIDR(cidr) else { return [] }
+        let octets = min(3, (parsed.prefixLength + 7) / 8)
+        let zoneBits = octets * 8
+        let count = parsed.prefixLength >= zoneBits
+            ? 1
+            : 1 << (zoneBits - parsed.prefixLength)
+        let stride = UInt32(1) << UInt32(32 - zoneBits)
+        return (0 ..< count).map { index in
+            let base = parsed.network &+ UInt32(index) &* stride
+            let name = (0 ..< octets)
+                .map { String((base >> UInt32(24 - 8 * $0)) & 0xFF) }
+                .reversed()
+                .joined(separator: ".")
+            return "\(name).in-addr.arpa"
+        }
     }
 
     static func canonicalName(_ name: String) -> String {
@@ -255,6 +328,23 @@ enum DNSZoneBuilder {
     static func reverseName(for ip: String) -> String? {
         guard let bytes = ipv4Bytes(ip) else { return nil }
         return bytes.reversed().map(String.init).joined(separator: ".") + ".in-addr.arpa"
+    }
+
+    /// Dotted-quad IPv4 used as a DNS name (`192.168.171.199`), not a hostname.
+    static func ipv4Literal(_ name: String) -> String? {
+        let canonical = canonicalName(name)
+        let labels = canonical.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 4, ipv4Bytes(canonical) != nil else { return nil }
+        return canonical
+    }
+
+    /// IPv4 reverse tree. The host horizon answers the whole tree locally as a
+    /// loop guard (a stale `/etc/resolver/in-addr.arpa` would bounce unknown
+    /// PTRs back into vz-edge); the guest horizon only claims the hypernetwork
+    /// reverse zones and forwards everything else upstream.
+    static func isIPv4Reverse(_ name: String) -> Bool {
+        let canonical = canonicalName(name)
+        return canonical == "in-addr.arpa" || canonical.hasSuffix(".in-addr.arpa")
     }
 
     private static func zoneName(from host: String) -> String {
@@ -385,6 +475,9 @@ final class DNSServer: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "dev.vzctl.dns")
     private let resolveQueue = DispatchQueue(label: "dev.vzctl.dns.resolve", attributes: .concurrent)
+    /// Caps concurrent blocking upstream resolves so a query burst cannot
+    /// exhaust the GCD thread pool and starve authoritative answers.
+    private let resolveSlots = DispatchSemaphore(value: 32)
     private var zone: DNSZone
     private var listeners: [String: DNSListener] = [:]
     private var desiredListeners: Set<String> = []
@@ -411,6 +504,7 @@ final class DNSServer: @unchecked Sendable {
             hostRecords: [:],
             ingressGuestAddresses: [:],
             ingressProjects: [:],
+            reverseZones: [],
             zones: [],
             ttl: min(30, max(5, configuration.ttl))
         )
@@ -468,41 +562,35 @@ final class DNSServer: @unchecked Sendable {
         desired[endpoint(configuration.hostAddress, configuration.hostPort)] = .host
         let desiredKeys = Set(desired.keys)
 
-        let plan = lock.withLock { () -> (retired: [DNSListener], toRebind: [String: DNSHorizon]) in
-            guard !stopped else { return ([], [:]) }
+        // Retired descriptors are closed by their cancel handlers once the last
+        // event handler finished; closing them inline could hand a reused FD
+        // number to an in-flight handler with the wrong horizon.
+        let toRebind = lock.withLock { () -> [String: DNSHorizon] in
+            guard !stopped else { return [:] }
             zone = nextZone
             desiredListeners = desiredKeys
             guestContexts = contexts.sorted { $0.network < $1.network }
             lastError = nil
 
-            var retired: [DNSListener] = []
             for key in listeners.keys where !desiredKeys.contains(key) {
-                guard let listener = listeners.removeValue(forKey: key) else { continue }
-                listener.source.cancel()
-                retired.append(listener)
+                listeners.removeValue(forKey: key)?.source.cancel()
             }
             var toRebind: [String: DNSHorizon] = [:]
             for (key, horizon) in desired {
                 if let existing = listeners[key], existing.horizon == horizon {
                     continue
                 }
-                if let existing = listeners.removeValue(forKey: key) {
-                    existing.source.cancel()
-                    retired.append(existing)
-                }
+                listeners.removeValue(forKey: key)?.source.cancel()
                 toRebind[key] = horizon
             }
-            return (retired, toRebind)
-        }
-        for listener in plan.retired {
-            Darwin.close(listener.descriptor)
+            return toRebind
         }
 
         // Bind outside the zone lock: dns-bind RPC must not block in-flight UDP handlers.
         var created: [String: DNSListener] = [:]
         var bindErrors: [String] = []
-        for key in plan.toRebind.keys.sorted() {
-            guard let horizon = plan.toRebind[key] else { continue }
+        for key in toRebind.keys.sorted() {
+            guard let horizon = toRebind[key] else { continue }
             do {
                 created[key] = try makeListener(endpoint: key, horizon: horizon)
             } catch {
@@ -513,7 +601,6 @@ final class DNSServer: @unchecked Sendable {
             guard !stopped else {
                 for listener in created.values {
                     listener.source.cancel()
-                    Darwin.close(listener.descriptor)
                 }
                 return
             }
@@ -580,8 +667,8 @@ final class DNSServer: @unchecked Sendable {
             return values
         }
         for listener in current {
+            // Cancel handler owns the close (see adoptListener).
             listener.source.cancel()
-            Darwin.close(listener.descriptor)
         }
     }
 
@@ -608,7 +695,9 @@ final class DNSServer: @unchecked Sendable {
         }
         defer { Darwin.close(descriptor) }
 
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        // Short probe timeout: health() runs synchronously in RPC handlers and
+        // must not stall callers for seconds when the listener is dead.
+        var timeout = timeval(tv_sec: 0, tv_usec: 500_000)
         setsockopt(
             descriptor,
             SOL_SOCKET,
@@ -665,7 +754,12 @@ final class DNSServer: @unchecked Sendable {
                 address: parsed.address,
                 port: bindPort
             )
-            return try adoptListener(horizon: horizon, descriptor: descriptor)
+            do {
+                return try adoptListener(horizon: horizon, descriptor: descriptor)
+            } catch {
+                Darwin.close(descriptor)
+                throw error
+            }
         }
         return try bindListenerLocally(
             endpoint: endpoint(parsed.address, bindPort),
@@ -724,6 +818,12 @@ final class DNSServer: @unchecked Sendable {
         source.setEventHandler { [weak self, horizon, descriptor] in
             self?.receive(on: descriptor, horizon: horizon)
         }
+        // The cancel handler owns the close: cancel() is asynchronous, so an
+        // inline close could recycle the FD number into a fresh listener while
+        // the old event handler still reads from it.
+        source.setCancelHandler {
+            Darwin.close(descriptor)
+        }
         source.resume()
         return DNSListener(descriptor: descriptor, source: source, horizon: horizon)
     }
@@ -746,12 +846,38 @@ final class DNSServer: @unchecked Sendable {
             let request = Data(buffer.prefix(Int(count)))
             let peerCopy = DNSPeer(storage: peer, length: peerLength)
             if requiresUpstream(request, horizon: horizon) {
-                resolveQueue.async { [weak self] in
-                    self?.reply(to: peerCopy, on: descriptor, request: request, horizon: horizon)
-                }
+                resolveUpstream(to: peerCopy, on: descriptor, request: request, horizon: horizon)
             } else {
                 reply(to: peerCopy, on: descriptor, request: request, horizon: horizon)
             }
+        }
+    }
+
+    /// Answer via the (blocking) upstream path off the listener queue. The
+    /// listener FD may be retired and its number reused while the resolve
+    /// blocks, so the async reply goes out on a private dup of the socket.
+    private func resolveUpstream(
+        to peer: DNSPeer,
+        on descriptor: Int32,
+        request: Data,
+        horizon: DNSHorizon
+    ) {
+        guard resolveSlots.wait(timeout: .now()) == .success else {
+            send(errorResponse(request, responseCode: 2), to: peer, on: descriptor)
+            return
+        }
+        let duplicated = Darwin.dup(descriptor)
+        guard duplicated >= 0 else {
+            resolveSlots.signal()
+            send(errorResponse(request, responseCode: 2), to: peer, on: descriptor)
+            return
+        }
+        resolveQueue.async { [self] in
+            defer {
+                Darwin.close(duplicated)
+                resolveSlots.signal()
+            }
+            reply(to: peer, on: duplicated, request: request, horizon: horizon)
         }
     }
 
@@ -763,15 +889,20 @@ final class DNSServer: @unchecked Sendable {
     ) {
         let responseData = makeResponse(for: request, horizon: horizon)
         guard !responseData.isEmpty else { return }
+        send(responseData, to: peer, on: descriptor)
+    }
+
+    private func send(_ data: Data, to peer: DNSPeer, on descriptor: Int32) {
+        guard !data.isEmpty else { return }
         var peerStorage = peer.storage
-        var peerLength = peer.length
-        _ = responseData.withUnsafeBytes { bytes in
+        let peerLength = peer.length
+        _ = data.withUnsafeBytes { bytes in
             withUnsafePointer(to: &peerStorage) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     Darwin.sendto(
                         descriptor,
                         bytes.baseAddress,
-                        responseData.count,
+                        data.count,
                         0,
                         $0,
                         peerLength
@@ -834,7 +965,8 @@ final class DNSServer: @unchecked Sendable {
                 question: question,
                 addresses: [],
                 ttl: snapshot.ttl,
-                responseCode: exists ? 0 : 3
+                responseCode: exists ? 0 : 3,
+                authorityZone: snapshot.authorityZone(for: question.name)
             )
         }
         if configuration.upstream == "system" {
@@ -864,25 +996,27 @@ final class DNSServer: @unchecked Sendable {
             address.sin_family = sa_family_t(AF_INET)
             address.sin_port = parsed.port.bigEndian
             guard inet_pton(AF_INET, parsed.address, &address.sin_addr) == 1 else { continue }
-            let sent = request.withUnsafeBytes { bytes in
-                withUnsafePointer(to: &address) {
-                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        Darwin.sendto(
-                            descriptor,
-                            bytes.baseAddress,
-                            request.count,
-                            0,
-                            $0,
-                            socklen_t(MemoryLayout<sockaddr_in>.size)
-                        )
-                    }
+            // connect() lets the kernel drop datagrams from foreign peers.
+            let connected = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
+            guard connected == 0 else { continue }
+            let sent = request.withUnsafeBytes { bytes in
+                Darwin.send(descriptor, bytes.baseAddress, request.count, 0)
+            }
             guard sent == request.count else { continue }
+            let requestID = readUInt16(request, 0)
             var response = [UInt8](repeating: 0, count: 65_535)
-            let count = Darwin.recv(descriptor, &response, response.count, 0)
-            if count > 0 {
-                return Data(response.prefix(Int(count)))
+            while true {
+                let count = Darwin.recv(descriptor, &response, response.count, 0)
+                guard count >= dnsHeaderLength else { break }
+                let data = Data(response.prefix(Int(count)))
+                // Ignore replies whose transaction ID does not match the query.
+                if readUInt16(data, 0) == requestID {
+                    return data
+                }
             }
         }
         return nil
@@ -1003,15 +1137,17 @@ private func authoritativeResponse(
     question: DNSQuestion,
     addresses: [String],
     ttl: UInt32,
-    responseCode: UInt16 = 0
+    responseCode: UInt16 = 0,
+    authorityZone: String? = nil
 ) -> Data {
+    let soa = authorityZone.flatMap { soaRecord(zone: $0, ttl: ttl) }
     var response = Data()
     appendUInt16(readUInt16(request, 0) ?? 0, to: &response)
     let requestFlags = readUInt16(request, 2) ?? 0
     appendUInt16(0x8480 | (requestFlags & 0x0100) | responseCode, to: &response)
     appendUInt16(1, to: &response)
     appendUInt16(UInt16(addresses.count), to: &response)
-    appendUInt16(0, to: &response)
+    appendUInt16(soa == nil ? 0 : 1, to: &response)
     appendUInt16(0, to: &response)
     response.append(request[dnsHeaderLength..<question.endOffset])
 
@@ -1024,7 +1160,38 @@ private func authoritativeResponse(
         appendUInt16(4, to: &response)
         response.append(contentsOf: bytes)
     }
+    if let soa {
+        response.append(soa)
+    }
     return response
+}
+
+/// Synthetic SOA for negative answers so clients can cache NXDOMAIN/NODATA
+/// (RFC 2308). MNAME/RNAME are informational; minimum doubles as negative TTL.
+private func soaRecord(zone: String, ttl: UInt32) -> Data? {
+    guard let owner = encodeDNSName(zone),
+          let primary = encodeDNSName("dns.vz.test"),
+          let contact = encodeDNSName("hostmaster.vz.test")
+    else {
+        return nil
+    }
+    var rdata = Data()
+    rdata.append(primary)
+    rdata.append(contact)
+    appendUInt32(1, to: &rdata)
+    appendUInt32(ttl, to: &rdata)
+    appendUInt32(ttl, to: &rdata)
+    appendUInt32(86_400, to: &rdata)
+    appendUInt32(ttl, to: &rdata)
+
+    var record = Data()
+    record.append(owner)
+    appendUInt16(6, to: &record)
+    appendUInt16(1, to: &record)
+    appendUInt32(ttl, to: &record)
+    appendUInt16(UInt16(rdata.count), to: &record)
+    record.append(rdata)
+    return record
 }
 
 private func authoritativePTRResponse(

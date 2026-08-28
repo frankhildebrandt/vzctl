@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use serde_yaml::Value as YamlValue;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
@@ -24,7 +25,10 @@ pub(crate) const BIND_HELPER_PLIST: &str = "/Library/LaunchDaemons/com.vzctl.dns
 pub(crate) const BIND_HELPER_SOCKET_DEFAULT: &str = "/var/run/vzctl/dns-bind.sock";
 
 const MANAGED_MARKER: &str = "# managed-by: vzctl";
-const REVERSE_RESOLVER_DOMAIN: &str = "in-addr.arpa";
+/// Legacy catch-all reverse file. Replaced by per-CIDR reverse zone files so
+/// macOS forwards external PTR queries to the regular upstream; still removed
+/// on install (migration) and last-project uninstall.
+const LEGACY_REVERSE_RESOLVER_DOMAIN: &str = "in-addr.arpa";
 const REVERSE_SCOPE_MARKER: &str = "# scope: ipv4-reverse";
 const DEFAULT_DNS_SERVER: &str = "127.0.0.1:15353";
 const DNS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -103,6 +107,8 @@ struct Options {
     query_type: QueryType,
     server: String,
     allow_uid: Option<u32>,
+    /// Runtime network CIDRs for reverse resolver scopes (install only).
+    cidrs: Vec<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -205,7 +211,8 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
         }
     };
     let result = match options.action {
-        Action::Install => install(&resolver_dir, &scope, port),
+        Action::Install => resolve_reverse_zones(&options)
+            .and_then(|zones| install(&resolver_dir, &scope, port, &zones)),
         Action::Uninstall => uninstall(&resolver_dir, &scope),
         Action::InstallBindHelper
         | Action::UninstallBindHelper
@@ -242,6 +249,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     let mut query_type = QueryType::A;
     let mut server = DEFAULT_DNS_SERVER.to_string();
     let mut allow_uid = None;
+    let mut cidrs = Vec::new();
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--project" => {
@@ -282,6 +290,15 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                         ))
                     }
                 };
+            }
+            "--cidr" => {
+                if action != Action::Install {
+                    return Err(Failure::new(
+                        EXIT_USAGE,
+                        "--cidr is only valid for dns install-resolver",
+                    ));
+                }
+                cidrs.push(next_value(&mut args, "--cidr requires an IPv4 CIDR")?);
             }
             "--allow-uid" => {
                 if action != Action::InstallBindHelper {
@@ -360,6 +377,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
         query_type,
         server,
         allow_uid,
+        cidrs,
     })
 }
 
@@ -446,6 +464,104 @@ fn project_from_config(path: &Path) -> Result<String, Failure> {
                 format!("config {} has no spec.project", path.display()),
             )
         })
+}
+
+/// Reverse resolver zones from explicit `--cidr` flags plus the config's
+/// `spec.networks.*.cidr`. Empty when neither source provides CIDRs
+/// (`--project`-only installs keep any existing reverse scopes untouched).
+fn resolve_reverse_zones(options: &Options) -> Result<BTreeSet<String>, Failure> {
+    let mut zones = BTreeSet::new();
+    for cidr in &options.cidrs {
+        zones.extend(reverse_zones_for_cidr(cidr)?);
+    }
+    let config = crate::config::config_path(&options.config);
+    if config.is_file() {
+        for cidr in cidrs_from_config(&config)? {
+            zones.extend(reverse_zones_for_cidr(&cidr)?);
+        }
+    }
+    Ok(zones)
+}
+
+fn cidrs_from_config(path: &Path) -> Result<Vec<String>, Failure> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        Failure::new(
+            EXIT_INVALID,
+            format!("cannot read config {}: {error}", path.display()),
+        )
+    })?;
+    let document: YamlValue = serde_yaml::from_str(&text).map_err(|error| {
+        Failure::new(
+            EXIT_INVALID,
+            format!("cannot parse config {}: {error}", path.display()),
+        )
+    })?;
+    let networks = document
+        .get("spec")
+        .and_then(|spec| spec.get("networks"))
+        .and_then(YamlValue::as_mapping);
+    Ok(networks
+        .map(|networks| {
+            networks
+                .values()
+                .filter_map(|network| network.get("cidr"))
+                .filter_map(YamlValue::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Octet-aligned IPv4 reverse zones covering `cidr`, e.g. `10.0.80.0/24` →
+/// `80.0.10.in-addr.arpa`. Mirrors `DNSZoneBuilder.reverseZones` in vz-edge:
+/// prefixes between octet boundaries expand into multiple zones, prefixes
+/// longer than /24 claim the enclosing /24 zone.
+fn reverse_zones_for_cidr(cidr: &str) -> Result<Vec<String>, Failure> {
+    let invalid = || {
+        Failure::new(
+            EXIT_INVALID,
+            format!("invalid IPv4 CIDR {cidr}; prefix must be /8 through /30"),
+        )
+    };
+    let (address, prefix) = cidr.split_once('/').ok_or_else(invalid)?;
+    let prefix: u32 = prefix.parse().map_err(|_| invalid())?;
+    if !(8..=30).contains(&prefix) {
+        return Err(invalid());
+    }
+    let octets: Vec<u8> = address
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid())?;
+    let [a, b, c, d]: [u8; 4] = octets.try_into().map_err(|_| invalid())?;
+    let network = u32::from_be_bytes([a, b, c, d]);
+    let mask = u32::MAX << (32 - prefix);
+    if network & mask != network {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            format!("CIDR must use its network address: {cidr}"),
+        ));
+    }
+    let zone_octets = ((prefix + 7) / 8).min(3);
+    let zone_bits = zone_octets * 8;
+    let count = if prefix >= zone_bits {
+        1
+    } else {
+        1u32 << (zone_bits - prefix)
+    };
+    let stride = 1u32 << (32 - zone_bits);
+    Ok((0..count)
+        .map(|index| {
+            let bytes = network.wrapping_add(index * stride).to_be_bytes();
+            let name = bytes[..zone_octets as usize]
+                .iter()
+                .rev()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(".");
+            format!("{name}.{LEGACY_REVERSE_RESOLVER_DOMAIN}")
+        })
+        .collect())
 }
 
 fn validate_project(project: &str) -> Result<(), Failure> {
@@ -1272,7 +1388,12 @@ fn emit_bind_helper_success(format: Format, action: Action, path: &Path, change:
     }
 }
 
-fn install(resolver_dir: &Path, scope: &Scope, port: u16) -> Result<(PathBuf, Change), Failure> {
+fn install(
+    resolver_dir: &Path,
+    scope: &Scope,
+    port: u16,
+    reverse_zones: &BTreeSet<String>,
+) -> Result<(PathBuf, Change), Failure> {
     ensure_resolver_dir(resolver_dir)?;
     let path = resolver_path(resolver_dir, &scope.project);
     let desired = resolver_content(scope, port);
@@ -1288,32 +1409,46 @@ fn install(resolver_dir: &Path, scope: &Scope, port: u16) -> Result<(PathBuf, Ch
         }
     };
 
-    let reverse_path = reverse_resolver_path(resolver_dir);
+    // Publish the reverse scopes first. An extra forwarding scope is safe if
+    // publishing the project scope fails afterwards; the inverse would make
+    // host PTR lookups silently bypass vz-edge.
     let reverse_desired = reverse_resolver_content(port);
-    let reverse_change = match read_existing(&reverse_path)? {
-        None => Change::Installed,
-        Some(existing) => {
-            ensure_reverse_owned(&reverse_path, &existing)?;
-            if existing == reverse_desired {
-                Change::Unchanged
-            } else {
-                Change::Updated
+    let mut reverse_changed = false;
+    for zone in reverse_zones {
+        let zone_path = resolver_dir.join(zone);
+        match read_existing(&zone_path)? {
+            None => {
+                atomic_write(&zone_path, reverse_desired.as_bytes())
+                    .map_err(|error| io_failure("write", &zone_path, error))?;
+                reverse_changed = true;
+            }
+            Some(existing) => {
+                ensure_reverse_owned(&zone_path, &existing)?;
+                if existing != reverse_desired {
+                    atomic_write(&zone_path, reverse_desired.as_bytes())
+                        .map_err(|error| io_failure("write", &zone_path, error))?;
+                    reverse_changed = true;
+                }
             }
         }
-    };
-
-    // Publish the shared reverse scope first. An extra forwarding scope is safe if
-    // publishing the project scope fails afterwards; the inverse would make host
-    // PTR lookups silently bypass vz-edge.
-    if reverse_change != Change::Unchanged {
-        atomic_write(&reverse_path, reverse_desired.as_bytes())
-            .map_err(|error| io_failure("write", &reverse_path, error))?;
     }
+    // Migrate off the legacy catch-all: it would keep routing external PTR
+    // queries into vz-edge (NXDOMAIN) instead of the regular upstream.
+    if !reverse_zones.is_empty() {
+        let legacy_path = resolver_dir.join(LEGACY_REVERSE_RESOLVER_DOMAIN);
+        if let Some(existing) = read_existing(&legacy_path)? {
+            if is_managed_reverse(&existing) {
+                remove_regular_file(&legacy_path)?;
+                reverse_changed = true;
+            }
+        }
+    }
+
     if forward_change != Change::Unchanged {
         atomic_write(&path, desired.as_bytes())
             .map_err(|error| io_failure("write", &path, error))?;
     }
-    let change = if forward_change == Change::Unchanged && reverse_change != Change::Unchanged {
+    let change = if forward_change == Change::Unchanged && reverse_changed {
         Change::Updated
     } else {
         forward_change
@@ -1328,27 +1463,54 @@ fn uninstall(resolver_dir: &Path, scope: &Scope) -> Result<(PathBuf, Change), Fa
         ensure_owned(&path, content, scope)?;
     }
 
-    let has_other_project = has_other_managed_resolver(resolver_dir, &path)?;
-    let reverse_path = reverse_resolver_path(resolver_dir);
-    let reverse = if has_other_project {
-        None
-    } else {
-        read_existing(&reverse_path)?
-    };
-    if let Some(content) = reverse.as_deref() {
-        ensure_reverse_owned(&reverse_path, content)?;
-    }
-
     let change = if existing.is_some() {
         remove_regular_file(&path)?;
         Change::Removed
     } else {
         Change::Absent
     };
-    if reverse.is_some() {
-        remove_regular_file(&reverse_path)?;
+    // Reverse scopes are shared across projects; drop them (scoped zones and
+    // the legacy catch-all) only when the last managed project resolver is gone.
+    if !has_other_managed_resolver(resolver_dir, &path)? {
+        for zone_path in managed_reverse_resolvers(resolver_dir)? {
+            remove_regular_file(&zone_path)?;
+        }
     }
     Ok((path, change))
+}
+
+/// Managed reverse-scope resolver files (scoped zones plus the legacy
+/// catch-all). Foreign files and non-regular entries are never touched.
+fn managed_reverse_resolvers(resolver_dir: &Path) -> Result<Vec<PathBuf>, Failure> {
+    let entries = match fs::read_dir(resolver_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_failure("read directory", resolver_dir, error)),
+    };
+    let mut managed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| io_failure("read directory", resolver_dir, error))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name != LEGACY_REVERSE_RESOLVER_DOMAIN
+            && !name.ends_with(&format!(".{LEGACY_REVERSE_RESOLVER_DOMAIN}"))
+        {
+            continue;
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            _ => continue,
+        }
+        if let Some(content) = read_existing(&path)? {
+            if is_managed_reverse(&content) {
+                managed.push(path);
+            }
+        }
+    }
+    managed.sort();
+    Ok(managed)
 }
 
 fn remove_regular_file(path: &Path) -> Result<(), Failure> {
@@ -1425,10 +1587,13 @@ fn ensure_owned(path: &Path, content: &str, scope: &Scope) -> Result<(), Failure
     }
 }
 
-fn ensure_reverse_owned(path: &Path, content: &str) -> Result<(), Failure> {
-    if content.lines().any(|line| line == MANAGED_MARKER)
+fn is_managed_reverse(content: &str) -> bool {
+    content.lines().any(|line| line == MANAGED_MARKER)
         && content.lines().any(|line| line == REVERSE_SCOPE_MARKER)
-    {
+}
+
+fn ensure_reverse_owned(path: &Path, content: &str) -> Result<(), Failure> {
+    if is_managed_reverse(content) {
         Ok(())
     } else {
         Err(Failure::new(
@@ -1450,7 +1615,7 @@ fn has_other_managed_resolver(resolver_dir: &Path, current: &Path) -> Result<boo
     for entry in entries {
         let entry = entry.map_err(|error| io_failure("read directory", resolver_dir, error))?;
         let path = entry.path();
-        if path == current || path == reverse_resolver_path(resolver_dir) {
+        if path == current {
             continue;
         }
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
@@ -1472,10 +1637,6 @@ fn has_other_managed_resolver(resolver_dir: &Path, current: &Path) -> Result<boo
 
 fn resolver_path(resolver_dir: &Path, project: &str) -> PathBuf {
     resolver_dir.join(format!("{project}.vz.test"))
-}
-
-fn reverse_resolver_path(resolver_dir: &Path) -> PathBuf {
-    resolver_dir.join(REVERSE_RESOLVER_DOMAIN)
 }
 
 fn resolver_content(scope: &Scope, port: u16) -> String {
@@ -1712,7 +1873,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA|PTR] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver|uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
+    "usage: vzctl dns status [--format human|json]\n       vzctl dns query <name> [--type A|AAAA|PTR] [--server <IP:port>] [--format human|json]\n       vzctl dns install-resolver [--project <name>] [--config <path>] [--cidr <IPv4/len>]... [--format human|json]\n       vzctl dns uninstall-resolver [--project <name>] [--config <path>] [--format human|json]\n       vzctl dns install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]"
 }
 
 pub(crate) struct DoctorHostListenerCheck {
@@ -1929,17 +2090,51 @@ mod tests {
         assert!(check.message.contains("skipped"));
     }
 
+    fn zones(cidrs: &[&str]) -> BTreeSet<String> {
+        cidrs
+            .iter()
+            .flat_map(|cidr| reverse_zones_for_cidr(cidr).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn reverse_zones_are_octet_aligned_per_cidr() {
+        assert_eq!(
+            reverse_zones_for_cidr("10.0.80.0/24").unwrap(),
+            vec!["80.0.10.in-addr.arpa"]
+        );
+        assert_eq!(
+            reverse_zones_for_cidr("10.80.0.0/16").unwrap(),
+            vec!["80.10.in-addr.arpa"]
+        );
+        assert_eq!(
+            reverse_zones_for_cidr("10.0.80.0/23").unwrap(),
+            vec!["80.0.10.in-addr.arpa", "81.0.10.in-addr.arpa"]
+        );
+        // Longer-than-/24 prefixes claim the enclosing /24 zone.
+        assert_eq!(
+            reverse_zones_for_cidr("192.168.64.0/30").unwrap(),
+            vec!["64.168.192.in-addr.arpa"]
+        );
+        assert_eq!(reverse_zones_for_cidr("10.0.80.1/24").unwrap_err().code, EXIT_INVALID);
+        assert_eq!(reverse_zones_for_cidr("nope").unwrap_err().code, EXIT_INVALID);
+    }
+
     #[test]
     fn install_and_uninstall_are_idempotent() {
         let dir = temp_dir("idempotent");
         let scope = scope("config-a");
-        let (path, first) = install(&dir, &scope, 15353).unwrap();
+        let reverse_zones = zones(&["10.0.80.0/24"]);
+        let (path, first) = install(&dir, &scope, 15353, &reverse_zones).unwrap();
         assert_eq!(first, Change::Installed);
-        let reverse = reverse_resolver_path(&dir);
+        let reverse = dir.join("80.0.10.in-addr.arpa");
         assert!(fs::read_to_string(&reverse)
             .unwrap()
             .contains(REVERSE_SCOPE_MARKER));
-        assert_eq!(install(&dir, &scope, 15353).unwrap().1, Change::Unchanged);
+        assert_eq!(
+            install(&dir, &scope, 15353, &reverse_zones).unwrap().1,
+            Change::Unchanged
+        );
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o644
@@ -1958,32 +2153,62 @@ mod tests {
             project: "payments".to_string(),
             owner: "config-b".to_string(),
         };
-        install(&dir, &first, 15353).unwrap();
-        install(&dir, &second, 15353).unwrap();
-        let reverse = reverse_resolver_path(&dir);
+        install(&dir, &first, 15353, &zones(&["10.0.80.0/24"])).unwrap();
+        install(&dir, &second, 15353, &zones(&["10.0.90.0/24"])).unwrap();
+        let first_reverse = dir.join("80.0.10.in-addr.arpa");
+        let second_reverse = dir.join("90.0.10.in-addr.arpa");
 
         uninstall(&dir, &first).unwrap();
-        assert!(reverse.exists());
+        assert!(first_reverse.exists());
+        assert!(second_reverse.exists());
         uninstall(&dir, &second).unwrap();
-        assert!(!reverse.exists());
+        assert!(!first_reverse.exists());
+        assert!(!second_reverse.exists());
+        fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn install_migrates_legacy_catch_all_reverse_resolver() {
+        let dir = temp_dir("legacy-reverse");
+        let legacy = dir.join(LEGACY_REVERSE_RESOLVER_DOMAIN);
+        fs::write(&legacy, reverse_resolver_content(15353)).unwrap();
+
+        install(&dir, &scope("config-a"), 15353, &zones(&["10.0.80.0/24"])).unwrap();
+
+        assert!(!legacy.exists());
+        assert!(dir.join("80.0.10.in-addr.arpa").exists());
+        // Without CIDR knowledge the legacy file stays (no scoped replacement).
+        fs::write(&legacy, reverse_resolver_content(15353)).unwrap();
+        install(&dir, &scope("config-a"), 15353, &BTreeSet::new()).unwrap();
+        assert!(legacy.exists());
+        // Last-project uninstall removes it together with the scoped zones.
+        uninstall(&dir, &scope("config-a")).unwrap();
+        assert!(!legacy.exists());
+        assert!(!dir.join("80.0.10.in-addr.arpa").exists());
         fs::remove_dir(dir).unwrap();
     }
 
     #[test]
     fn foreign_reverse_resolver_is_never_overwritten() {
         let dir = temp_dir("reverse-collision");
-        let reverse = reverse_resolver_path(&dir);
+        let reverse = dir.join("80.0.10.in-addr.arpa");
         fs::write(&reverse, "nameserver 192.0.2.53\n").unwrap();
 
         assert_eq!(
-            install(&dir, &scope("config-a"), 15353).unwrap_err().code,
+            install(&dir, &scope("config-a"), 15353, &zones(&["10.0.80.0/24"]))
+                .unwrap_err()
+                .code,
             EXIT_RESOLVER
         );
         assert_eq!(
-            fs::read_to_string(reverse).unwrap(),
+            fs::read_to_string(&reverse).unwrap(),
             "nameserver 192.0.2.53\n"
         );
         assert!(!resolver_path(&dir, "edge-dmz").exists());
+        // Uninstall leaves foreign reverse files untouched as well.
+        install(&dir, &scope("config-a"), 15353, &BTreeSet::new()).unwrap();
+        uninstall(&dir, &scope("config-a")).unwrap();
+        assert!(reverse.exists());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1991,9 +2216,16 @@ mod tests {
     fn install_updates_port_for_same_owner() {
         let dir = temp_dir("update");
         let scope = scope("config-a");
-        let (path, _) = install(&dir, &scope, 15353).unwrap();
-        assert_eq!(install(&dir, &scope, 15354).unwrap().1, Change::Updated);
+        let reverse_zones = zones(&["10.0.80.0/24"]);
+        let (path, _) = install(&dir, &scope, 15353, &reverse_zones).unwrap();
+        assert_eq!(
+            install(&dir, &scope, 15354, &reverse_zones).unwrap().1,
+            Change::Updated
+        );
         assert!(fs::read_to_string(path).unwrap().contains("port 15354"));
+        assert!(fs::read_to_string(dir.join("80.0.10.in-addr.arpa"))
+            .unwrap()
+            .contains("port 15354"));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2002,10 +2234,12 @@ mod tests {
         let dir = temp_dir("collision");
         let first = scope("config-a");
         let second = scope("config-b");
-        let (path, _) = install(&dir, &first, 15353).unwrap();
+        let (path, _) = install(&dir, &first, 15353, &BTreeSet::new()).unwrap();
         let original = fs::read_to_string(&path).unwrap();
         assert_eq!(
-            install(&dir, &second, 15353).unwrap_err().code,
+            install(&dir, &second, 15353, &BTreeSet::new())
+                .unwrap_err()
+                .code,
             EXIT_RESOLVER
         );
         assert_eq!(uninstall(&dir, &second).unwrap_err().code, EXIT_RESOLVER);
@@ -2021,7 +2255,9 @@ mod tests {
         let path = resolver_path(&dir, "edge-dmz");
         symlink(&target, &path).unwrap();
         assert_eq!(
-            install(&dir, &scope("config-a"), 15353).unwrap_err().code,
+            install(&dir, &scope("config-a"), 15353, &BTreeSet::new())
+                .unwrap_err()
+                .code,
             EXIT_RESOLVER
         );
         assert_eq!(fs::read_to_string(target).unwrap(), "keep\n");
@@ -2047,6 +2283,7 @@ mod tests {
             query_type: QueryType::A,
             server: DEFAULT_DNS_SERVER.to_string(),
             allow_uid: None,
+            cidrs: Vec::new(),
         };
         let resolved = resolve_scope(&options).unwrap();
         assert_eq!(resolved.project, "edge-dmz");
@@ -2073,6 +2310,7 @@ mod tests {
             query_type: QueryType::A,
             server: DEFAULT_DNS_SERVER.to_string(),
             allow_uid: None,
+            cidrs: Vec::new(),
         };
         let resolved = resolve_scope(&options).unwrap();
         assert_eq!(resolved.project, "edge-dmz");

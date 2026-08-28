@@ -91,8 +91,20 @@ ihrer Docker-VM gebunden. Vollqualifizierte Namen und Wildcards funktionieren
 auf Host und Guests.
 
 Für jede IPv4-Adresse entsteht außerdem ein PTR auf den kanonischen Namen,
-zum Beispiel `10.0.80.10.in-addr.arpa → web.dmz.shop.vz.test`. Unbekannte
-Reverse-Namen werden wie andere externe Queries zum Upstream weitergeleitet.
+zum Beispiel `10.0.80.10.in-addr.arpa → web.dmz.shop.vz.test`. Die
+Reverse-Autorität ist nach Horizont getrennt: Auf dem Guest-Horizont sind nur
+die oktett-alignten Reverse-Zonen der Hypernetwork-CIDRs autoritativ
+(`10.0.80.0/24 → 80.0.10.in-addr.arpa`; ein /23 belegt zwei /24-Zonen, länger
+als /24 belegt die umschließende /24-Zone). Bekannte Adressen liefern den PTR,
+unbekannte Adressen innerhalb dieser Zonen `NXDOMAIN` — PTR-Anfragen für
+Adressen außerhalb des Hypernetworks werden dagegen normal an den Upstream
+weitergeleitet. Der Host-Horizont bleibt für den gesamten `in-addr.arpa`-Baum
+lokal autoritativ (Loop-Guard): eine veraltete globale Resolver-Datei könnte
+sonst unbekannte PTRs über den System-Resolver zurück in vz-edge schleifen.
+IPv4-Literale als Query-Name (`192.168.171.199` A) synthetisiert der Server
+als A-Record auf sich selbst, statt sie upstream zu schicken. Negative
+Antworten (`NXDOMAIN`/leere Antwort) tragen ein synthetisches SOA, damit
+Clients sie gemäß RFC 2308 cachen können.
 
 `svc` ist für Ingress (`{service}.svc.{project}.vz.test`) reserviert. VM-,
 Container- und Netzwerknamen müssen gültige kleingeschriebene DNS-Labels sein
@@ -181,8 +193,11 @@ DELETE /v1/dns/resolver?config=/path/to/stack
 
 Alternativ sind `--config <path>` und `--project <dns-label>` möglich.
 `--project` muss mit `spec.project` übereinstimmen, falls eine Config gelesen
-wird. `VZCTL_DNS_PORT` muss bei `vz-edge` und beim Installieren identisch
-gesetzt sein; Default ist `15353`. Beide Commands unterstützen
+wird. `install-resolver` akzeptiert zusätzlich wiederholbares
+`--cidr <IPv4/len>` für Runtime-Netze (z. B. das Default-Netz), deren CIDR
+nicht in der Config steht; der Apply-Pfad übergibt die aktiven Projekt-CIDRs
+automatisch. `VZCTL_DNS_PORT` muss bei `vz-edge` und beim Installieren
+identisch gesetzt sein; Default ist `15353`. Beide Commands unterstützen
 `--format human|json`.
 
 Install und Cleanup sind idempotent. vzctl schreibt atomar mit Modus `0644`
@@ -196,12 +211,18 @@ Zones. Zwei Configs mit demselben `spec.project` würden dieselbe Zone
 beanspruchen; der Config-Owner-Marker macht das zum harten Konflikt. Das Projekt
 muss deshalb repository-/hostweit eindeutig sein.
 
-Zusätzlich verwaltet vzctl gemeinsam für alle Projekte
-`/etc/resolver/in-addr.arpa`. Damit erreichen macOS-Systemabfragen für IPv4-PTR
-den Host-Listener. Diese Datei bleibt bestehen, solange mindestens ein
-verwalteter Projekt-Resolver existiert, und wird beim letzten Uninstall
-ownership-geprüft entfernt. Eine fremde Reverse-Resolver-Datei wird nie
-überschrieben.
+Zusätzlich verwaltet vzctl gemeinsam für alle Projekte pro Hypernetwork-CIDR
+eine Reverse-Resolver-Datei, z. B. `/etc/resolver/80.0.10.in-addr.arpa` für
+`10.0.80.0/24`. Damit erreichen macOS-PTR-Abfragen für Hypernetwork-Adressen
+den Host-Listener, während PTR-Abfragen für externe Adressen beim regulären
+System-Upstream bleiben. Die Zonen stammen aus `spec.networks.*.cidr` der
+Config plus den per `--cidr` übergebenen Runtime-Netzen. Reverse-Dateien sind
+projektübergreifend geteilt: Sie bleiben bestehen, solange mindestens ein
+verwalteter Projekt-Resolver existiert, und werden beim letzten Uninstall
+ownership-geprüft entfernt. Eine ältere globale Datei
+`/etc/resolver/in-addr.arpa` aus früheren Versionen wird beim nächsten
+Install mit bekannten CIDRs migriert (ownership-geprüft entfernt). Fremde
+Reverse-Resolver-Dateien werden nie überschrieben oder entfernt.
 
 ## mDNS
 

@@ -545,7 +545,10 @@ Der v1-Client ist UDP-only. Eine Antwort mit gesetztem `TC`-Bit wird deshalb
 als Exit `20` gemeldet; TCP-Fallback ist nicht Teil dieses Slices.
 
 ```bash
-vzctl dns install-resolver|uninstall-resolver \
+vzctl dns install-resolver \
+  [--project <name>] [--config <path>] [--cidr <IPv4/len>]... \
+  [--format human|json]
+vzctl dns uninstall-resolver \
   [--project <name>] [--config <path>] [--format human|json]
 ```
 
@@ -556,13 +559,16 @@ Die kanonischen Commands heißen `dns.install-resolver` und
 `summary.change` ist `installed`, `updated`, `unchanged`, `removed` oder
 `absent`.
 
-Ungültige Projekte/Configs liefern Exit `3`. Fehlende Rechte, fremde Dateien,
-Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`. Idempotente
-No-op-Installationen und -Deinstallationen liefern Exit `0`.
-Install verwaltet zusätzlich den gemeinsamen Scope
-`/etc/resolver/in-addr.arpa`; er wird erst nach dem letzten vzctl-Projekt
-entfernt. Kollisionen mit einem fremden Reverse-Scope liefern ebenfalls Exit
-`19`.
+Ungültige Projekte/Configs/CIDRs liefern Exit `3`. Fehlende Rechte, fremde
+Dateien, Symlinks und Projekt-/Config-Kollisionen liefern Exit `19`.
+Idempotente No-op-Installationen und -Deinstallationen liefern Exit `0`.
+Install verwaltet zusätzlich pro Hypernetwork-CIDR einen geteilten
+Reverse-Scope (z. B. `/etc/resolver/80.0.10.in-addr.arpa` für
+`10.0.80.0/24`); die CIDRs stammen aus `spec.networks.*.cidr` plus
+wiederholbarem `--cidr`. Reverse-Scopes werden erst nach dem letzten
+vzctl-Projekt entfernt; eine ältere globale Datei
+`/etc/resolver/in-addr.arpa` wird beim Install mit bekannten CIDRs migriert.
+Kollisionen mit einem fremden Reverse-Scope liefern ebenfalls Exit `19`.
 
 ```bash
 vzctl docker [--project <name>] [--format human|json] ps [--all]

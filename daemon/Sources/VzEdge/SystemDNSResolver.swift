@@ -24,25 +24,36 @@ enum SystemDNSResolver {
             _, flags, _, errorCode, _, rrtype, rrclass, rdlen, rdata, ttl, rawContext in
             guard let rawContext else { return }
             let target = Unmanaged<SystemDNSQueryBox>.fromOpaque(rawContext).takeUnretainedValue()
-            guard errorCode == kDNSServiceErr_NoError else {
+            switch Int(errorCode) {
+            case kDNSServiceErr_NoError:
+                if flags & kDNSServiceFlagsAdd != 0, let rdata {
+                    target.append(SystemDNSRecord(
+                        type: rrtype,
+                        dnsClass: rrclass,
+                        ttl: ttl,
+                        rdata: Data(bytes: rdata, count: Int(rdlen))
+                    ))
+                }
+                if flags & kDNSServiceFlagsMoreComing == 0 {
+                    target.finish()
+                }
+            case kDNSServiceErr_NoSuchRecord:
+                // Negative answer (NXDOMAIN/NODATA). Complete with the records
+                // collected so far instead of failing into SERVFAIL — clients
+                // treat an empty NOERROR answer as NODATA and move on.
+                if flags & kDNSServiceFlagsMoreComing == 0 {
+                    target.finish()
+                }
+            default:
                 target.fail()
-                return
-            }
-            if flags & kDNSServiceFlagsAdd != 0, let rdata {
-                target.append(SystemDNSRecord(
-                    type: rrtype,
-                    dnsClass: rrclass,
-                    ttl: ttl,
-                    rdata: Data(bytes: rdata, count: Int(rdlen))
-                ))
-            }
-            if flags & kDNSServiceFlagsMoreComing == 0 {
-                target.finish()
             }
         }
+        // ReturnIntermediates delivers negative answers (and CNAME chains)
+        // through the callback instead of leaving the query pending until the
+        // wait() timeout expires.
         let started = DNSServiceQueryRecord(
             &service,
-            0,
+            DNSServiceFlags(kDNSServiceFlagsReturnIntermediates),
             0,
             question.name,
             question.type,

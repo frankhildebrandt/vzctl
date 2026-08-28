@@ -470,6 +470,116 @@ import VzDaemonKit
         == encodedDNSName("web.dmz.shop.vz.test"))
 }
 
+@Test func unknownReverseInsideHypernetworkIsNxdomainNotServfail() {
+    let server = DNSServer(
+        configuration: DNSConfiguration(
+            hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+            ttl: 15, upstream: "system"
+        ),
+        systemResolve: { _, _ in nil }
+    )
+    defer { server.shutdown() }
+    _ = server.reload(snapshot: NetworkSnapshot(
+        networks: [
+            NetworkRecord(name: "dmz", cidr: "10.80.0.0/24", project: "edge-dmz"),
+        ],
+        attachments: []
+    ))
+
+    let response = server.response(
+        for: dnsQuery("199.0.80.10.in-addr.arpa", type: 12),
+        horizon: guestHorizon()
+    )
+
+    #expect(dnsResponseCode(response) == 3)
+    #expect(read16(response, 2) & 0x0400 == 0x0400)
+    // Negative answers carry a synthetic SOA for negative caching.
+    #expect(read16(response, 8) == 1)
+}
+
+@Test func guestReverseOutsideHypernetworkForwardsUpstream() {
+    let canned = Data([0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0])
+    let server = DNSServer(
+        configuration: DNSConfiguration(
+            hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+            ttl: 15, upstream: "system"
+        ),
+        systemResolve: { _, _ in canned }
+    )
+    defer { server.shutdown() }
+    _ = server.reload(snapshot: NetworkSnapshot(
+        networks: [
+            NetworkRecord(name: "dmz", cidr: "10.80.0.0/24", project: "edge-dmz"),
+        ],
+        attachments: []
+    ))
+
+    let external = server.response(
+        for: dnsQuery("8.8.8.8.in-addr.arpa", type: 12),
+        horizon: guestHorizon()
+    )
+    let internalUnknown = server.response(
+        for: dnsQuery("199.0.80.10.in-addr.arpa", type: 12),
+        horizon: guestHorizon()
+    )
+
+    #expect(external == canned)
+    #expect(dnsResponseCode(internalUnknown) == 3)
+}
+
+@Test func hostReverseStaysLocallyAuthoritativeAsLoopGuard() {
+    let server = DNSServer(
+        configuration: DNSConfiguration(
+            hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+            ttl: 15, upstream: "system"
+        ),
+        systemResolve: { _, _ in
+            Issue.record("host reverse query must not reach the system resolver")
+            return nil
+        }
+    )
+    defer { server.shutdown() }
+
+    let response = server.response(
+        for: dnsQuery("8.8.8.8.in-addr.arpa", type: 12),
+        horizon: .host
+    )
+
+    #expect(dnsResponseCode(response) == 3)
+    #expect(read16(response, 2) & 0x0400 == 0x0400)
+}
+
+@Test func reverseZonesAreOctetAlignedPerCIDR() {
+    #expect(DNSZoneBuilder.reverseZones(forCIDR: "10.0.80.0/24") == ["80.0.10.in-addr.arpa"])
+    #expect(DNSZoneBuilder.reverseZones(forCIDR: "10.80.0.0/16") == ["80.10.in-addr.arpa"])
+    #expect(DNSZoneBuilder.reverseZones(forCIDR: "10.0.80.0/23") == [
+        "80.0.10.in-addr.arpa",
+        "81.0.10.in-addr.arpa",
+    ])
+    // Longer-than-/24 prefixes claim the enclosing /24 zone.
+    #expect(DNSZoneBuilder.reverseZones(forCIDR: "192.168.64.0/30") == ["64.168.192.in-addr.arpa"])
+    #expect(DNSZoneBuilder.reverseZones(forCIDR: "not-a-cidr") == [])
+}
+
+@Test func ipv4LiteralAQueryAnswersTheAddressWithoutUpstream() {
+    let server = DNSServer(
+        configuration: DNSConfiguration(
+            hostAddress: "127.0.0.1", hostPort: 0, guestPort: 0,
+            ttl: 15, upstream: "system"
+        ),
+        systemResolve: { _, _ in nil }
+    )
+    defer { server.shutdown() }
+
+    let response = server.response(
+        for: dnsQuery("192.168.171.199"),
+        horizon: guestHorizon()
+    )
+
+    #expect(dnsResponseCode(response) == 0)
+    #expect(aRecords(in: response) == ["192.168.171.199"])
+}
+
 @Test func attachmentProjectOverridesNetworkAndServicesReturnAllBackends() {
     let snapshot = NetworkSnapshot(
         networks: [

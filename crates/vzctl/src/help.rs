@@ -348,7 +348,8 @@ vzctl dns — Hypervisor DNS and macOS resolver
 
   status [--format human|json]
   query <name> [--type A|AAAA|PTR] [--server IP:port] [--format human|json]
-  install-resolver|uninstall-resolver [--project P] [--config <path>] [--format human|json]
+  install-resolver [--project P] [--config <path>] [--cidr <IPv4/len>]... [--format human|json]
+  uninstall-resolver [--project P] [--config <path>] [--format human|json]
   install-bind-helper [--allow-uid <uid>]|uninstall-bind-helper [--format human|json]
 
 Guest nameserver is bridge .0:53 (needs bind-helper). Host resolver is
