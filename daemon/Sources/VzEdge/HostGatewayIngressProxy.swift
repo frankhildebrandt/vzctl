@@ -21,6 +21,10 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
 
     private let lock = NSLock()
     private var listeners: [String: Listener] = [:]
+    private var cachedBindings: [Binding] = []
+    private var cachedLoopbackGateways = Set<String>(["127.0.0.1"])
+    private var cachedHTTPPort: UInt16 = 80
+    private var cachedHTTPSPort: UInt16 = 443
 
     /// Ensures gateway listeners. Per-binding bind failures are skipped
     /// (same soft-fail pattern as DNS `.0:53`) so host loopback Caddy still starts.
@@ -36,7 +40,6 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var active: [Binding] = []
         var skipped: [(Binding, String)] = []
         for binding in desired {
-            // Always reopen: dns-bind accept streams die when the helper restarts.
             listeners.removeValue(forKey: binding.key)?.close()
             do {
                 let listener = try openListener(binding)
@@ -52,6 +55,99 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         )
     }
 
+    /// Ensures listeners and probes loopback reachability with short retries.
+    func ensureWithProbe(
+        _ desired: [Binding],
+        loopbackGateways: Set<String>,
+        httpPort: UInt16,
+        httpsPort: UInt16
+    ) -> EnsureResult {
+        lock.lock()
+        cachedBindings = desired
+        cachedLoopbackGateways = loopbackGateways
+        cachedHTTPPort = httpPort
+        cachedHTTPSPort = httpsPort
+        lock.unlock()
+
+        var result = ensure(desired)
+        for _ in 0 ..< 2 where !loopbackGateways.isEmpty {
+            if Self.loopbackReachable(
+                gateways: loopbackGateways,
+                httpPort: httpPort,
+                httpsPort: httpsPort
+            ) {
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+            result = ensure(desired)
+        }
+        return result
+    }
+
+    /// Re-opens cached loopback bindings when dns-bind accept streams have died.
+    @discardableResult
+    func repairLoopbackIfNeeded() -> Bool {
+        let snapshot = lock.withLock {
+            (cachedBindings, cachedLoopbackGateways, cachedHTTPPort, cachedHTTPSPort)
+        }
+        guard !snapshot.0.isEmpty, !snapshot.1.isEmpty else { return true }
+        if Self.loopbackReachable(
+            gateways: snapshot.1,
+            httpPort: snapshot.2,
+            httpsPort: snapshot.3
+        ) {
+            return true
+        }
+        _ = ensure(snapshot.0)
+        return Self.loopbackReachable(
+            gateways: snapshot.1,
+            httpPort: snapshot.2,
+            httpsPort: snapshot.3
+        )
+    }
+
+    func loopbackHealthy() -> Bool {
+        let snapshot = lock.withLock {
+            (cachedLoopbackGateways, cachedHTTPPort, cachedHTTPSPort, cachedBindings.isEmpty)
+        }
+        guard !snapshot.3 else { return true }
+        return Self.loopbackReachable(
+            gateways: snapshot.0,
+            httpPort: snapshot.1,
+            httpsPort: snapshot.2
+        )
+    }
+
+    static func loopbackReachable(
+        gateways: Set<String>,
+        httpPort: UInt16,
+        httpsPort: UInt16
+    ) -> Bool {
+        guard !gateways.isEmpty else { return true }
+        for gateway in gateways {
+            for port in [httpPort, httpsPort] {
+                if !canConnect(host: gateway, port: port) { return false }
+            }
+        }
+        return true
+    }
+
+    private static func canConnect(host: String, port: UInt16) -> Bool {
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else { return false }
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+    }
+
     private func openListener(_ binding: Binding) throws -> Listener {
         var lastError: Error?
         for attempt in 0 ..< 8 {
@@ -60,8 +156,10 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             } catch {
                 lastError = error
                 let text = "\(error)"
-                // dns-bind may still hold the port briefly after UDS close.
-                if text.contains("Address already in use") || text.contains("EADDRINUSE") {
+                if text.contains("Address already in use")
+                    || text.contains("EADDRINUSE")
+                    || text.contains("Resource temporarily unavailable")
+                    || text.contains("EAGAIN") {
                     Thread.sleep(forTimeInterval: 0.15 + Double(attempt) * 0.05)
                     continue
                 }
@@ -83,6 +181,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         for key in Array(listeners.keys) {
             listeners.removeValue(forKey: key)?.close()
         }
+        cachedBindings = []
     }
 
     func shutdown() {
@@ -101,24 +200,34 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         init(binding: Binding) throws {
             self.binding = binding
             queue = DispatchQueue(label: "vzctl.ingress.gw.\(binding.key)")
+            try openAcceptSource()
+            queue.async { [self] in
+                self.acceptLoop()
+            }
+        }
+
+        private func openAcceptSource() throws {
             if DnsBind.needsPrivilege(port: binding.port) {
-                // Helper owns listen()+accept(); we receive client FDs over UDS.
+                acceptStream?.close()
+                acceptStream = nil
                 acceptStream = try DnsBindClient.openTCPAcceptStream(
                     address: binding.gatewayIP,
                     port: binding.port
                 )
-            } else {
-                let sock = try Self.bindLocally(address: binding.gatewayIP, port: binding.port)
-                guard Darwin.listen(sock, 32) == 0 else {
-                    let code = errno
-                    Darwin.close(sock)
-                    throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
-                }
-                localFD = sock
+                return
             }
-            queue.async { [self] in
-                self.acceptLoop()
+            if localFD >= 0 {
+                Darwin.shutdown(localFD, SHUT_RDWR)
+                Darwin.close(localFD)
+                localFD = -1
             }
+            let sock = try Self.bindLocally(address: binding.gatewayIP, port: binding.port)
+            guard Darwin.listen(sock, 32) == 0 else {
+                let code = errno
+                Darwin.close(sock)
+                throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
+            }
+            localFD = sock
         }
 
         private static func bindLocally(address: String, port: UInt16) throws -> Int32 {
@@ -177,46 +286,87 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         }
 
         private func acceptLoop() {
+            var backoff = 0.1
             while !stopped {
-                let client: Int32
                 do {
-                    if let stream = acceptStream {
-                        client = try stream.accept()
-                    } else if localFD >= 0 {
-                        let accepted = Darwin.accept(localFD, nil, nil)
-                        if accepted < 0 {
-                            if errno == EINTR { continue }
-                            return
-                        }
-                        client = accepted
-                    } else {
-                        return
-                    }
+                    try ensureAcceptSourceReady()
+                    let client = try acceptClient()
+                    backoff = 0.1
+                    handleClient(client)
+                } catch AcceptLoopError.interrupted {
+                    continue
                 } catch {
-                    return
-                }
-                var noSigPipe: Int32 = 1
-                setsockopt(
-                    client,
-                    SOL_SOCKET,
-                    SO_NOSIGPIPE,
-                    &noSigPipe,
-                    socklen_t(MemoryLayout<Int32>.size)
-                )
-                do {
-                    let backend = try connectBackend()
-                    let session = Session(client: client, backend: backend) { [weak self] id in
-                        self?.sessionLock.lock()
-                        self?.sessions.removeValue(forKey: id)
-                        self?.sessionLock.unlock()
+                    if stopped { return }
+                    acceptStream?.close()
+                    acceptStream = nil
+                    if localFD >= 0 {
+                        Darwin.shutdown(localFD, SHUT_RDWR)
+                        Darwin.close(localFD)
+                        localFD = -1
                     }
-                    sessionLock.lock()
-                    sessions[session.id] = session
-                    sessionLock.unlock()
-                    session.start()
-                } catch {
-                    Darwin.close(client)
+                    Thread.sleep(forTimeInterval: backoff)
+                    backoff = min(backoff * 1.5, 2.0)
                 }
+            }
+        }
+
+        private enum AcceptLoopError: Error {
+            case interrupted
+        }
+
+        private func ensureAcceptSourceReady() throws {
+            if DnsBind.needsPrivilege(port: binding.port) {
+                if acceptStream == nil {
+                    try openAcceptSource()
+                }
+                return
+            }
+            if localFD < 0 {
+                try openAcceptSource()
+            }
+        }
+
+        private func acceptClient() throws -> Int32 {
+            if let stream = acceptStream {
+                return try stream.accept()
+            }
+            if localFD >= 0 {
+                let accepted = Darwin.accept(localFD, nil, nil)
+                if accepted < 0 {
+                    if errno == EINTR { throw AcceptLoopError.interrupted }
+                    let code = errno
+                    Darwin.shutdown(localFD, SHUT_RDWR)
+                    Darwin.close(localFD)
+                    localFD = -1
+                    throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, code)
+                }
+                return accepted
+            }
+            throw PortProxyError.bindFailed(binding.gatewayIP, binding.port, EINVAL)
+        }
+
+        private func handleClient(_ client: Int32) {
+            var noSigPipe: Int32 = 1
+            setsockopt(
+                client,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                &noSigPipe,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+            do {
+                let backend = try connectBackend()
+                let session = Session(client: client, backend: backend) { [weak self] id in
+                    self?.sessionLock.lock()
+                    self?.sessions.removeValue(forKey: id)
+                    self?.sessionLock.unlock()
+                }
+                sessionLock.lock()
+                sessions[session.id] = session
+                sessionLock.unlock()
+                session.start()
+            } catch {
+                Darwin.close(client)
             }
         }
 

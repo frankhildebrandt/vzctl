@@ -35,6 +35,9 @@ final class EdgeServer: @unchecked Sendable {
     private var digest = ""
     private var desired: JSONValue = .object([:])
     private var lastError: String?
+    private var ingressGuestWarning: String?
+    private var ingressWatchdog: DispatchSourceTimer?
+    private var cachedServiceSpecs: [EmbeddedProcessManager.Spec] = []
     private let dnsConfiguration: DNSConfiguration
     private let dnsServer: DNSServer
     private let portProxy = PortForwardProxy()
@@ -81,6 +84,7 @@ final class EdgeServer: @unchecked Sendable {
                 throw EdgeServerError.system("chmod edge socket", errno)
             }
             guard Darwin.listen(fd, 16) == 0 else { throw EdgeServerError.system("listen", errno) }
+            startIngressWatchdog()
             while true {
                 let client = Darwin.accept(fd, nil, nil)
                 if client < 0 {
@@ -97,6 +101,8 @@ final class EdgeServer: @unchecked Sendable {
     }
 
     func stop() {
+        ingressWatchdog?.cancel()
+        ingressWatchdog = nil
         let state = lock.withLock { () -> (Int32, Bool) in
             let fd = listener
             listener = -1
@@ -205,6 +211,7 @@ final class EdgeServer: @unchecked Sendable {
                     digest = nextDigest
                     desired = nextDesired
                     lastError = nil
+                    ingressGuestWarning = nil
                 }
                 return status()
             } catch {
@@ -226,6 +233,9 @@ final class EdgeServer: @unchecked Sendable {
 
         var serviceSpecs: [EmbeddedProcessManager.Spec] = []
         var gatewayBindings: [HostGatewayIngressProxy.Binding] = []
+        var loopbackGateways = Set<String>(["127.0.0.1"])
+        var ingressHttpPort: UInt16 = 80
+        var ingressHttpsPort: UInt16 = 443
         let activeNetworks = snapshot.networks.filter {
             $0.runtimeState == "active" && !$0.isDockerBackend
         }
@@ -264,7 +274,12 @@ final class EdgeServer: @unchecked Sendable {
             let http = try port("http_port", params, default: 80)
             let https = try port("https_port", params, default: 443)
             let backendHTTPS = try port("backend_https_port", params, default: https)
+            ingressHttpPort = http
+            ingressHttpsPort = https
             for gateway in try strings(params["gateways"] ?? .array([])) {
+                if gateway == "127.0.0.1" || gateway.hasPrefix("127.") {
+                    loopbackGateways.insert(gateway)
+                }
                 gatewayBindings.append(.init(
                     gatewayIP: gateway, port: http,
                     backendHost: "127.0.0.1", backendPort: backendHTTP
@@ -334,11 +349,22 @@ final class EdgeServer: @unchecked Sendable {
             targetFirewall: targetFirewall
         )
         _ = try processes.reconcile(serviceSpecs)
+        lock.withLock { cachedServiceSpecs = serviceSpecs }
         _ = try portProxy.ensure(ports)
-        let ingressResult = gatewayProxy.ensure(gatewayBindings)
-        if let failure = ingressResult.skipped.first {
-            throw EdgeServerError.invalid(
-                "ingress listener \(failure.0.gatewayIP):\(failure.0.port): \(failure.1)"
+        let ingressResult = gatewayProxy.ensureWithProbe(
+            gatewayBindings,
+            loopbackGateways: loopbackGateways,
+            httpPort: ingressHttpPort,
+            httpsPort: ingressHttpsPort
+        )
+        if gatewayBindings.isEmpty {
+            ingressGuestWarning = nil
+        } else {
+            ingressGuestWarning = try evaluateIngressGatewayEnsure(
+                ingressResult,
+                loopbackGateways: loopbackGateways,
+                httpPort: ingressHttpPort,
+                httpsPort: ingressHttpsPort
             )
         }
         dnsServer.setIngressHostServices(
@@ -359,8 +385,16 @@ final class EdgeServer: @unchecked Sendable {
         let dns = dnsServer.health()
         let services = processes.statusAll()
         let servicesOK = services.allSatisfy { $0["running"] == .bool(true) }
+        let ingressWarning = lock.withLock { ingressGuestWarning }
+        let loopbackOK = gatewayProxy.loopbackHealthy()
+        let orphanCaddy = lock.withLock {
+            cachedServiceSpecs
+                .filter { $0.kind == "caddy" }
+                .map { processes.orphanCount(for: $0) }
+                .reduce(0, +)
+        }
         return .object([
-            "ok": .bool(dns.ok && servicesOK && state.2 == nil),
+            "ok": .bool(dns.ok && servicesOK && state.2 == nil && loopbackOK),
             "version": .string(VzDaemonKit.version),
             "generation": .number(Double(state.0)),
             "digest": .string(state.1),
@@ -368,6 +402,9 @@ final class EdgeServer: @unchecked Sendable {
             "dns": dns.json,
             "port_forwards": .array(portProxy.list().map(\.json)),
             "ingress_bindings": .number(Double(gatewayProxy.list().count)),
+            "ingress_loopback_ok": .bool(loopbackOK),
+            "ingress_orphan_caddy": .number(Double(orphanCaddy)),
+            "ingress_guest_warning": ingressWarning.map(JSONValue.string) ?? .null,
             "host_aliases": .number(Double(hostNetworking.aliasCount)),
             "services": .array(services.map(JSONValue.object)),
             "last_error": state.2.map(JSONValue.string) ?? .null,
@@ -471,6 +508,17 @@ final class EdgeServer: @unchecked Sendable {
             if (try? probe.health()) != nil { throw EdgeServerError.conflict("vz-edge already running") }
             Darwin.unlink(socketPath)
         }
+    }
+
+    private func startIngressWatchdog() {
+        guard ingressWatchdog == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 30, repeating: 30)
+        timer.setEventHandler { [weak self] in
+            _ = self?.gatewayProxy.repairLoopbackIfNeeded()
+        }
+        timer.resume()
+        ingressWatchdog = timer
     }
 }
 
@@ -601,6 +649,30 @@ private func requireBinary(_ path: String, basename: String) throws {
     guard URL(fileURLWithPath: path).lastPathComponent == basename else {
         throw EdgeServerError.invalid("edge service binary must be \(basename)")
     }
+}
+
+func evaluateIngressGatewayEnsure(
+    _ result: HostGatewayIngressProxy.EnsureResult,
+    loopbackGateways: Set<String>,
+    httpPort: UInt16,
+    httpsPort: UInt16
+) throws -> String? {
+    for gateway in loopbackGateways {
+        for port in [httpPort, httpsPort] {
+            let key = "\(gateway):\(port)"
+            if let failure = result.skipped.first(where: { $0.0.key == key }) {
+                throw EdgeServerError.invalid("ingress listener \(key): \(failure.1)")
+            }
+            guard result.active.contains(where: { $0.key == key }) else {
+                throw EdgeServerError.invalid("ingress listener \(key): missing")
+            }
+        }
+    }
+    let guestSkips = result.skipped.filter { !loopbackGateways.contains($0.0.gatewayIP) }
+    guard !guestSkips.isEmpty else { return nil }
+    return guestSkips
+        .map { "ingress listener \($0.0.gatewayIP):\($0.0.port): \($0.1)" }
+        .joined(separator: "; ")
 }
 
 private func loopbackEndpoint(_ value: String) throws -> (String, UInt16) {

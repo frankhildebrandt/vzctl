@@ -61,6 +61,7 @@ final class SupervisorServer: @unchecked Sendable {
     private var restServer: RestServer?
     private var networkResilience: NetworkResilienceController?
     private var systemdEvents: SystemdEventBridge?
+    private var lastIngressWatchdogReconcile = Date.distantPast
     private let restJobs: RestJobRunner
     private let restRouter: RestRouter
     private let apiListenSpec: RestListenSpec
@@ -80,7 +81,8 @@ final class SupervisorServer: @unchecked Sendable {
         database = try StateDatabase(path: databasePath)
         networkRegistry = try NetworkRegistry(database: database, stateDirectory: stateDirectory)
         edgeClient = VzEdgeClient(
-            socketPath: VzEdgeClient.defaultSocketPath(stateDirectory: stateDirectory)
+            socketPath: VzEdgeClient.defaultSocketPath(stateDirectory: stateDirectory),
+            timeoutSeconds: 90
         )
         apiListenSpec = try apiListen ?? RestConfig.resolve(
             stateDirectory: stateDirectory,
@@ -870,12 +872,30 @@ final class SupervisorServer: @unchecked Sendable {
                 let params = try networkParams(request.params)
                 let project = try requiredString("project", from: params)
                 _ = try requiredString("caddyfile", from: params)
+                let snapshot = try edgeProjectMutationSnapshot(project: project)
                 var stored = params
                 if stored["binary"] == nil {
                     stored["binary"] = .string(stateDirectory.appendingPathComponent("bin/caddy").path)
                 }
+                let hostsValue = stored.removeValue(forKey: "hosts")
+                if let hostsValue {
+                    guard case .array = hostsValue else {
+                        return JSONRPCResponse(
+                            error: JSONRPCError(code: -32602, message: "hosts must be an array"),
+                            id: request.id ?? .null
+                        )
+                    }
+                    try database.setEdgeHostServices(project: project, hosts: hostsValue)
+                }
                 try database.setEdgeIngress(project: project, value: .object(stored))
-                let edge = try reconcileEdgeThrowing(reason: "ingress.ensure")
+                let edge: JSONValue
+                do {
+                    edge = try reconcileEdgeThrowing(reason: "ingress.ensure")
+                } catch {
+                    try restoreEdgeProjectMutation(project: project, snapshot: snapshot)
+                    _ = try? reconcileEdgeThrowing(reason: "ingress.ensure.rollback")
+                    throw error
+                }
 
                 emit(
                     type: "ingress.ensured",
@@ -2077,6 +2097,29 @@ final class SupervisorServer: @unchecked Sendable {
         }
     }
 
+    private struct EdgeProjectMutationSnapshot {
+        let ingress: JSONValue?
+        let hostServices: JSONValue
+    }
+
+    private func edgeProjectMutationSnapshot(project: String) throws -> EdgeProjectMutationSnapshot {
+        guard let record = try database.edgeProjects().first(where: { $0.project == project }) else {
+            return EdgeProjectMutationSnapshot(ingress: nil, hostServices: .array([]))
+        }
+        return EdgeProjectMutationSnapshot(
+            ingress: record.ingress,
+            hostServices: record.hostServices
+        )
+    }
+
+    private func restoreEdgeProjectMutation(
+        project: String,
+        snapshot: EdgeProjectMutationSnapshot
+    ) throws {
+        try database.setEdgeIngress(project: project, value: snapshot.ingress)
+        try database.setEdgeHostServices(project: project, hosts: snapshot.hostServices)
+    }
+
     @discardableResult
     private func reconcileEdgeThrowing(reason: String) throws -> JSONValue {
         try edgeReconcileLock.withLock {
@@ -2118,6 +2161,7 @@ final class SupervisorServer: @unchecked Sendable {
     private func vzEdgeHealth() -> (ok: Bool, json: JSONValue, dns: JSONValue) {
         do {
             let health = try edgeClient.health()
+            maybeRepairIngressFromEdgeHealth(health)
             guard case let .object(values) = health else {
                 return (false, health, .object(["ok": .bool(false)]))
             }
@@ -2131,6 +2175,17 @@ final class SupervisorServer: @unchecked Sendable {
             ])
             return (false, failure, failure)
         }
+    }
+
+    private func maybeRepairIngressFromEdgeHealth(_ health: JSONValue) {
+        guard case let .object(values) = health else { return }
+        let loopbackBroken = values["ingress_loopback_ok"] == .bool(false)
+        let guestWarning = values["ingress_guest_warning"].map { $0 != .null } ?? false
+        guard loopbackBroken || guestWarning else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastIngressWatchdogReconcile) >= 60 else { return }
+        lastIngressWatchdogReconcile = now
+        reconcileEdge(reason: "ingress.watchdog")
     }
 
     private func edgeDNS(from status: JSONValue) -> JSONValue {

@@ -60,6 +60,11 @@ final class EmbeddedProcessManager: @unchecked Sendable {
         for spec in desired {
             try spec.validateIdentity()
             try validateConfiguration(spec)
+            EmbeddedProcessReaper.reapStale(
+                binary: spec.binary,
+                workDir: spec.workDir,
+                pidFile: spec.pidFile
+            )
         }
         let desiredNames = Set(desired.map(\.name))
         let obsolete = lock.withLock { Array(managed.keys).filter { !desiredNames.contains($0) } }
@@ -86,6 +91,14 @@ final class EmbeddedProcessManager: @unchecked Sendable {
     }
 
     func stop(name: String) { lock.withLock { stopLocked(name: name) } }
+
+    func orphanCount(for spec: Spec) -> Int {
+        EmbeddedProcessReaper.countOrphans(
+            binary: spec.binary,
+            workDir: spec.workDir,
+            exceptPID: lock.withLock { managed[spec.name]?.process?.processIdentifier }
+        )
+    }
 
     func statusAll() -> [[String: JSONValue]] {
         lock.withLock { managed.keys.sorted().map(statusLocked) }
@@ -126,6 +139,11 @@ final class EmbeddedProcessManager: @unchecked Sendable {
     private func startLocked(name: String) throws {
         guard var item = managed[name] else { return }
         let spec = item.spec
+        EmbeddedProcessReaper.reapStale(
+            binary: spec.binary,
+            workDir: spec.workDir,
+            pidFile: spec.pidFile
+        )
         try FileManager.default.createDirectory(atPath: spec.workDir, withIntermediateDirectories: true)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: spec.binary)

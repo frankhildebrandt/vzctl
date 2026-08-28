@@ -576,7 +576,32 @@ fn run_vzctl_blocking(
 }
 
 fn is_recoverable(output: &Output) -> bool {
-    is_incomplete_journal(output) || is_lease_held(output) || needs_resolver_elevation(output)
+    is_incomplete_journal(output)
+        || is_lease_held(output)
+        || needs_resolver_elevation(output)
+        || is_transient_ingress_failure(output)
+}
+
+fn is_transient_ingress_failure(output: &Output) -> bool {
+    let text = format_failure_from_output(output);
+    text.contains("os error 35")
+        || text.contains("Resource temporarily unavailable")
+        || (text.contains("ingress.ensure")
+            && (text.contains("WouldBlock")
+                || text.contains("vz-edge")
+                || text.contains("dns-bind")))
+}
+
+fn format_failure_from_output(output: &Output) -> String {
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/summary/message")
+                .and_then(|message| message.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 fn recover_and_retry(

@@ -23,48 +23,54 @@ enum DnsBindClient {
         }
     }
 
+    private static let reconcileTimeoutSeconds = 5
+
     /// Ask the privileged helper to bind `address:port` (UDP) and return the FD.
     /// Caller owns the returned descriptor.
     static func bindUDP(
         address: String,
         port: UInt16,
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws -> Int32 {
-        let client = try connect(
-            socketPath: socketPath,
-            timeoutSeconds: timeoutSeconds
-        )
-        defer { Darwin.close(client) }
-        try sendRequest(
-            DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoUDP),
-            on: client
-        )
-        let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
-        let response = try decodeResponse(responseData)
-        guard response.ok else {
-            throw Error.helper(response.error ?? "bind failed")
+        try withRetry {
+            let client = try connect(
+                socketPath: socketPath,
+                timeoutSeconds: timeoutSeconds
+            )
+            defer { Darwin.close(client) }
+            try sendRequest(
+                DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoUDP),
+                on: client
+            )
+            let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
+            let response = try decodeResponse(responseData)
+            guard response.ok else {
+                throw Error.helper(response.error ?? "bind failed")
+            }
+            guard let fileDescriptor else {
+                throw Error.response("missing file descriptor")
+            }
+            return fileDescriptor
         }
-        guard let fileDescriptor else {
-            throw Error.response("missing file descriptor")
-        }
-        return fileDescriptor
     }
 
     static func ensureAlias(
         cidr: String,
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws {
         let request = DnsBind.AliasRequest(op: DnsBind.opAliasEnsure, cidr: cidr)
         try DnsBind.validate(request)
-        try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        try withRetry {
+            try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        }
     }
 
     static func removeAlias(
         cidr: String,
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws {
         let request = DnsBind.AliasRequest(op: DnsBind.opAliasRemove, cidr: cidr)
         try DnsBind.validate(request)
@@ -74,16 +80,18 @@ enum DnsBindClient {
     static func reconcileFirewall(
         _ bindings: [DnsBind.FirewallBinding],
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws {
         let request = DnsBind.FirewallRequest(bindings: bindings)
         try DnsBind.validate(request)
-        try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        try withRetry {
+            try simpleRequest(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        }
     }
 
     static func cleanupNetworking(
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws {
         try simpleRequest(
             DnsBind.CleanupRequest(), socketPath: socketPath,
@@ -96,48 +104,49 @@ enum DnsBindClient {
         address: String,
         port: UInt16,
         socketPath: String = DnsBind.socketPath(),
-        timeoutSeconds: Int = 2
+        timeoutSeconds: Int = reconcileTimeoutSeconds
     ) throws -> TCPAcceptStream {
-        let client = try connect(
-            socketPath: socketPath,
-            timeoutSeconds: timeoutSeconds
-        )
-        do {
-            try sendRequest(
-                DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoTCP),
-                on: client
+        try withRetry {
+            let client = try connect(
+                socketPath: socketPath,
+                timeoutSeconds: timeoutSeconds
             )
-            let (responseData, fd) = try UnixFDPassing.receive(on: client)
-            if let fd { Darwin.close(fd) }
-            let response = try decodeResponse(responseData)
-            guard response.ok else {
+            do {
+                try sendRequest(
+                    DnsBind.BindRequest(address: address, port: port, proto: DnsBind.protoTCP),
+                    on: client
+                )
+                let (responseData, fd) = try UnixFDPassing.receive(on: client)
+                if let fd { Darwin.close(fd) }
+                let response = try decodeResponse(responseData)
+                guard response.ok else {
+                    Darwin.close(client)
+                    throw Error.helper(response.error ?? "bind failed")
+                }
+                guard response.event == "listening" else {
+                    Darwin.close(client)
+                    throw Error.response("expected listening event, got \(response.event ?? "nil")")
+                }
+                var clear = timeval(tv_sec: 0, tv_usec: 0)
+                setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_RCVTIMEO,
+                    &clear,
+                    socklen_t(MemoryLayout<timeval>.size)
+                )
+                setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_SNDTIMEO,
+                    &clear,
+                    socklen_t(MemoryLayout<timeval>.size)
+                )
+                return TCPAcceptStream(socket: client)
+            } catch {
                 Darwin.close(client)
-                throw Error.helper(response.error ?? "bind failed")
+                throw error
             }
-            guard response.event == "listening" else {
-                Darwin.close(client)
-                throw Error.response("expected listening event, got \(response.event ?? "nil")")
-            }
-            // Accept stream stays open indefinitely; clear the connect-phase timeouts.
-            var clear = timeval(tv_sec: 0, tv_usec: 0)
-            setsockopt(
-                client,
-                SOL_SOCKET,
-                SO_RCVTIMEO,
-                &clear,
-                socklen_t(MemoryLayout<timeval>.size)
-            )
-            setsockopt(
-                client,
-                SOL_SOCKET,
-                SO_SNDTIMEO,
-                &clear,
-                socklen_t(MemoryLayout<timeval>.size)
-            )
-            return TCPAcceptStream(socket: client)
-        } catch {
-            Darwin.close(client)
-            throw error
         }
     }
 
@@ -188,6 +197,49 @@ enum DnsBindClient {
         deinit {
             close()
         }
+    }
+
+    private static func isTransient(_ error: Error) -> Bool {
+        switch error {
+        case let .connect(message):
+            return message == "Resource temporarily unavailable"
+                || message.contains("Connection refused")
+                || message.contains("Connection reset")
+        case let .system(_, code):
+            return code == EAGAIN
+                || code == EINTR
+                || code == EWOULDBLOCK
+                || code == ETIMEDOUT
+                || code == ECONNREFUSED
+        case let .helper(message):
+            return message.contains("Resource temporarily unavailable")
+                || message.contains("Address already in use")
+        default:
+            return false
+        }
+    }
+
+    private static func withRetry<T>(
+        attempts: Int = 5,
+        initialDelay: TimeInterval = 0.1,
+        _ body: () throws -> T
+    ) throws -> T {
+        var lastError: Swift.Error?
+        for attempt in 0 ..< attempts {
+            do {
+                return try body()
+            } catch {
+                lastError = error
+                if let bindError = error as? Error,
+                   isTransient(bindError),
+                   attempt < attempts - 1 {
+                    Thread.sleep(forTimeInterval: initialDelay + Double(attempt) * 0.1)
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastError ?? Error.response("dns-bind retry exhausted")
     }
 
     private static func connect(socketPath: String, timeoutSeconds: Int) throws -> Int32 {

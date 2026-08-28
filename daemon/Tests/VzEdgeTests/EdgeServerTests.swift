@@ -58,6 +58,50 @@ import VzDaemonKit
     }
 }
 
+@Test func ingressGuestListenerSkipsDegradeWhenLoopbackIsActive() throws {
+    let loopbackHTTP = HostGatewayIngressProxy.Binding(
+        gatewayIP: "127.0.0.1",
+        port: 80,
+        backendHost: "127.0.0.1",
+        backendPort: 18_080
+    )
+    let loopbackHTTPS = HostGatewayIngressProxy.Binding(
+        gatewayIP: "127.0.0.1",
+        port: 443,
+        backendHost: "127.0.0.1",
+        backendPort: 18_443
+    )
+    let guest = HostGatewayIngressProxy.Binding(
+        gatewayIP: "10.90.0.1",
+        port: 443,
+        backendHost: "127.0.0.1",
+        backendPort: 18_443
+    )
+    let result = HostGatewayIngressProxy.EnsureResult(
+        active: [loopbackHTTP, loopbackHTTPS],
+        skipped: [(guest, "dns-bind: busy")]
+    )
+    let warning = try evaluateIngressGatewayEnsure(
+        result,
+        loopbackGateways: ["127.0.0.1"],
+        httpPort: 80,
+        httpsPort: 443
+    )
+    #expect(warning?.contains("10.90.0.1:443") == true)
+
+    #expect(throws: EdgeServerError.self) {
+        _ = try evaluateIngressGatewayEnsure(
+            HostGatewayIngressProxy.EnsureResult(
+                active: [],
+                skipped: [(loopbackHTTPS, "bind failed")]
+            ),
+            loopbackGateways: ["127.0.0.1"],
+            httpPort: 80,
+            httpsPort: 443
+        )
+    }
+}
+
 private extension JSONValue {
     subscript(_ key: String) -> JSONValue? {
         guard case let .object(values) = self else { return nil }

@@ -23,6 +23,9 @@ pub(crate) const VM_NOT_RUNNING: &str = "VM_NOT_RUNNING";
 pub(crate) const AGENT_NOT_READY: &str = "AGENT_NOT_READY";
 pub(crate) const ROUTE_STATUS_AMBIGUOUS: &str = "ROUTE_STATUS_AMBIGUOUS";
 pub(crate) const INGRESS_UNREACHABLE: &str = "INGRESS_UNREACHABLE";
+pub(crate) const INGRESS_GATEWAY_DOWN: &str = "INGRESS_GATEWAY_DOWN";
+pub(crate) const INGRESS_CADDY_BACKEND_DOWN: &str = "INGRESS_CADDY_BACKEND_DOWN";
+pub(crate) const INGRESS_CADDY_ORPHAN: &str = "INGRESS_CADDY_ORPHAN";
 pub(crate) const MOUNT_MISSING: &str = "MOUNT_MISSING";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -279,7 +282,7 @@ fn collect_status_from(
     }
     apply_yaml_probes(environment, socket_path, &mut vms, &mut warnings, &mut health);
     let routes = route_snapshot(environment, socket_path, &mut warnings, &mut health);
-    let ingress = ingress_snapshot(environment, &mut warnings, &mut health);
+    let ingress = ingress_snapshot(environment, socket_path, &services, &mut warnings, &mut health);
     Ok(StatusReport {
         health,
         project,
@@ -765,9 +768,13 @@ fn route_snapshot(
 
 fn ingress_snapshot(
     environment: &Environment,
+    socket_path: &Path,
+    services: &Value,
     warnings: &mut Vec<Warning>,
     health: &mut Health,
 ) -> Value {
+    use crate::ingress::caddy_listen_port;
+
     let Some(ingress) = environment.spec.ingress.as_ref() else {
         return json!({ "enabled": false });
     };
@@ -775,24 +782,158 @@ fn ingress_snapshot(
         return json!({ "enabled": false });
     }
     let bind = format!("{}:{}", ingress.bind, ingress.https_port);
-    let reachable = bind
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| addrs.next())
-        .and_then(|addr| TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).ok())
-        .is_some();
-    if !reachable {
+    let gateway_ok = tcp_probe(&bind);
+    let caddy_backend_bind = format!("{}:{}", ingress.bind, caddy_listen_port(ingress.https_port));
+    let caddy_backend_ok = tcp_probe(&caddy_backend_bind);
+    let project = &environment.spec.project;
+    let caddy_name = format!("caddy-{project}");
+    let edge = services.get("vz_edge");
+    let edge_services = edge
+        .and_then(|value| value.get("services"))
+        .and_then(Value::as_array);
+    let caddy_running = edge_services.is_some_and(|items| {
+        items.iter().any(|item| {
+            item.get("name") == Some(&Value::String(caddy_name.clone()))
+                && item.get("running") == Some(&Value::Bool(true))
+        })
+    });
+    let ingress_bindings = edge
+        .and_then(|value| value.get("ingress_bindings"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let ingress_loopback_ok = edge
+        .and_then(|value| value.get("ingress_loopback_ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(gateway_ok);
+    let orphan_caddy = edge
+        .and_then(|value| value.get("ingress_orphan_caddy"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut dns_hosts = serde_json::Map::new();
+    let mut dns_ok = true;
+    for route in &ingress.routes {
+        match crate::vm::supervisor_rpc_deadline(
+            socket_path,
+            "dns.lookup",
+            json!({ "name": route.host }),
+            5,
+        ) {
+            Ok(response) => {
+                let host_ips = response
+                    .get("host")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let route_ok = host_ips.iter().any(|ip| *ip == "127.0.0.1");
+                dns_ok &= route_ok;
+                dns_hosts.insert(route.host.clone(), json!(host_ips));
+            }
+            Err((_, message)) => {
+                dns_ok = false;
+                dns_hosts.insert(route.host.clone(), json!({ "error": message }));
+            }
+        }
+    }
+    let ok = gateway_ok
+        && caddy_backend_ok
+        && caddy_running
+        && dns_ok
+        && ingress_loopback_ok
+        && orphan_caddy == 0
+        && ingress_bindings > 0;
+    if !gateway_ok || !ingress_loopback_ok {
+        push_warning(
+            warnings,
+            health,
+            INGRESS_GATEWAY_DOWN,
+            Health::Degraded,
+            format!("host cannot reach ingress gateway {bind}"),
+            None,
+            "vzctl services restart edge; check vz-dns-bind and HostGatewayIngressProxy",
+        );
+    }
+    if gateway_ok && !caddy_backend_ok {
+        push_warning(
+            warnings,
+            health,
+            INGRESS_CADDY_BACKEND_DOWN,
+            Health::Degraded,
+            format!("ingress gateway up but Caddy backend {caddy_backend_bind} is unreachable"),
+            None,
+            "vzctl apply; inspect edge runtime logs under state/runtime/edge/ingress",
+        );
+    }
+    if !caddy_running {
         push_warning(
             warnings,
             health,
             INGRESS_UNREACHABLE,
             Health::Degraded,
-            format!("host cannot reach ingress {bind}"),
+            format!("ingress gateway reachable but {caddy_name} is not running"),
             None,
-            "vzctl services status; check spec.ingress.bind",
+            "vzctl apply; inspect edge runtime logs under state/runtime/edge/ingress",
         );
     }
-    json!({ "enabled": true, "bind": bind, "ok": reachable })
+    if !dns_ok {
+        push_warning(
+            warnings,
+            health,
+            INGRESS_UNREACHABLE,
+            Health::Degraded,
+            "ingress host DNS does not resolve to 127.0.0.1".into(),
+            None,
+            "re-run vzctl apply ensure_ingress; check dns.host_services / ingress.ensure hosts",
+        );
+    }
+    if ingress_bindings == 0 {
+        push_warning(
+            warnings,
+            health,
+            INGRESS_UNREACHABLE,
+            Health::Degraded,
+            "ingress has no active gateway bindings".into(),
+            None,
+            "vzctl doctor; sudo vzctl dns install-bind-helper",
+        );
+    }
+    if orphan_caddy > 0 {
+        push_warning(
+            warnings,
+            health,
+            INGRESS_CADDY_ORPHAN,
+            Health::Degraded,
+            format!("found {orphan_caddy} orphan Caddy process(es) for project {project}"),
+            None,
+            "vzctl services restart edge; stale processes are reaped on next reconcile",
+        );
+    }
+    json!({
+        "enabled": true,
+        "bind": bind,
+        "ok": ok,
+        "gateway_ok": gateway_ok,
+        "caddy_backend_ok": caddy_backend_ok,
+        "caddy_backend_bind": caddy_backend_bind,
+        "caddy_running": caddy_running,
+        "ingress_loopback_ok": ingress_loopback_ok,
+        "ingress_orphan_caddy": orphan_caddy,
+        "ingress_bindings": ingress_bindings,
+        "dns_ok": dns_ok,
+        "dns_hosts": Value::Object(dns_hosts),
+    })
+}
+
+fn tcp_probe(bind: &str) -> bool {
+    bind.to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .and_then(|addr| TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).ok())
+        .is_some()
 }
 
 fn format_issues(path: &Path, issues: &[ValidationIssue]) -> String {
@@ -861,6 +1002,9 @@ pub(crate) fn doctor_stack_checks(directory: &Path, socket_path: &Path) -> Vec<c
                     AGENT_NOT_READY => "stack.agent_not_ready",
                     ROUTE_STATUS_AMBIGUOUS => "stack.route_status_ambiguous",
                     INGRESS_UNREACHABLE => "stack.ingress_unreachable",
+                    INGRESS_GATEWAY_DOWN => "stack.ingress_gateway_down",
+                    INGRESS_CADDY_BACKEND_DOWN => "stack.ingress_caddy_backend_down",
+                    INGRESS_CADDY_ORPHAN => "stack.ingress_caddy_orphan",
                     MOUNT_MISSING => "stack.mount_missing",
                     _ => "stack.warning",
                 },
@@ -1108,5 +1252,16 @@ mod tests {
     fn watch_filter_matches_prefix() {
         assert!(watch_match(Some("probe.*,stack.status"), "probe.dns_guest_probe_fail"));
         assert!(!watch_match(Some("vm.*"), "stack.status"));
+    }
+
+    #[test]
+    fn tcp_probe_rejects_unreachable_port() {
+        assert!(!tcp_probe("127.0.0.1:1"));
+    }
+
+    #[test]
+    fn caddy_listen_port_maps_privileged_https() {
+        assert_eq!(crate::ingress::caddy_listen_port(443), 18_443);
+        assert_eq!(crate::ingress::caddy_listen_port(8443), 8443);
     }
 }
