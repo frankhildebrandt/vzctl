@@ -84,7 +84,7 @@ Only these identities are accepted:
 
 | Kind | Process name | Binary basename | Arguments |
 |---|---|---|---|
-| Caddy | `caddy-{project}` | `caddy` | fixed `run --config … --adapter caddyfile` |
+| Caddy | `caddy-shared` when every ingress intent uses the same binary and `backend_http_port` / `backend_https_port`; otherwise `caddy-{project}` | `caddy` | fixed `run --config … --adapter caddyfile` |
 | Dex | `dex-{project}` | `dex` | fixed `serve {config}` |
 | Dev IdP | `oidc-simple-{project}` | `vzctl-oidc-simple` | fixed `--config {config}` |
 
@@ -92,7 +92,10 @@ Unexpected exits use bounded exponential restart backoff (1–30 seconds).
 Intentional removal never restarts a child. Caddy config is validated before
 the running instance is replaced. Caddy, Dex and oidc-simple must accept a TCP
 connection on their configured loopback listener before the generation commits.
-Configs, PID files and logs are scoped by project below `runtime/edge/`.
+Shared Caddy writes `runtime/edge/ingress/Caddyfile.{generation}` and reaps
+stale `caddy-{project}` workDirs. Per-project Caddy, Dex and oidc-simple stay
+under `runtime/edge/{ingress,oidc}/{project}/`. Gateway bindings are unique by
+`gatewayIP:port` so two stacks cannot double-map loopback `:80`/`:443`.
 
 ## Failure semantics
 

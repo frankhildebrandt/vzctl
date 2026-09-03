@@ -14,6 +14,16 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var key: String { "\(gatewayIP):\(port)" }
     }
 
+    /// Keep the first binding per `gatewayIP:port` so two stacks cannot double-map :80/:443.
+    static func uniqueBindings(_ bindings: [Binding]) -> [Binding] {
+        var seen = Set<String>()
+        var unique: [Binding] = []
+        for binding in bindings where seen.insert(binding.key).inserted {
+            unique.append(binding)
+        }
+        return unique
+    }
+
     struct EnsureResult: Sendable {
         let active: [Binding]
         let skipped: [(Binding, String)]

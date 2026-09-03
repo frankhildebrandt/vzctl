@@ -232,6 +232,7 @@ final class EdgeServer: @unchecked Sendable {
         let oidc = try array(desired["oidc"] ?? .array([]))
 
         var serviceSpecs: [EmbeddedProcessManager.Spec] = []
+        var caddyIntents: [CaddyIntent] = []
         var gatewayBindings: [HostGatewayIngressProxy.Binding] = []
         var loopbackGateways = Set<String>(["127.0.0.1"])
         var ingressHttpPort: UInt16 = 80
@@ -264,16 +265,20 @@ final class EdgeServer: @unchecked Sendable {
                 name: "Caddyfile.\(generation)", mode: 0o600
             )
             let backendHTTP = try port("backend_http_port", params, default: try port("http_port", params, default: 80))
-            serviceSpecs.append(.init(
-                kind: "caddy", project: project, name: "caddy-\(project)", binary: binary,
-                arguments: ["run", "--config", configPath, "--adapter", "caddyfile"],
-                workDir: workDir.path,
-                pidFile: workDir.appendingPathComponent("caddy.pid").path, env: [:],
-                readiness: .init(host: "127.0.0.1", port: backendHTTP)
-            ))
             let http = try port("http_port", params, default: 80)
             let https = try port("https_port", params, default: 443)
             let backendHTTPS = try port("backend_https_port", params, default: https)
+            caddyIntents.append(
+                CaddyIntent(
+                    project: project,
+                    caddyfile: caddyfile,
+                    binary: binary,
+                    backendHTTP: backendHTTP,
+                    backendHTTPS: backendHTTPS,
+                    workDir: workDir,
+                    configPath: configPath
+                )
+            )
             ingressHttpPort = http
             ingressHttpsPort = https
             for gateway in try strings(params["gateways"] ?? .array([])) {
@@ -314,6 +319,10 @@ final class EdgeServer: @unchecked Sendable {
                 )
             }
         }
+        gatewayBindings = HostGatewayIngressProxy.uniqueBindings(gatewayBindings)
+        serviceSpecs.append(
+            contentsOf: try makeCaddySpecs(intents: caddyIntents, generation: generation)
+        )
         for raw in oidc {
             let params = try object(raw)
             let project = try safeProject(string("project", params))
@@ -448,6 +457,45 @@ final class EdgeServer: @unchecked Sendable {
         try Data(value.utf8).write(to: target, options: .atomic)
         _ = chmod(target.path, mode)
         return target.path
+    }
+
+    /// One Caddy child when stacks share loopback ports; otherwise one child per project.
+    private func makeCaddySpecs(
+        intents: [CaddyIntent],
+        generation: Int64
+    ) throws -> [EmbeddedProcessManager.Spec] {
+        try CaddyProcessPlan.children(from: intents).map { child in
+            for workDir in child.reapWorkDirs {
+                EmbeddedProcessReaper.reapStale(
+                    binary: child.binary,
+                    workDir: workDir.path,
+                    pidFile: workDir.appendingPathComponent("caddy.pid").path
+                )
+            }
+            let workDir: URL
+            let configPath: String
+            if child.shared {
+                workDir = runtimeDirectory.appendingPathComponent("ingress", isDirectory: true)
+                configPath = try writeConfig(
+                    child.caddyfile, directory: workDir,
+                    name: "Caddyfile.\(generation)", mode: 0o600
+                )
+            } else {
+                workDir = child.workDir
+                configPath = child.configPath
+            }
+            return .init(
+                kind: "caddy",
+                project: child.project,
+                name: child.name,
+                binary: child.binary,
+                arguments: ["run", "--config", configPath, "--adapter", "caddyfile"],
+                workDir: workDir.path,
+                pidFile: workDir.appendingPathComponent("caddy.pid").path,
+                env: [:],
+                readiness: .init(host: "127.0.0.1", port: child.backendHTTP)
+            )
+        }
     }
 
     private func parseSnapshot(_ value: JSONValue) throws -> NetworkSnapshot {

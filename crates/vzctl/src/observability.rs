@@ -14,6 +14,8 @@ const EXIT_INVALID: u8 = 3;
 const EXIT_DEGRADED: u8 = 1;
 const EXIT_CRITICAL: u8 = 2;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// `stack.status` reads `vz_edge.services` and `ingress_bindings` from this RPC.
+const SUPERVISOR_HEALTH_METHOD: &str = "daemon.health";
 
 pub(crate) const DNS_GUEST_PROBE_FAIL: &str = "DNS_GUEST_PROBE_FAIL";
 pub(crate) const DNS_HOST_PROBE_FAIL: &str = "DNS_HOST_PROBE_FAIL";
@@ -250,8 +252,13 @@ fn collect_status_from(
         .unwrap_or(json!({ "attachments": [] }));
     let dns = crate::vm::supervisor_rpc_deadline(socket_path, "dns.status", json!({}), 3)
         .unwrap_or(json!({ "ok": false }));
-    let services = crate::vm::supervisor_rpc_deadline(socket_path, "health", json!({}), 3)
-        .unwrap_or(json!({ "ok": false }));
+    let services = crate::vm::supervisor_rpc_deadline(
+        socket_path,
+        SUPERVISOR_HEALTH_METHOD,
+        json!({}),
+        3,
+    )
+    .unwrap_or(json!({ "ok": false }));
 
     let mut health = Health::Ok;
     let mut warnings = Vec::new();
@@ -793,22 +800,19 @@ fn ingress_snapshot(
         .and_then(Value::as_array);
     let caddy_running = edge_services.is_some_and(|items| {
         items.iter().any(|item| {
-            item.get("name") == Some(&Value::String(caddy_name.clone()))
-                && item.get("running") == Some(&Value::Bool(true))
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+            let running = item.get("running") == Some(&Value::Bool(true));
+            running && (name == caddy_name || name == "caddy-shared")
         })
     });
-    let ingress_bindings = edge
-        .and_then(|value| value.get("ingress_bindings"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let ingress_bindings = json_u64(
+        edge.and_then(|value| value.get("ingress_bindings")),
+    );
     let ingress_loopback_ok = edge
         .and_then(|value| value.get("ingress_loopback_ok"))
         .and_then(Value::as_bool)
         .unwrap_or(gateway_ok);
-    let orphan_caddy = edge
-        .and_then(|value| value.get("ingress_orphan_caddy"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let orphan_caddy = json_u64(edge.and_then(|value| value.get("ingress_orphan_caddy")));
     let mut dns_hosts = serde_json::Map::new();
     let mut dns_ok = true;
     for route in &ingress.routes {
@@ -934,6 +938,21 @@ fn tcp_probe(bind: &str) -> bool {
         .and_then(|mut addrs| addrs.next())
         .and_then(|addr| TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).ok())
         .is_some()
+}
+
+fn json_u64(value: Option<&Value>) -> u64 {
+    let Some(value) = value else {
+        return 0;
+    };
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|n| {
+                (n.is_finite() && n >= 0.0 && n == n.trunc()).then_some(n as u64)
+            })
+        })
+        .unwrap_or(0)
 }
 
 fn format_issues(path: &Path, issues: &[ValidationIssue]) -> String {
@@ -1263,5 +1282,101 @@ mod tests {
     fn caddy_listen_port_maps_privileged_https() {
         assert_eq!(crate::ingress::caddy_listen_port(443), 18_443);
         assert_eq!(crate::ingress::caddy_listen_port(8443), 8443);
+    }
+
+    #[test]
+    fn stack_status_reads_edge_children_from_daemon_health() {
+        assert_eq!(SUPERVISOR_HEALTH_METHOD, "daemon.health");
+    }
+
+    #[test]
+    fn ingress_accepts_shared_caddy_and_gateway_bindings() {
+        let environment = status_ingress_environment();
+        let services = json!({
+            "ok": true,
+            "vz_edge": {
+                "ok": true,
+                "services": [
+                    {"name": "caddy-shared", "kind": "caddy", "project": "shared", "running": true}
+                ],
+                "ingress_bindings": 4.0,
+                "ingress_loopback_ok": true,
+                "ingress_orphan_caddy": 0
+            }
+        });
+        let mut warnings = Vec::new();
+        let mut health = Health::Ok;
+        let snapshot = ingress_snapshot(
+            &environment,
+            Path::new("/tmp/vzctl-no-supervisor.sock"),
+            &services,
+            &mut warnings,
+            &mut health,
+        );
+        assert_eq!(snapshot["caddy_running"], true);
+        assert_eq!(snapshot["ingress_bindings"], 4);
+        assert!(!warnings.iter().any(|warning| {
+            warning.message.contains("caddy-demo is not running")
+                || warning.message.contains("no active gateway bindings")
+        }));
+    }
+
+    #[test]
+    fn ingress_warns_when_edge_payload_omits_services_and_bindings() {
+        let environment = status_ingress_environment();
+        let mut warnings = Vec::new();
+        let mut health = Health::Ok;
+        let snapshot = ingress_snapshot(
+            &environment,
+            Path::new("/tmp/vzctl-no-supervisor.sock"),
+            &json!({ "ok": false }),
+            &mut warnings,
+            &mut health,
+        );
+        assert_eq!(snapshot["caddy_running"], false);
+        assert_eq!(snapshot["ingress_bindings"], 0);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.message.contains("caddy-demo is not running")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.message.contains("no active gateway bindings")));
+    }
+
+    fn status_ingress_environment() -> Environment {
+        crate::config::validate_source(
+            r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: demo }
+spec:
+  project: demo
+  domain: demo.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
+  networks:
+    lan: { cidr: 10.90.0.0/24, mode: shared }
+  routes: []
+  policies: []
+  ingress:
+    enabled: true
+    httpPort: 27991
+    httpsPort: 27992
+    routes:
+      - { host: app.svc.demo.vz.test, to: "web:80" }
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 8G
+      networks:
+        - { name: lan, ip: 10.90.0.10 }
+"#,
+        )
+        .unwrap()
     }
 }

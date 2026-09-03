@@ -13,6 +13,14 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
 ## Bind
 
 - Host: `127.0.0.1:80` / `:443` (ports configurable via `httpPort` / `httpsPort`)
+- **One Caddy process** serves every project that still uses those public ports.
+  `vz-edge` merges site blocks into one Caddyfile (`caddy-shared`) so SNI on
+  `:443` can distinguish `*.svc.{project}.vz.test`. Separate `caddy-{project}`
+  children exist only when `httpPort`/`httpsPort` are unprivileged (`≥ 1024`)
+  and therefore skip the `+18000` loopback mapping.
+- Caddy `reverse_proxy` upstreams use a **vmnet** attachment IP. Docker-bridge
+  IPs (`backend: docker`) are skipped unless the VM has no vmnet address — the
+  Mac cannot reach docker0.
 - Guests reach the same Caddy via Split-Horizon DNS + Host Gateway Proxy:
   - Host DNS (`127.0.0.1:15353`): Ingress hosts → `127.0.0.1`
   - Guest DNS (bridge `.0:53`): Ingress hosts → genau die vmnet host-service
@@ -65,7 +73,8 @@ upstream (e.g. `web.localhost`). Guests must not use `*.localhost`.
 
 ## Lifecycle
 
-`vz-edge` owns the Caddy child process and guest-facing listeners. The control
-plane persists the project intent and reconciles a global generation. Caddyfile
-validation happens before replacement; a failed generation does not replace the
+The control plane persists each project's ingress intent and reconciles a
+**global** generation. `vz-edge` concatenates those Caddyfiles (one global
+block, then every site block) when backend ports match. Caddyfile validation
+happens before replacement; a failed generation does not replace the
 last-good edge manifest. WebSocket / gRPC pass-through uses Caddy defaults.

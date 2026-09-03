@@ -40,6 +40,25 @@ pub(crate) fn caddy_listen_port(public: u16) -> u16 {
     }
 }
 
+/// Networks whose IPs live on a Docker bridge, not a host-reachable vmnet.
+fn docker_network_names(environment: &Environment, networks: &[Value]) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = environment
+        .spec
+        .networks
+        .iter()
+        .filter(|(_, network)| network.backend == crate::config::NetworkBackend::Docker)
+        .map(|(name, _)| name.clone())
+        .collect();
+    for item in networks {
+        if item["backend"].as_str() == Some("docker") {
+            if let Some(name) = item["name"].as_str() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 /// Build a Caddyfile and host list from the environment + live attachments.
 pub(crate) fn render(
     environment: &Environment,
@@ -61,7 +80,10 @@ pub(crate) fn render(
         });
     };
 
-    let mut vm_ips: BTreeMap<String, String> = BTreeMap::new();
+    let docker_networks = docker_network_names(environment, networks);
+    // Caddy runs on the Mac: prefer vmnet IPs, docker-bridge only as last resort.
+    let mut preferred_ips: BTreeMap<String, String> = BTreeMap::new();
+    let mut docker_ips: BTreeMap<String, String> = BTreeMap::new();
     let mut gateways = BTreeMap::new();
     // Host clients resolve *.svc → 127.0.0.1; proxy that loopback too.
     gateways.insert(ingress.bind.clone(), ());
@@ -72,12 +94,22 @@ pub(crate) fn render(
         if item["project"] != environment.spec.project {
             continue;
         }
-        if let Some(ip) = item["ip"].as_str() {
-            vm_ips
+        let Some(ip) = item["ip"].as_str() else {
+            continue;
+        };
+        let network = item["network"].as_str().unwrap_or("");
+        if docker_networks.contains(network) {
+            docker_ips.entry(vm.to_string()).or_insert_with(|| ip.to_string());
+        } else {
+            preferred_ips
                 .entry(vm.to_string())
                 .or_insert_with(|| ip.to_string());
         }
     }
+    for (vm, ip) in docker_ips {
+        preferred_ips.entry(vm).or_insert(ip);
+    }
+    let vm_ips = preferred_ips;
 
     let mut binding_sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in networks {
@@ -396,5 +428,68 @@ spec:
         )
         .unwrap();
         assert!(rendered.guest_dns.is_empty());
+    }
+
+    #[test]
+    fn caddy_upstream_skips_docker_backend_ip_when_vmnet_exists() {
+        let environment = crate::config::validate_source(
+            r#"
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: iq-store }
+spec:
+  project: iq-store
+  domain: iq-store.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: { enabled: true, upstream: system }
+  images:
+    ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 }
+  networks:
+    lan: { cidr: 10.92.0.0/24, mode: shared }
+    containers: { cidr: 10.93.0.0/24, mode: shared, backend: docker, dhcp: false, natEgress: false }
+  routes: []
+  policies: []
+  ingress:
+    enabled: true
+    routes:
+      - { host: store.svc.iq-store.vz.test, to: "docker:8080" }
+  vms:
+    docker:
+      from: ubuntu-base
+      disk: 40G
+      networks:
+        - { name: lan, ip: 10.92.0.2 }
+        - { name: containers, ip: 10.93.0.2 }
+      roles: [docker, router]
+"#,
+        )
+        .unwrap();
+        let networks = vec![
+            json!({"name":"containers","cidr":"10.93.0.0/24","project":"iq-store","backend":"docker","runtime_state":"active"}),
+            json!({"name":"lan","cidr":"10.92.0.0/24","project":"iq-store","backend":"vmnet","runtime_state":"active"}),
+        ];
+        let attachments = vec![
+            json!({"vm_id":"iq-store/docker","network":"containers","ip":"10.93.0.2","project":"iq-store"}),
+            json!({"vm_id":"iq-store/docker","network":"lan","ip":"10.92.0.2","project":"iq-store"}),
+        ];
+        let rendered = render(
+            &environment,
+            &networks,
+            &attachments,
+            &std::env::temp_dir(),
+        )
+        .unwrap();
+        assert!(
+            rendered.caddyfile.contains("reverse_proxy 10.92.0.2:8080"),
+            "host-reachable vmnet IP must win, got:\n{}",
+            rendered.caddyfile
+        );
+        assert!(
+            !rendered.caddyfile.contains("reverse_proxy 10.93.0.2:8080"),
+            "docker-backend IP is not reachable from the Mac"
+        );
     }
 }
