@@ -8,96 +8,43 @@ Issues, Labels und Milestones für **frankhildebrandt/vzctl**.
 - Machine map: [`06-github-issue-map.json`](06-github-issue-map.json)
 - Bootstrap script: [`../../scripts/bootstrap-github-issues.py`](../../scripts/bootstrap-github-issues.py)
 
-## Aktuelle Abarbeitung — finaler fachlicher Stand 20.10.2026
+## Aktueller Abschluss — 20.10.2026
 
-Maßgeblich: [Abschlussziel](12-release-completion-goal.md),
-[Live-Abnahme](09-live-update-acceptance.md) und
-[Release-Übergabe](handoffs/completion-release.md).
-**61/63 abgeschlossen**; fachliche Blöcke A/B erfüllt, nur die übergreifenden
-Übergabe-/Auslieferungseinträge F16/F17 bleiben offen. Kein veröffentlichtes Release.
+**65/66 abgeschlossen;0 aktive technische Restarbeit.** PR #85 gemergt,
+v0.3.0-alpha4 veröffentlicht und lokal abgenommen. Alle6 Asset-Hashes und
+Tag-Ziel bestätigt. Release-CI auf exakt d050883 vollständig grün.
 
-| Issue | Stand |
+| Issue | Aktueller Stand |
 |---|---|
-| [#54](https://github.com/frankhildebrandt/vzctl/issues/54) | Offen nur für Repository-Auslieferung; native Topologie/Recovery/Neutralität, ui-dev-Start-Smoke und echter langer UI-Apply belegt |
-| [#73](https://github.com/frankhildebrandt/vzctl/issues/73) | Offen für Gesamtübergabe/Version/Repository/externe PKG-Abnahme; Kriterien einzeln nachgeführt |
-| [#74](https://github.com/frankhildebrandt/vzctl/issues/74) | Offen nur für Repository-Auslieferung; K3s, Stack-Manifeste, privater Kubeconfig-Export und Lifecycle belegt |
-| [#75](https://github.com/frankhildebrandt/vzctl/issues/75) | Offen nur für Repository-Auslieferung; vier Controller auf VM/Docker/K3s einschließlich Full/MCP/Repeat/Late/Fault/Retention/Lifecycle/UI belegt |
-| [#76](https://github.com/frankhildebrandt/vzctl/issues/76) | Offen für Repository-Auslieferung und saubere externe macOS-26-PKG-Erstinstallation/Update; aktuelle Dev-TAR/PKG/DMG bereits vollständig geprüft |
-| [#77](https://github.com/frankhildebrandt/vzctl/issues/77) | **Geschlossen:** Projekt-Netzidentität, Legacy-Erhalt, gleichnamige Netze, F19/Full/Repeat und abschließende Lifecycle-/Recovery-Zuordnung erfüllt |
-| [#84](https://github.com/frankhildebrandt/vzctl/issues/84) | **Geschlossen:** F48-Pod-DNS samt regulärem Apply, striktem TLS/Full/MCP und Repeat ohne K3s-/CoreDNS-Rotation belegt |
-| #17/#48/#63/#78–#83 | Bereits geschlossen; jeweilige Code-/Test-/Live-Belege in 09 und zugehörigen Berichten |
+| #54/#74/#75 | Durch [PR #85](https://github.com/frankhildebrandt/vzctl/pull/85) gemergt und geschlossen |
+| #17/#48/#63/#77/#78–#84 | Bereits mit jeweiligen Code-/Test-/Live-Belegen geschlossen |
+| [#76](https://github.com/frankhildebrandt/vzctl/issues/76) | Einzig offen: saubere PKG-Erstinstallation und PKG-Update/Wiederanlauf auf separatem macOS26-Mac; derzeit nicht verfügbar |
+| [#73](https://github.com/frankhildebrandt/vzctl/issues/73) | Übergreifender Tracker bleibt für genau das externe #76-Kriterium offen |
 
-Vorhandene Tests/Builds übernommen: 496 Rust-Tests, zwei ausgewiesene Ignores;
-Swift-/UI-/native Nachweise und warningfreie Builds. Aktuelle F48-Dev-Pakete
-vollständig geprüft: [Paketbericht](package-verification-2026-10-20.md).
-Paket-CLI `105cb475…` und installierte Live-CLI `f7cdecec…` unterscheiden sich
-byteweise; Live-Receipts belegen keine Byteidentität der Paket-CLI. Ad-hoc-
-Signaturen, PKG unsigniert, keine Notarisierung/Gatekeeper-Abnahme.
+[Release- und Installationsnachweis](release-0.3.0-alpha4.md),
+[redigierte Verifikationsdaten](release-0.3.0-alpha4-verification.json),
+[Abschlussziel](12-release-completion-goal.md), [Folgeauftrag](10-next-slice.md),
+[Canvas](canvases/stack-review-2026-10-20.canvas.tsx).
 
+Final6 VMs running, IQ-Store3 bewusst stopped. Neti/Lab healthok/warnings0,
+IQ-Store neutral/checksskipped. Neun Ready-Claims plus bewusstes Retained,
+zwei K3s-Nodes Ready; VM/Docker/K3s PostgreSQL/S3/OIDC und HTTPS erfolgreich.
+Daten,9Bindings und Seeds erhalten; alle installierten Programme/App bytegleich
+zum finalen Paketbuild. Frühere historische Worker-P99-Warnung wurde nicht
+mit kosmetischen Calls beseitigt; der beauftragte reguläre Update-Neustart
+hat das Messfenster natürlich neu begonnen. Keine Behauptung vollständig
+aktualisierten Guest-Trusts in absichtlich gestoppten IQ-Store-Gästen.
 
-## Repository-Übergabe · 20.10.2026
+Frühere funktionale Abnahme und Einzelhashes bleiben in
+[09](09-live-update-acceptance.md) und den dort verknüpften Berichten erhalten.
+Die stabile ID-Map bleibt unverändert. Kein noch offenes Repositorykriterium.
 
-Der Nutzer hat Commit, Push und einen Draft-PR ausdrücklich freigegeben.
-Branch: codex/release-readiness-2026-10-20, Zielbranch: main.
-Der zuvor geprüfte Gesamtstand wird übernommen. Runtime und Release-Version
-bleiben unverändert. PR-Link und Commit werden nach Erstellung ergänzt;
-Merge, Tag und Veröffentlichung sind kein Teil dieses Auftrags.
-
-## Maßgebliche Abschlussbelege
-
-Private `evidence/`-Pfade liegen unter `/Users/frank/vzctl-labs/controller-lab/`.
-Die einzelnen Full-/Repeat-/Late-/MCP-/Fault-/Retention-Belege bleiben in
-[09-live-update-acceptance.md](09-live-update-acceptance.md) erhalten.
-Keine erfolgreiche Prüfung wurde für alte offene Häkchen wiederholt.
-
-| Abschluss | Beleg | SHA256 |
-|---|---|---|
-| CP-Neustart | `evidence/lifecycle-f48-cp-restart-20261020T182747.606692Z/result.json` | `3eae1d8a0d6d137ac28c6e9c60d029b5b04f400ecf300e6563b07572ed33148e` |
-| Graceful Lab-down | `evidence/lifecycle-f48-down-20261020T182901.716132Z/result.json` | `129d0a760ae380095feb68763e0833f216cb899f07969dd242715911e27c7a97` |
-| Lesender UI-Observer | `evidence/lifecycle-f48-observe-ui-apply-20261020T184206.679011Z/result.json` | `90ca73dd28fbf96b1f7a3c7779e2a10a3e8cda6236ff4c120f4890dc7cf91deb` |
-| Finale Runtime-/Consumer-Nachabnahme | `evidence/post-ui-consumers-f48-20261020T184404.823467Z/result.json` | `e805dfb334c549a279049b3079a9b4f00872fc0921e7c70ab6a028a2c8b4e845` |
-
-Root hat diese Belege gelesen und ihre Hashes geprüft. Final alle neun
-PostgreSQL-/S3-/OIDC-Probes für VM/Docker/K3s erfolgreich, HTTPS erfolgreich;
-Daten, Bindings/Credentials und geschützte Identitäten erhalten. Neun Ready
-plus bekannter foreign Retained, Journal Generation 14 done; Neti-PIDs
-unverändert, drei IQ-Store-VMs weiterhin gestoppt.
-
-Nativer UI-Apply genau einmal **20:39:54–20:40:31 MESZ (37s)**, Invocation
-`ebbea683-ed47-4c7a-9cec-3c21050f1917`. Debug ↔ Betrieb während aktivem Job
-bedienbar; Log 50% → 95% → fertig; Aktionen währenddessen gesperrt und danach
-freigegeben. UI zeigt Apply fertig, 3/3 Lab-VMs und Drift0. Eigener nativer
-Nachweis: [ui-native-apply-2026-10-20.md](ui-native-apply-2026-10-20.md).
-
-**Erhaltene Hinweisgrenzen:** Worker-Agent bereit, Token/Service erreichbar,
-queue_depth=0; historische Exec-P99 **8511ms** führt weiterhin zu degraded bzw.
-Stack-Warnung/Exit1. Kein belegter aktueller Funktionsausfall, kein Neustart oder
-Upgrade zur Kosmetik. Keine Behauptung eines vollständig gesunden Gesamtzustands.
-`global_trust_complete=false` bleibt für die drei bewusst gestoppten IQ-Store-
-Gäste sichtbar; Aktualisierung beim späteren regulären Stack-Up/Apply.
-
-## Noch offene Kriterien — genau diese
-
-| Issue | Noch offen |
-|---|---|
-| [#54](https://github.com/frankhildebrandt/vzctl/issues/54) | Geprüften UI-Arbeitsstand committen/ausliefern, auf main oder per gemergtem PR bereitstellen. ui-dev-Start-Smoke und langer nativer UI-Apply bereits belegt. |
-| [#73](https://github.com/frankhildebrandt/vzctl/issues/73) | Übergreifende Repository-/Releaseübergabe, Versionsentscheidung mit finaler Dokumentationssynchronisierung sowie externer PKG-Nachweis. Fachliche A/B-Kriterien erfüllt; 61/63, nur F16/F17 offen. |
-| [#74](https://github.com/frankhildebrandt/vzctl/issues/74) | Änderungen im Repository ausliefern. K3s-/Manifest-/Kubeconfig-/Lifecycle-Kriterien erfüllt. |
-| [#75](https://github.com/frankhildebrandt/vzctl/issues/75) | Änderungen im Repository ausliefern. Controller-/Binding-/MCP-/Event-/Fault-/Retention-/Lifecycle-/UI-Kriterien erfüllt. |
-| [#76](https://github.com/frankhildebrandt/vzctl/issues/76) | Saubere PKG-Erstinstallation und reales PKG-Update mit Wiederanlauf auf separatem macOS-26-Mac; derzeit nicht vorhanden. Zusätzlich Repository-Auslieferung. |
-
-#54-Nice-Punkte Deep-Link, Fensterpersistenz und konkreter edge-dmz-Live-Up
-bleiben optional und getrennt; sie erzeugen kein neues Abschlussarbeitspaket.
-Commit/Push und Draft-PR sind jetzt ausdrücklich beauftragt und werden auf
-codex/release-readiness-2026-10-20 vorbereitet. Merge, Release-Version und
-Veröffentlichung bleiben gesonderte Schritte. Kein Repo-/Installerkriterium durch Issue-Schließen verdeckt.
-
-## Offenes Inventar / Dependency-PRs
+## Dependency-PR-Inventar vor PR85 — historisch
 
 Die repositoryweite Connectorabfrage (Issues/PRs jeweils Grenze 100) lieferte vor
 #77-Abschluss sechs Issues #54/#73/#74/#75/#76/#77 und neun offene PRs.
 Alle Issues sind in `06-github-issue-map.json` enthalten; kein Issue fehlte.
-Nach gezieltem Abschluss von #77 bleiben **fünf offene Issues: #54/#73/#74/#75/#76**.
+Nach #77 waren damals fünf Issues offen. Nach dem Release-Slice bleiben aktuell nur #73/#76 aus dem oben benannten externen Grund offen.
 Die Map enthält stabile IDs und benötigt keine Änderung.
 
 Die neun PRs sind nur mit Status/Titel erfasst; keine neue Check-/Review-/

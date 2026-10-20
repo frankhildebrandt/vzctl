@@ -1,0 +1,104 @@
+{
+  "version": "0.3.0-alpha4",
+  "release_commit": "d050883f0d3636593718797a75f39071acd9f4bc",
+  "release_url": "https://github.com/frankhildebrandt/vzctl/releases/tag/v0.3.0-alpha4",
+  "pull_request": 85,
+  "release_ci_run": 39488109999,
+  "state": "passed",
+  "finished_at": "2026-10-20T20:10:35.932967+00:00",
+  "vm_states": {
+    "running": 6,
+    "intentionally_stopped_iq_store": 3
+  },
+  "health": {
+    "neti": {
+      "checks": "evaluated",
+      "critical_count": 0,
+      "elapsed_ms": 146,
+      "health": "ok",
+      "message": "stack neti ok",
+      "stopped_vms": 0,
+      "warning_count": 0
+    },
+    "lab": {
+      "checks": "evaluated",
+      "critical_count": 0,
+      "elapsed_ms": 116,
+      "health": "ok",
+      "message": "stack controller-lab ok",
+      "stopped_vms": 0,
+      "warning_count": 0
+    },
+    "iq-store": {
+      "checks": "skipped",
+      "critical_count": 0,
+      "elapsed_ms": 90,
+      "health": "ok",
+      "message": "stack iq-store stopped; dependent checks skipped",
+      "stopped_vms": 3,
+      "warning_count": 0
+    }
+  },
+  "controllers": {
+    "ready": 9,
+    "retained": 1,
+    "k3s_ready_nodes": 2
+  },
+  "consumer_probes": {
+    "vm": {
+      "postgres": true,
+      "s3": true,
+      "oidc": true
+    },
+    "docker": {
+      "postgres": true,
+      "s3": true,
+      "oidc": true
+    },
+    "kubernetes": {
+      "postgres": true,
+      "s3": true,
+      "oidc": true
+    }
+  },
+  "preserved": {
+    "existing_postgres_row": true,
+    "existing_s3_object": true,
+    "nine_bindings": true,
+    "s3_seeds": true,
+    "both_stack_yamls": true
+  },
+  "installed": {
+    "version": "0.3.0-alpha4",
+    "binaries": {
+      "vzctl": "28c8b43e6e119ac6d9dd8369fd55eaa8f5b4f5e475279c212f0cd4b7ea94933f",
+      "vzctl-mcp": "0321c5daed00c043f0951e403fdb84eab659b369100ae46c9feeef87907ea401",
+      "vzctl-oidc-simple": "ae5a70ea9b64e584043fc2f9159bb7a750e3a9266dacd14b809acdbf2c2f22f5",
+      "vz-net": "48afeb3051ad0a5f04cfd595764e816021fe5843826b1f19679c2439589eb203",
+      "vz-edge": "40b730a1a1e8159d7cda188076b17fd5f82393161eb07bdfeceead8ca75d7dd6",
+      "vz-supervisor": "bf6ccf0e778faa23b7cc546a91bf30773671ba39da1564df2a75ae782f7c84d2",
+      "vz-helper": "52ea3a5190187fd3bf831c578652557a1230135781022cc98022793fbaa6f59d",
+      "vz-dns-bind": "51cdc5d6231ea6df32090b493ebaa23b23b430d331ef4e56e6ff087f3b8fff50"
+    },
+    "root_dns_helper_matches": true,
+    "app_matches_package_build": true
+  },
+  "private_evidence_sha256": {
+    "post-update-verification.json": "043dd0f19ec3de5900ac90e3bded66790530182dad4bad223d6935e3eb3cfbea",
+    "installed-hashes.json": "48c5ea6d8e2a20a14f281ae572f15e7b13f8ef1c7a5defeb5bb1697dc90d43e8",
+    "vms-final.json": "09a1ae066d45bb8434d2144978fddbafb727ead11523a8664dac9e621869be94"
+  },
+  "native_ui": {
+    "neti": "healthy",
+    "controller_lab": "healthy",
+    "iq_store": "stopped_checks_skipped"
+  },
+  "limits": [
+    "separate clean macOS26 PKG first-install and update test unavailable",
+    "ad-hoc signatures; no Developer ID or notarization"
+  ],
+  "operational_observations": [
+    "old Edge waited in Process.waitUntilExit during Neti down; interrupted call aborted, installer graceful stops and restart recovered",
+    "initial Docker HTTPS502 preserved; after listener/backend readiness both HTTPS probes returned200"
+  ]
+}
