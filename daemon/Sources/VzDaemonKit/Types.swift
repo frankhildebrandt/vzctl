@@ -4,7 +4,7 @@ import Foundation
 
 public enum VzDaemonKit {
     public static let minMacOSMajor = 26
-    public static let version = "0.0.1-alpha"
+    public static let version = "0.3.0-alpha4"
 }
 
 public struct StackID: Hashable, Sendable, Codable {

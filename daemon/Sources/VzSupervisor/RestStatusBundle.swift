@@ -2,13 +2,18 @@ import Foundation
 import VzDaemonKit
 
 enum RestStatusBundle {
-    static func build(path: String, jobs: RestJobRunner, rpcVMs: () throws -> JSONValue) throws -> JSONValue {
+    static func build(path: String, jobs: RestJobRunner, rpcVMs: () throws -> JSONValue,
+                      inspectStack: ((String) throws -> StackStateRecord)? = nil) throws -> JSONValue {
         var sections: [String: JSONValue] = [:]
 
         let configURL = RestStackStore.configURL(for: path)
         let configText = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
-        let desired = desiredVMIds(from: configText)
-        let projectName = projectName(from: configText)
+        var desired = desiredVMIds(from: configText)
+        var projectName = projectName(from: configText)
+
+        let healthResult = try? jobs.runSync(arguments: ["stack", "status", "-C", path, "--format", "json"])
+        sections["health"] = section(healthResult)
+        let health = healthResult.flatMap { decodeJSON($0.stdout) }
 
         sections["dns"] = section(try? jobs.runSync(arguments: ["dns", "status", "--format", "json"]))
         sections["certs"] = section(try? jobs.runSync(arguments: ["certs", "fingerprint", "--format", "json"]))
@@ -16,21 +21,35 @@ enum RestStatusBundle {
         if let projectName {
             oidcArgs += ["--project", projectName]
         }
-        sections["oidc"] = section(try? jobs.runSync(arguments: oidcArgs))
+        if case let .object(report)? = health,
+           case let .object(stack)? = report["stack"],
+           case let .object(oidc)? = stack["oidc"], oidc["enabled"] == .bool(false)
+        {
+            sections["oidc"] = .object([
+                "ok": .bool(true), "data": .object(["enabled": .bool(false), "status": .string("disabled")]),
+            ])
+        } else {
+            sections["oidc"] = section(try? jobs.runSync(arguments: oidcArgs))
+        }
         sections["diff"] = section(try? jobs.runSync(arguments: ["diff", "-C", path, "--format", "json"]))
 
-        let vmListResult = try? jobs.runSync(arguments: ["vm", "list", "--format", "json"])
         let allVMs: [JSONValue]
-        if let stdout = vmListResult?.stdout,
-           let parsed = decodeJSON(stdout),
-           case let .object(obj) = parsed,
-           case let .array(vms)? = obj["vms"]
-        {
+        if case let .object(report)? = health, case let .array(vms)? = report["vms"] {
             allVMs = vms
         } else if let rpc = try? rpcVMs(), case let .array(vms) = rpc {
             allVMs = vms
         } else {
             allVMs = []
+        }
+
+        if case let .object(report)? = health, case let .object(stack)? = report["stack"],
+           case let .string(project)? = stack["project"]
+        {
+            projectName = project
+            desired = allVMs.compactMap { vm in
+                guard case let .object(item) = vm, case let .string(name)? = item["name"] else { return nil }
+                return name
+            }
         }
 
         var items: [JSONValue] = []
@@ -83,6 +102,11 @@ enum RestStatusBundle {
             stackId = sid
         }
 
+        sections["apply"] = applySection(stackID: {
+            if case let .string(id) = stackId { return id }
+            return nil
+        }(), inspect: inspectStack)
+
         sections["stack"] = .object([
             "ok": .bool(true),
             "data": .object([
@@ -111,9 +135,38 @@ enum RestStatusBundle {
         return .object([
             "apiVersion": .string("vzctl.dev/v1"),
             "command": .string("status.bundle"),
+            "observed_at": .string(ISO8601DateFormatter().string(from: Date())),
             "status": .string("ok"),
             "sections": .object(sections),
         ])
+    }
+
+    /// Reuse the canonical apply state without publishing journal payload/resources.
+    /// An unavailable identity or database read must not masquerade as no journal.
+    static func applySection(stackID: String?, inspect: ((String) throws -> StackStateRecord)?) -> JSONValue {
+        let unavailable: JSONValue = .object(["ok": .bool(false), "data": .null])
+        guard let stackID, !stackID.isEmpty, let inspect,
+              let state = try? inspect(stackID) else { return unavailable }
+        var journal: JSONValue = .null
+        if let current = state.journal {
+            guard current.stackID == stackID,
+                  ["pending", "running", "failed"].contains(current.status) else { return unavailable }
+            let mode = current.operationMode.flatMap { ["up", "apply", "down"].contains($0) ? $0 : nil }
+            journal = .object([
+                "id": .string(current.id), "generation": .number(Double(current.generation)),
+                "status": .string(current.status), "step": .string(String(current.step.prefix(128))),
+                "mode": mode.map(JSONValue.string) ?? .null,
+                "error": current.error.map { .string(String($0.prefix(4096))) } ?? .null,
+                "updated_at": .string(current.updatedAt),
+            ])
+        }
+        return .object(["ok": .bool(true), "data": .object([
+            "stack_id": .string(stackID), "journal": journal,
+            "lease": state.lease.map { .object([
+                "holder": .string(String($0.holder.prefix(256))),
+                "expires_at": .string($0.expiresAtText),
+            ]) } ?? .null,
+        ])])
     }
 
     private static func section(_ result: (exitCode: Int32, stdout: String, stderr: String)?) -> JSONValue {

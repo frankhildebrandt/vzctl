@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, Muted } from "@/components/ui";
 import { getT, useT, type MessageKey } from "@/lib/i18n";
@@ -77,7 +78,6 @@ export function useApplyProgress(enabled: boolean) {
     void (async () => {
       try {
         await subscribeEvents();
-        const { listen } = await import("@tauri-apps/api/event");
         unlistenEvent = await listen<VzctlEvent>("vzctl-event", (event) => {
           if (cancelled) return;
           setState((prev) => reduceEvent(prev, event.payload));

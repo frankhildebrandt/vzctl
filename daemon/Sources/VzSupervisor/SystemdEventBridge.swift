@@ -28,7 +28,8 @@ final class SystemdEventBridge: @unchecked Sendable {
     }
 
     func start() {
-        queue.async {
+        queue.async { [weak self] in
+            guard let self else { return }
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             timer.schedule(deadline: .now() + 2, repeating: 2)
             timer.setEventHandler { [weak self] in self?.poll() }

@@ -720,6 +720,7 @@ import VzDaemonKit
             endOffset: query.count
         ),
         records: [SystemDNSRecord(
+            name: "example.com.",
             type: 1,
             dnsClass: 1,
             ttl: 42,
@@ -729,6 +730,133 @@ import VzDaemonKit
     #expect(read16(response, 4) == 1)
     #expect(read16(response, 6) == 1)
     #expect(response.suffix(4) == Data([192, 0, 2, 1]))
+}
+
+@Test func systemResolverPreservesCNAMEChainOwnersAndTerminalAddresses() throws {
+    let name = "files.pythonhosted.org"
+    let intermediate = "python.map.fastly.net"
+    let terminal = "dualstack.python.map.fastly.net"
+    for type: UInt16 in [1, 28] {
+        let query = dnsQuery(name, type: type)
+        let address = type == 1 ? Data([192, 0, 2, 10])
+            : Data([0x20, 0x01, 0x0d, 0xb8] + [UInt8](repeating: 0, count: 11) + [1])
+        let records = [
+            SystemDNSRecord(name: name + ".", type: 5, dnsClass: 1, ttl: 42,
+                            rdata: dnsWireName(intermediate)),
+            SystemDNSRecord(name: intermediate + ".", type: 5, dnsClass: 1, ttl: 31,
+                            rdata: dnsWireName(terminal)),
+            SystemDNSRecord(name: terminal + ".", type: type, dnsClass: 1, ttl: 17,
+                            rdata: address),
+        ]
+        let response = SystemDNSResolver.response(
+            request: query,
+            question: DNSQuestion(name: name, type: type, dnsClass: 1, endOffset: query.count),
+            records: records
+        )
+        #expect(read16(response, 0) == 0x1234)
+        #expect(read16(response, 2) & 0x800F == 0x8000)
+        #expect(read16(response, 6) == 3)
+        #expect(response[12..<query.count] == query[12..<query.count])
+        var offset = query.count
+        for expected in records {
+            let owner = try dnsAnswerOwner(response, offset: &offset)
+            #expect(owner == String(expected.name.dropLast()))
+            #expect(read16(response, offset) == expected.type)
+            #expect(read16(response, offset + 2) == expected.dnsClass)
+            #expect(read32(response, offset + 4) == expected.ttl)
+            let length = Int(read16(response, offset + 8))
+            offset += 10
+            #expect(length == expected.rdata.count)
+            #expect(response[offset..<(offset + length)] == expected.rdata)
+            offset += length
+        }
+        #expect(offset == response.count)
+    }
+}
+
+@Test func systemResolverOwnerEncodingPreservesEscapesAndWireLimits() {
+    let longest = [63, 63, 63, 61].map { String(repeating: "a", count: $0) }.joined(separator: ".")
+    let fixtures: [(String, Data)] = [
+        ("example.com", dnsWireName("example.com")),
+        ("example.com.", dnsWireName("example.com")),
+        (".", Data([0])),
+        (#"a\.b.\\.\120\000\255.example."#,
+         Data([3, 97, 46, 98, 1, 92, 3, 120, 0, 255]) + dnsWireName("example")),
+        (#"\q.example."#, dnsWireName("q.example")),
+        (#"a\12.example"#, dnsWireName("a12.example")),
+        (#"a\999.example"#, dnsWireName("a999.example")),
+        (#"a\1x2.example"#, dnsWireName("a1x2.example")),
+        ("täst.example.", dnsWireName("täst.example")),
+        (longest, dnsWireName(longest)),
+        (longest + ".", dnsWireName(longest)),
+    ]
+    let query = dnsQuery("example.com")
+    for (owner, wire) in fixtures {
+        let packet = SystemDNSResolver.response(
+            request: query,
+            question: DNSQuestion(name: "example.com", type: 1, dnsClass: 1, endOffset: query.count),
+            records: [SystemDNSRecord(name: owner, type: 1, dnsClass: 1, ttl: 1,
+                                      rdata: Data([192, 0, 2, 1]))]
+        )
+        #expect(read16(packet, 2) & 0xF == 0)
+        #expect(read16(packet, 6) == 1)
+        #expect(packet[query.count..<(query.count + wire.count)] == wire)
+    }
+}
+
+@Test func systemResolverMalformedOwnersFailWithoutPartialAnswers() {
+    let longest = [63, 63, 63, 62].map { String(repeating: "a", count: $0) }.joined(separator: ".")
+    let invalid = ["", "..", ".example", "a..example", "a..", "a\\", "a\0b", String(repeating: "a", count: 64),
+                   String(repeating: "ä", count: 32), longest, longest + "."]
+    let query = dnsQuery("example.com")
+    let question = DNSQuestion(name: "example.com", type: 1, dnsClass: 1, endOffset: query.count)
+    let valid = SystemDNSRecord(name: "example.com", type: 1, dnsClass: 1, ttl: 1,
+                                rdata: Data([192, 0, 2, 1]))
+    for owner in invalid {
+        var bad = valid
+        bad.name = owner
+        let packet = SystemDNSResolver.response(request: query, question: question, records: [valid, bad])
+        #expect(read16(packet, 2) & 0xF == 2)
+        #expect(read16(packet, 6) == 0)
+        #expect(packet.count == query.count)
+        #expect(packet[12..<query.count] == query[12..<query.count])
+    }
+}
+
+private func dnsWireName(_ name: String) -> Data {
+    var wire = Data()
+    for label in name.split(separator: ".") {
+        wire.append(UInt8(label.utf8.count))
+        wire.append(contentsOf: label.utf8)
+    }
+    wire.append(0)
+    return wire
+}
+
+private func dnsAnswerOwner(_ packet: Data, offset: inout Int) throws -> String {
+    var cursor = offset
+    var labels: [String] = []
+    var jumped = false
+    var visited: Set<Int> = []
+    while cursor < packet.count {
+        guard visited.insert(cursor).inserted else { throw FixtureError.socket }
+        let length = Int(packet[cursor])
+        if length == 0 {
+            if !jumped { offset = cursor + 1 }
+            return labels.joined(separator: ".")
+        }
+        if length & 0xC0 == 0xC0 {
+            guard cursor + 1 < packet.count else { throw FixtureError.socket }
+            if !jumped { offset = cursor + 2 }
+            cursor = ((length & 0x3F) << 8) | Int(packet[cursor + 1])
+            jumped = true
+            continue
+        }
+        guard length <= 63, cursor + 1 + length <= packet.count else { throw FixtureError.socket }
+        labels.append(String(decoding: packet[(cursor + 1)..<(cursor + 1 + length)], as: UTF8.self))
+        cursor += length + 1
+    }
+    throw FixtureError.socket
 }
 
 @Test func systemResolverSelectionCanChangeWithoutDNSRestart() {
@@ -837,7 +965,7 @@ private final class SwitchingSystemResolver: @unchecked Sendable {
         return SystemDNSResolver.response(
             request: request,
             question: question,
-            records: [SystemDNSRecord(type: 1, dnsClass: 1, ttl: 15, rdata: rdata)]
+            records: [SystemDNSRecord(name: question.name, type: 1, dnsClass: 1, ttl: 15, rdata: rdata)]
         )
     }
 }

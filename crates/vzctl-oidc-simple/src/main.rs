@@ -21,6 +21,10 @@ async fn main() -> ExitCode {
     let mut config_path: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--version" => {
+                println!("vzctl-oidc-simple {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
             "--config" | "-c" => {
                 let Some(path) = args.next() else {
                     eprintln!("vzctl-oidc-simple: --config requires a path");

@@ -2,6 +2,8 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 SWIFT ?= swift
+SWIFT_FLAGS ?=
+VZCTL_TEST_CLI ?= $(abspath $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target))/debug/vzctl
 GO ?= go
 NPM ?= npm
 PREFIX ?= $(HOME)/.local
@@ -23,12 +25,12 @@ QEMU_IMG_LIBEXEC := $(STATE_DIR)/libexec/qemu-img
 .DEFAULT_GOAL := help
 
 .PHONY: help build build-cli build-daemon build-agent ci release \
-	test test-cli test-daemon test-agent \
+	test test-cli test-daemon test-agent test-packaging \
 	fmt fmt-check doctor doctor-json sign-helper \
 	vendor vendor-caddy vendor-dex vendor-qemu-img install-vendor install-qemu-img \
-	validate validate-edge-dmz \
+	validate validate-edge-dmz validate-k3s \
 	smoke-split-dns \
-	ui-install ui-dev ui-build package \
+	ui-install ui-dev ui-build ui-check package \
 	install clean
 
 help: ## Verfügbare Targets anzeigen
@@ -40,16 +42,25 @@ build-cli: ## Rust-CLI bauen
 	$(CARGO) build --workspace
 
 build-daemon: ## Swift-Supervisor und -Helper bauen
-	$(SWIFT) build --package-path daemon
+	$(SWIFT) build $(SWIFT_FLAGS) --package-path daemon
 
 build-agent: ## Guest-Agent (Go) bauen
 	$(GO) build -C guest-agent -o bin/vzctl-agent ./cmd/vzctl-agent
 
-ci: fmt-check test build validate ## Formatierung, Tests, Build und Schema prüfen
+ci: fmt-check test build validate ui-check ## Verträge, Tests, Builds und Schema prüfen
+
+ui-check: ## UI installieren, Typen/Unit/E2E und Tauri prüfen
+	$(NPM) --prefix apps/vzctl-ui ci
+	$(NPM) --prefix apps/vzctl-ui test
+	$(NPM) --prefix apps/vzctl-ui run build
+	cd apps/vzctl-ui && npx --no-install playwright install chromium webkit
+	$(NPM) --prefix apps/vzctl-ui run test:e2e
+	$(NPM) --prefix apps/vzctl-ui run test:e2e:bundle
+	$(CARGO) check --manifest-path apps/vzctl-ui/src-tauri/Cargo.toml
 
 release: ## Release-Binaries bauen und ad-hoc signieren
 	$(CARGO) build --workspace --release
-	$(SWIFT) build --package-path daemon --configuration release
+	$(SWIFT) build $(SWIFT_FLAGS) --package-path daemon --configuration release
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-helper
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-supervisor
 	codesign --force --sign - --entitlements daemon/VzHelper.entitlements daemon/.build/release/vz-net
@@ -125,22 +136,28 @@ install: release ui-build ## CLI, Daemons und Tauri-App installieren/aktualisier
 	@echo "installed: $(APPLICATIONS_DIR)/vzctl.app"
 	@echo "note: guest DNS :53 → sudo $(BINDIR)/vzctl dns install-bind-helper"
 
-test: test-cli test-daemon test-agent ## Alle Tests ausführen
+test: test-cli test-daemon test-agent test-packaging ## Alle Tests ausführen
 
 test-cli: ## Rust-Tests ausführen
 	$(CARGO) test --workspace
 
-test-daemon: ## Swift- und Daemon-Script-Tests ausführen
-	$(SWIFT) test --package-path daemon
+test-daemon: build-cli ## Swift- und Daemon-Script-Tests mit echtem CLI-Vertrag ausführen
+	VZCTL_TEST_CLI="$(VZCTL_TEST_CLI)" $(SWIFT) test $(SWIFT_FLAGS) --disable-xctest --enable-swift-testing --package-path daemon
 	daemon/scripts/test-stop-vz-helpers.sh
 
 test-agent: ## Guest-Agent-Tests ausführen
 	$(GO) test -C guest-agent ./...
 
-validate: validate-edge-dmz ## hypernetwork-Beispiele validieren
+test-packaging: ## Paket-Payload und Installer isoliert mit Fake-Diensten prüfen
+	python3 scripts/test-package-macos.py
+
+validate: validate-edge-dmz validate-k3s ## hypernetwork-Beispiele validieren
 
 validate-edge-dmz: ## examples/edge-dmz gegen Schema prüfen
 	$(CARGO) run -q -p vzctl -- validate -C examples/edge-dmz --format json
+
+validate-k3s: ## K3s samt Stack-Manifestreferenzen gegen Schema prüfen
+	$(CARGO) run -q -p vzctl -- validate -C examples/k3s --format json
 
 smoke-split-dns: ## Privilegierter Split-Horizon Multi-Net/Docker-Smoke-Test
 	scripts/smoke-split-horizon-dns.sh
@@ -168,8 +185,10 @@ ui-dev: ui-install ## Tauri-UI im Dev-Modus starten (braucht vzctl auf PATH)
 
 ui-build: ui-install ## Tauri-UI als Release-App bauen
 	cd apps/vzctl-ui && $(NPM) run tauri:build -- --bundles app
+	@if [ -z "$${APPLE_SIGNING_IDENTITY:-}" ]; then codesign --force --sign - apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app; fi
+	codesign --verify --deep --strict apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app
 
-package: release ui-build ## tar.gz + .pkg + .dmg unter dist/ erzeugen
+package: release ui-build vendor ## tar.gz + .pkg + .dmg unter dist/ erzeugen
 	RELEASE_TAG="$(RELEASE_TAG)" ./scripts/package-macos.sh
 
 clean: ## Rust- und Swift-Build-Artefakte entfernen

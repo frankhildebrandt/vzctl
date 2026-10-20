@@ -187,7 +187,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const laidOut = layoutByNetwork(env);
     const nextDiagram: DiagramState = {
       ...diagram,
-      nodes: { ...diagram.nodes, ...laidOut },
+      // Saved placement is authoritative; layout only fills newly added nodes.
+      nodes: { ...laidOut, ...diagram.nodes },
     };
     set({
       projectPath: path,

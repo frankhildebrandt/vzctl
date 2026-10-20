@@ -17,7 +17,7 @@ jobs:
   build:
     name: Build and test
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -30,6 +30,13 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/vzctl-ui/package-lock.json
+
       - name: Tool versions
         run: |
           rustc --version
@@ -37,8 +44,33 @@ jobs:
           swift --version
           go version
 
-      - name: CI
-        run: make ci
+      - name: Prepare strict X.509 verification
+        run: |
+          brew install openssl@3
+          openssl_prefix="$(brew --prefix openssl@3)"
+          "${openssl_prefix}/bin/openssl" version
+          printf 'VZCTL_TEST_OPENSSL=%s/bin/openssl\n' "${openssl_prefix}" >> "$GITHUB_ENV"
+
+      - name: Rust formatting and tests
+        timeout-minutes: 10
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: make fmt-check test-cli
+
+      - name: Swift and daemon script tests
+        timeout-minutes: 5
+        env:
+          RUSTFLAGS: "-D warnings"
+          SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
+        run: make test-daemon
+
+      - name: Remaining CI contracts, builds and UI
+        timeout-minutes: 15
+        env:
+          RUSTFLAGS: "-D warnings"
+          SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
+        run: make test-agent test-packaging build validate ui-check
 
       - name: Validate and diff edge-dmz reference environment
         shell: bash

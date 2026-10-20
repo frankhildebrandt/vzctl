@@ -1,0 +1,61 @@
+#!/bin/sh
+# Executed by Installer BEFORE replacing the package payload.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+. "$script_dir/installer-common.sh"
+[ "${3:-/}" = / ] || fail "installation is supported only on the current startup volume"
+resolve_console_user
+
+matching_pids() {
+  match_uid=$1
+  match_name=$2
+  pgrep -U "$match_uid" -x "$match_name" 2>/dev/null && return 0
+  result=$?
+  [ "$result" -eq 1 ] || fail "cannot enumerate $match_name processes"
+}
+
+stop_agent() {
+  service_name=$1
+  service_label="com.vzctl.$2"
+  stop_attempts=$3
+  if launchctl print "$domain/$service_label" >/dev/null 2>&1; then
+    # A racing exit is okay only when the subsequent checks confirm it is gone.
+    launchctl bootout "$domain/$service_label" >/dev/null 2>&1 || :
+  fi
+  pids=$(matching_pids "$console_uid" "$service_name")
+  for pid in $pids; do
+    case "$pid" in ''|*[!0-9]*) fail "invalid $service_name pid" ;; esac
+    kill -TERM "$pid" 2>/dev/null || :
+  done
+  stop_index=0
+  while [ "$stop_index" -lt "$stop_attempts" ]; do
+    pids=$(matching_pids "$console_uid" "$service_name")
+    if [ -z "$pids" ] && ! launchctl print "$domain/$service_label" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+    stop_index=$((stop_index + 1))
+  done
+  fail "$service_name did not exit gracefully; payload replacement refused (no SIGKILL)"
+}
+
+if [ -n "$console_user" ]; then
+  [ -x "$script_dir/stop-vz-helpers.sh" ] || fail "missing helper stop script"
+  "$script_dir/stop-vz-helpers.sh" "$console_uid"
+  stop_agent vz-supervisor supervisor 100
+  stop_agent vz-edge edge 100
+  # vmnet references must be released through graceful process exit.
+  stop_agent vz-net net 600
+fi
+
+# Global binaries are shared. Refuse replacement if another login session (or
+# a newly started helper) still uses them; never terminate another user's VMs.
+for name in vz-helper vz-supervisor vz-edge vz-net; do
+  if pgrep -x "$name" >/dev/null 2>&1; then
+    fail "$name still running; stop all vzctl sessions before installing"
+  else
+    result=$?
+    [ "$result" -eq 1 ] || fail "cannot verify $name has stopped"
+  fi
+done
+echo "preinstall: helpers and agents stopped before payload replacement"

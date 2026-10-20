@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 import Testing
 import VzDaemonKit
@@ -63,7 +64,6 @@ private final class ReporterCaptureSocket: @unchecked Sendable {
     private let listener: Int32
     private let lock = NSLock()
     private var captured: JSONRPCRequest?
-    private var task: Task<Void, Never>?
 
     var request: JSONRPCRequest? { lock.withLock { captured } }
 
@@ -90,7 +90,8 @@ private final class ReporterCaptureSocket: @unchecked Sendable {
             throw HelperError.system("listen", errno)
         }
 
-        task = Task.detached { [weak self] in
+        // The synchronous client must be able to run with one cooperative worker.
+        DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             let client = Darwin.accept(self.listener, nil, nil)
             guard client >= 0 else { return }
@@ -114,7 +115,6 @@ private final class ReporterCaptureSocket: @unchecked Sendable {
     }
 
     func stop() {
-        task?.cancel()
         Darwin.close(listener)
         unlink(path)
     }

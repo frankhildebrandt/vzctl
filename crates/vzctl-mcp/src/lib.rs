@@ -1,14 +1,14 @@
 mod api;
 mod cli;
 mod extensions;
+mod operations;
 mod util;
 
 pub use api::{encode_id, ApiClient};
 pub use cli::VzctlCli;
 
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    schemars, tool, tool_handler, tool_router, ServerHandler,
+    handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -45,7 +45,7 @@ struct StackIdParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct JobIdParams {
-  job_id: String,
+    job_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -134,6 +134,27 @@ struct DebugSourceParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct OperationalStackParams {
+    /// Local stack directory containing hypernetwork.config.yaml.
+    stack_path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct KubernetesStatusParams {
+    /// Local stack directory containing hypernetwork.config.yaml.
+    stack_path: String,
+    /// Optional cluster name from spec.kubernetes.clusters.
+    cluster: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DiagnoseParams {
+    /// Optional stack directory. Enables bounded controller and Kubernetes status collection.
+    #[serde(default)]
+    stack_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DebugSqlQueryParams {
     stack_path: String,
     sql: String,
@@ -214,6 +235,46 @@ impl VzctlMcp {
         api_json(&self.api, "/v1/ports")
     }
 
+    #[tool(
+        description = "Read controller status, CP registration and allowlisted public binding references. Excludes credentials and raw error messages.",
+        annotations(read_only_hint = true)
+    )]
+    fn controller_status(
+        &self,
+        Parameters(OperationalStackParams { stack_path }): Parameters<OperationalStackParams>,
+    ) -> Result<String, String> {
+        Ok(json_pretty(&self.cli.controller_status(&stack_path)?))
+    }
+
+    #[tool(
+        description = "Read Kubernetes node and managed-manifest status. Never returns kubeconfig, Secrets or raw workload error messages.",
+        annotations(read_only_hint = true)
+    )]
+    fn kubernetes_status(
+        &self,
+        Parameters(KubernetesStatusParams {
+            stack_path,
+            cluster,
+        }): Parameters<KubernetesStatusParams>,
+    ) -> Result<String, String> {
+        Ok(json_pretty(
+            &self
+                .cli
+                .kubernetes_status(&stack_path, cluster.as_deref())?,
+        ))
+    }
+
+    #[tool(
+        description = "Collect a bounded host/VM/journal report, optionally controller/Kubernetes status for stack_path. Temporary private report is deleted before return. No raw logs, configuration, environment or credentials.",
+        annotations(read_only_hint = true)
+    )]
+    fn diagnose(
+        &self,
+        Parameters(DiagnoseParams { stack_path }): Parameters<DiagnoseParams>,
+    ) -> Result<String, String> {
+        Ok(json_pretty(&self.cli.diagnose(stack_path.as_deref())?))
+    }
+
     // --- VM control ---
 
     #[tool(description = "List runtime VMs with state, IPs, and attachments.")]
@@ -273,7 +334,10 @@ impl VzctlMcp {
         api_json(&self.api, "/v1/stacks")
     }
 
-    #[tool(description = "Stack status bundle (desired vs actual, VMs, jobs).")]
+    #[tool(
+        description = "Stack status bundle including probes, OIDC and ingress health, desired vs actual state, VMs and jobs.",
+        annotations(read_only_hint = true)
+    )]
     fn stack_status(
         &self,
         Parameters(StackIdParams { stack_id }): Parameters<StackIdParams>,
@@ -321,9 +385,7 @@ impl VzctlMcp {
 
     // --- Guest shell / logs ---
 
-    #[tool(
-        description = "Run a one-shot command in a VM via guest agent (argv array, no shell)."
-    )]
+    #[tool(description = "Run a one-shot command in a VM via guest agent (argv array, no shell).")]
     fn vm_exec(
         &self,
         Parameters(VmExecParams {
@@ -338,13 +400,9 @@ impl VzctlMcp {
             return Err("command must not be empty".into());
         }
         let env_pairs = parse_env_pairs(&env)?;
-        let result = self.cli.vm_exec(
-            &vm_id,
-            &command,
-            timeout_ms,
-            cwd.as_deref(),
-            &env_pairs,
-        )?;
+        let result = self
+            .cli
+            .vm_exec(&vm_id, &command, timeout_ms, cwd.as_deref(), &env_pairs)?;
         Ok(json_pretty(&result))
     }
 
@@ -368,9 +426,7 @@ impl VzctlMcp {
         api_json(&self.api, &path)
     }
 
-    #[tool(
-        description = "HTTP request to a guest publisher API (proxied via supervisor REST)."
-    )]
+    #[tool(description = "HTTP request to a guest publisher API (proxied via supervisor REST).")]
     fn guest_service_request(
         &self,
         Parameters(GuestServiceRequestParams {
@@ -399,7 +455,11 @@ impl VzctlMcp {
             "GET" => self.api.get(&api_path)?,
             "POST" => self.api.post(&api_path, body.as_ref())?,
             "DELETE" => self.api.delete(&api_path)?,
-            other => return Err(format!("unsupported method {other}; use GET, POST, or DELETE")),
+            other => {
+                return Err(format!(
+                    "unsupported method {other}; use GET, POST, or DELETE"
+                ))
+            }
         };
         Ok(format!(
             "HTTP {}\n{}",

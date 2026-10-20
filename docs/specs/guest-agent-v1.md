@@ -565,10 +565,23 @@ rebaking the sealed base image. The bundle contains:
 - `/etc/systemd/system/vzctl-agent.service` (and OpenRC unit when present)
 - `/usr/lib/vzctl-agent/image-metadata.json`
 
+The iwatch archive and `checksums.txt` are downloaded from the same resolved
+release tag in `frankhildebrandt/iwatch`. If a browser download fails, the host
+resolves that exact tag through the public GitHub API and downloads the unique
+uploaded asset by numeric ID with `Accept: application/octet-stream`. The
+fallback never switches to a newer release or bypasses SHA256: missing/invalid
+checksums and archive mismatches fail before extraction. Without an explicit
+iwatch override, rollout warns and skips unavailable iwatch while preserving
+an existing guest binary; an explicitly requested version remains an error.
+
 Rollout is triggered by `vzctl apply` (`ensure_guest_utils`, after agents are
 ready) and manually via `vzctl vm agent upgrade`. The host caches the bundle
 under `$VZCTL_STATE_DIR/guest-utils/{bundle_id}/` where `bundle_id` is
-`{agent_version}-{content_sha256_prefix}`.
+`{agent_version}-{bundle_fingerprint_prefix}`. The fingerprint covers deployment
+content, the agent binary, and the SHA256 of the actually staged iwatch binary
+or an explicit absence marker. A later successful iwatch download therefore
+creates a new cache entry and rollout even if the release tag is unchanged.
+Identical staged binaries reuse the same bundle ID.
 
 After a successful rollout the guest records:
 

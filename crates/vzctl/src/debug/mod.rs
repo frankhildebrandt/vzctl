@@ -60,7 +60,9 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
 
 #[derive(Debug, Eq, PartialEq)]
 enum Action {
-    SourcesList { filter: Option<SourceType> },
+    SourcesList {
+        filter: Option<SourceType>,
+    },
     Doctor,
     PostgresQuery {
         source: Option<String>,
@@ -74,7 +76,9 @@ enum Action {
         max_rows: u32,
         timeout_ms: u64,
     },
-    NatsStreams { source: Option<String> },
+    NatsStreams {
+        source: Option<String>,
+    },
     NatsSub {
         source: Option<String>,
         subject: String,
@@ -157,12 +161,9 @@ fn run(options: Options, socket_path: &Path) -> ExitCode {
             socket_path,
             options.format,
         ),
-        Action::NatsStreams { source } => nats_streams(
-            &stack,
-            source.as_deref(),
-            socket_path,
-            options.format,
-        ),
+        Action::NatsStreams { source } => {
+            nats_streams(&stack, source.as_deref(), socket_path, options.format)
+        }
         Action::NatsSub {
             source,
             subject,
@@ -223,11 +224,7 @@ fn sources_list(
     ExitCode::SUCCESS
 }
 
-fn doctor(
-    stack: &sources::LoadedStack,
-    socket_path: &Path,
-    format: Format,
-) -> ExitCode {
+fn doctor(stack: &sources::LoadedStack, socket_path: &Path, format: Format) -> ExitCode {
     match doctor_json(stack, socket_path) {
         Ok(payload) => {
             let ok = payload["ok"].as_bool().unwrap_or(false);
@@ -307,19 +304,14 @@ fn sql_query(
         SourceType::Nats => unreachable!(),
     };
     let env = sql_env(&resolved);
-    let (outcome, duration_ms) = match exec_with_timing(
-        &resolved.via.vm_id,
-        &argv,
-        &env,
-        timeout_ms,
-        socket_path,
-    ) {
-        Ok(value) => value,
-        Err(message) => {
-            emit_failure(format, command, &Failure::new(EXIT_SUPERVISOR, message));
-            return ExitCode::from(EXIT_SUPERVISOR);
-        }
-    };
+    let (outcome, duration_ms) =
+        match exec_with_timing(&resolved.via.vm_id, &argv, &env, timeout_ms, socket_path) {
+            Ok(value) => value,
+            Err(message) => {
+                emit_failure(format, command, &Failure::new(EXIT_SUPERVISOR, message));
+                return ExitCode::from(EXIT_SUPERVISOR);
+            }
+        };
     if outcome.exit != 0 {
         emit_failure_payload(
             format,
@@ -500,19 +492,14 @@ fn run_nats(
             return ExitCode::from(EXIT_INVALID);
         }
     };
-    let (outcome, duration_ms) = match exec_with_timing(
-        &plan.via.vm_id,
-        &plan.cmd,
-        &plan.env,
-        120_000,
-        socket_path,
-    ) {
-        Ok(value) => value,
-        Err(message) => {
-            emit_failure(format, command, &Failure::new(EXIT_SUPERVISOR, message));
-            return ExitCode::from(EXIT_SUPERVISOR);
-        }
-    };
+    let (outcome, duration_ms) =
+        match exec_with_timing(&plan.via.vm_id, &plan.cmd, &plan.env, 120_000, socket_path) {
+            Ok(value) => value,
+            Err(message) => {
+                emit_failure(format, command, &Failure::new(EXIT_SUPERVISOR, message));
+                return ExitCode::from(EXIT_SUPERVISOR);
+            }
+        };
     let source = source_json(SourceType::Nats, &resolved.name, &plan.via);
     if outcome.exit != 0 {
         emit_failure_payload(
@@ -531,7 +518,11 @@ fn run_nats(
         );
         return ExitCode::from(EXIT_DEBUG);
     }
-    emit_success(format, command, build_payload(&outcome, duration_ms, source));
+    emit_success(
+        format,
+        command,
+        build_payload(&outcome, duration_ms, source),
+    );
     ExitCode::SUCCESS
 }
 
@@ -592,9 +583,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, Failure> {
             }
             "--type" => {
                 index += 1;
-                filter = Some(SourceType::parse(&next_arg(&args, index, "--type")?).map_err(
-                    |message| Failure::new(EXIT_USAGE, message),
-                )?);
+                filter = Some(
+                    SourceType::parse(&next_arg(&args, index, "--type")?)
+                        .map_err(|message| Failure::new(EXIT_USAGE, message))?,
+                );
             }
             "--max-rows" => {
                 index += 1;
@@ -630,7 +622,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, Failure> {
                 break;
             }
             other if other.starts_with('-') => {
-                return Err(Failure::new(EXIT_USAGE, format!("unknown debug option: {other}")));
+                return Err(Failure::new(
+                    EXIT_USAGE,
+                    format!("unknown debug option: {other}"),
+                ));
             }
             other => tail.push(other.to_string()),
         }
@@ -658,7 +653,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, Failure> {
         }
         Some("mysql") if tail.first().map(String::as_str) == Some("query") => {
             let sql = tail.get(1).cloned().ok_or_else(|| {
-                Failure::new(EXIT_USAGE, "usage: vzctl debug mysql query [options] -- SQL")
+                Failure::new(
+                    EXIT_USAGE,
+                    "usage: vzctl debug mysql query [options] -- SQL",
+                )
             })?;
             Action::MysqlQuery {
                 source,
@@ -671,9 +669,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, Failure> {
             Some("streams") => Action::NatsStreams { source },
             Some("sub") => Action::NatsSub {
                 source,
-                subject: subject.ok_or_else(|| {
-                    Failure::new(EXIT_USAGE, "nats sub requires --subject")
-                })?,
+                subject: subject
+                    .ok_or_else(|| Failure::new(EXIT_USAGE, "nats sub requires --subject"))?,
                 count,
                 timeout_ms,
             },
@@ -782,7 +779,10 @@ fn emit_success(format: Format, command: &str, payload: Value) {
             envelope.insert("command".into(), json!(command));
             envelope.insert("status".into(), json!("ok"));
             envelope.insert("exit_code".into(), json!(0));
-            println!("{}", serde_json::to_string_pretty(&Value::Object(envelope)).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&Value::Object(envelope)).unwrap()
+            );
         }
         Format::Human => {
             if let Some(message) = payload["summary"]["message"].as_str() {
@@ -818,7 +818,10 @@ fn emit_failure_payload(
             envelope.insert("command".into(), json!(command));
             envelope.insert("status".into(), json!("fail"));
             envelope.insert("exit_code".into(), json!(exit_code));
-            println!("{}", serde_json::to_string_pretty(&Value::Object(envelope)).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&Value::Object(envelope)).unwrap()
+            );
         }
         Format::Human => {
             eprintln!("{stderr_hint}");

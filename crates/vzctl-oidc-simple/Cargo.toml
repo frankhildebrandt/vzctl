@@ -1,6 +1,6 @@
 [package]
 name = "vzctl-oidc-simple"
-version = "0.0.1"
+version = "0.3.0-alpha4"
 edition = "2021"
 description = "Dev-only OIDC IdP with click-to-login user picker"
 license-file = "../../LICENSE"

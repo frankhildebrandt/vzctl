@@ -46,6 +46,14 @@ export function serializeEnvironmentYaml(env: Environment): string {
       ...(env.spec.resilience !== undefined
         ? { resilience: env.spec.resilience }
         : {}),
+      ...(env.spec.observability !== undefined
+        ? { observability: env.spec.observability }
+        : {}),
+      ...(env.spec.kubernetes !== undefined
+        ? { kubernetes: env.spec.kubernetes }
+        : {}),
+      ...(env.spec.serviceProviders !== undefined ? { serviceProviders: env.spec.serviceProviders } : {}),
+      ...(env.spec.serviceClaims !== undefined ? { serviceClaims: env.spec.serviceClaims } : {}),
       vms: env.spec.vms,
     },
   };

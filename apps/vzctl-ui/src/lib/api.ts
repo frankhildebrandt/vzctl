@@ -1,3 +1,4 @@
+import { isDemoMode } from "@/lib/demo";
 import { invoke } from "@tauri-apps/api/core";
 
 export type ApiErrorRequest = {
@@ -46,7 +47,6 @@ export async function apiRequest<T = unknown>(
   path: string,
   options: ApiRequestOptions = {},
 ): Promise<T> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode()) {
     const { mockApiRequest } = await import("@/lib/demoFixtures");
     return mockApiRequest<T>(path, options);
@@ -142,20 +142,26 @@ export const api = {
   putText: <T = unknown>(path: string, text: string, contentType?: string) =>
     apiRequest<T>(path, { method: "PUT", rawBody: text, contentType }),
   getText: async (path: string): Promise<string> => {
-    const { isDemoMode } = await import("@/lib/demo");
     if (isDemoMode()) {
       const { mockApiRequest } = await import("@/lib/demoFixtures");
       return mockApiRequest<string>(path, { method: "GET" });
     }
-    const response = await invoke<InvokeApiResponse>("api_request", {
-      args: { method: "GET", path, headers: [], body: null },
-    });
+    let response: InvokeApiResponse;
+    try {
+      response = await invoke<InvokeApiResponse>("api_request", {
+        args: { method: "GET", path, headers: [], body: null },
+      });
+    } catch (error) {
+      throw new ApiError(0, "unavailable", String(error), undefined, { method: "GET", path });
+    }
     if (response.status < 200 || response.status >= 300) {
+      let errorBody: { error?: { code?: string; message?: string; details?: unknown } } | null = null;
+      try { errorBody = JSON.parse(response.body); } catch { /* Plain-text errors remain readable. */ }
       throw new ApiError(
         response.status,
-        "internal",
-        response.body || `HTTP ${response.status}`,
-        undefined,
+        errorBody?.error?.code ?? "internal",
+        errorBody?.error?.message ?? response.body ?? `HTTP ${response.status}`,
+        errorBody?.error?.details,
         { method: "GET", path },
       );
     }

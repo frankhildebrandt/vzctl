@@ -10,6 +10,7 @@
 - UI-Unterseiten: kontextuelle Sidebar; „Zurück“ nur bei tieferer Navigation (Dashboard-Escape liegt separat in der Brand-Zeile); Settings unten in der Nav; OIDC-Stack-Overrides gehören in die Stack-Config (nicht Host-Settings).
 - Stack entfernen (`down --purge`): VMs hart stoppen/löschen (SIGKILL), keine Rücksicht auf Datenverlust; normales Stack-down bleibt graceful.
 - Builds warning-frei halten (Rust/Swift lokal ohne Warnings).
+- Gestoppte Stacks/VMs sind ein normaler Zustand: erwartbare abhängige Health-/Probe-Fehler neutral behandeln; echte Fehler laufender Dienste und unbekannte Zustände sichtbar halten. Für Abnahmetests keine vom Nutzer gestoppten VMs automatisch starten.
 - `make install` stoppt laufende Agents vor Binary-Replace; `vz-net` nur graceful (bootout/SIGTERM, kein SIGKILL) wegen CIDR-Orphans.
 
 ## Learned Workspace Facts

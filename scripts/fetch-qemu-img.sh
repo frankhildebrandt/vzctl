@@ -14,7 +14,6 @@ QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
 QEMU_SHA256="${QEMU_SHA256:-6ee1d1a61f68212476b27108c26da5f449dc09b626d42f8279ba0dc2e08fa858}"
 MULTIPASS_BIN="/Library/Application Support/com.canonical.multipass/bin/qemu-img"
 MULTIPASS_LIB="/Library/Application Support/com.canonical.multipass/lib"
-RUNTIME_LIBEXEC="${HOME}/Library/Application Support/vzctl/libexec/qemu-img"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -244,7 +243,4 @@ if [ ! -x "$DEST_DIR/qemu-img" ]; then
 fi
 "$DEST_DIR/qemu-img" --version
 
-mkdir -p "$RUNTIME_LIBEXEC"
-ditto "$DEST_DIR" "$RUNTIME_LIBEXEC"
 echo "installed $DEST_DIR/qemu-img"
-echo "copied to $RUNTIME_LIBEXEC/qemu-img"

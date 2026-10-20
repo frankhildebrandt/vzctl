@@ -9,7 +9,9 @@ pub(crate) struct NatsExecPlan {
     pub cmd: Vec<String>,
 }
 
-pub(crate) fn build_nats_env(source: &NatsResolvedSource) -> Result<BTreeMap<String, String>, String> {
+pub(crate) fn build_nats_env(
+    source: &NatsResolvedSource,
+) -> Result<BTreeMap<String, String>, String> {
     let mut env = BTreeMap::new();
     let mut url = format!("nats://{}", source.host);
     if source.port != 4222 {
@@ -51,7 +53,11 @@ pub(crate) fn build_kv_get_argv(bucket: &str, key: &str) -> Vec<String> {
     ]
 }
 
-pub(crate) fn build_kv_watch_argv(bucket: &str, key: Option<&str>, timeout_secs: u64) -> Vec<String> {
+pub(crate) fn build_kv_watch_argv(
+    bucket: &str,
+    key: Option<&str>,
+    timeout_secs: u64,
+) -> Vec<String> {
     let mut argv = vec!["nats".into(), "kv".into(), "watch".into(), bucket.into()];
     if let Some(key) = key {
         argv.push(key.into());
@@ -105,7 +111,10 @@ pub(crate) fn plan_nats_exec(
 fn shell_join(argv: &[String]) -> String {
     argv.iter()
         .map(|part| {
-            if part.chars().any(|c| c.is_whitespace() || "\"'$\\".contains(c)) {
+            if part
+                .chars()
+                .any(|c| c.is_whitespace() || "\"'$\\".contains(c))
+            {
                 format!("'{}'", part.replace('\'', "'\\''"))
             } else {
                 part.clone()

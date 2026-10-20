@@ -1,8 +1,10 @@
+import { ApplyRecoveryActions } from "@/components/ApplyRecoveryActions";
 import { useMemo, useState, type ReactNode } from "react";
+import { StackHealthSummary } from "@/components/StackHealthSummary";
+import { HEALTH_LABEL_KEYS, parseStackHealth } from "@/lib/stackHealth";
 import { api } from "@/lib/api";
 import {
   Alert,
-  ActionRow,
   Badge,
   Button,
   Card,
@@ -20,6 +22,8 @@ export type PanelKind = "diff" | "status" | "text" | "error" | "idle";
 export type ResultModel = {
   kind: PanelKind;
   raw: string;
+  /** Preserve mutation failures across background status polling. */
+  sticky?: boolean;
 };
 
 type DiffAction = {
@@ -51,8 +55,7 @@ export function ResultPanel({
   const t = useT();
   const [debug, setDebug] = useState(false);
   const parsed = useMemo(() => tryParse(result.raw), [result.raw]);
-  const incompleteJournal =
-    result.kind === "error" && isIncompleteJournalError(result.raw);
+
 
   if (result.kind === "idle" && !busyLabel) {
     return (
@@ -84,8 +87,9 @@ export function ResultPanel({
       ) : result.kind === "error" ? (
         <Alert title={t("result.errorTitle")}>
           <p>{result.raw}</p>
-          {incompleteJournal && stackPath ? (
-            <IncompleteJournalActions
+          {stackPath ? (
+            <ApplyRecoveryActions
+              raw={result.raw}
               path={stackPath}
               onDone={onJournalRecovered}
             />
@@ -116,79 +120,6 @@ export function ResultPanel({
       ) : (
         <EmptyState message={t("result.noGraphicView")} />
       )}
-    </div>
-  );
-}
-
-function isIncompleteJournalError(raw: string): boolean {
-  return (
-    raw.includes("incomplete journal") ||
-    raw.includes("--resume") ||
-    raw.includes("--abort")
-  );
-}
-
-function IncompleteJournalActions({
-  path,
-  onDone,
-}: {
-  path: string;
-  onDone?: () => void;
-}) {
-  const t = useT();
-  const [busy, setBusy] = useState<"restart" | "resume" | "abort" | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  async function run(mode: "restart" | "resume" | "abort") {
-    setBusy(mode);
-    setMsg(null);
-    try {
-      const { runVzctl } = await import("@/lib/vzctl");
-      if (mode === "restart") {
-        await runVzctl(path, "apply", { abort: true });
-        await runVzctl(path, "apply", { force: true });
-        setMsg(t("result.journalRestartMsg"));
-      } else if (mode === "resume") {
-        await runVzctl(path, "apply", { resume: true });
-        setMsg(t("result.journalResumeMsg"));
-      } else {
-        await runVzctl(path, "apply", { abort: true });
-        setMsg(t("result.journalAbortMsg"));
-      }
-      onDone?.();
-    } catch (err) {
-      setMsg(String(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <div className="doctor-actions" style={{ marginTop: "0.75rem" }}>
-      <Muted>{t("result.incompleteJournalHint")}</Muted>
-      <ActionRow gap="md" style={{ flexWrap: "wrap" }}>
-        <Button
-          disabled={busy != null}
-          onClick={() => void run("restart")}
-        >
-          {busy === "restart" ? t("result.restartBusy") : t("result.restart")}
-        </Button>
-        <Button
-          tone="secondary"
-          disabled={busy != null}
-          onClick={() => void run("resume")}
-        >
-          {busy === "resume" ? t("result.resumeBusy") : t("result.resume")}
-        </Button>
-        <Button
-          tone="secondary"
-          disabled={busy != null}
-          onClick={() => void run("abort")}
-        >
-          {busy === "abort" ? t("result.abortBusy") : t("result.abort")}
-        </Button>
-      </ActionRow>
-      {msg ? <Muted>{msg}</Muted> : null}
     </div>
   );
 }
@@ -264,11 +195,13 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
   const oidc = sections.oidc;
   const diff = sections.diff;
   const stackSection = sections.stack;
+  const health = parseStackHealth(data);
 
   const dnsData = asRecord(dns?.data);
   const dnsInner = asRecord(dnsData?.dns) ?? dnsData;
   const certsData = asRecord(asRecord(certs?.data)?.data) ?? asRecord(certs?.data);
   const oidcData = asRecord(asRecord(oidc?.data)?.data) ?? asRecord(oidc?.data);
+  const oidcDisabled = oidcData?.enabled === false || oidcData?.status === "disabled";
   const diffData = asRecord(diff?.data);
   const diffActions = (Array.isArray(diffData?.actions) ? diffData?.actions : []) as DiffAction[];
   const stackData = asRecord(stackSection?.data);
@@ -280,7 +213,9 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
   const rows: StatusRowModel[] = [
     {
       title: t("result.status.stack"),
-      ok: String(stackData?.phase ?? "") === "running",
+      ok: String(stackData?.phase ?? "") === "running" && health.state === "ok",
+      statusLabel: t(HEALTH_LABEL_KEYS[health.state]),
+      neutral: health.state === "stopped",
       facts: [
         stackData?.label != null ? String(stackData.label) : null,
         stackVms
@@ -337,9 +272,10 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
     },
     {
       title: t("result.status.oidc"),
-      ok: Boolean(oidcData?.running),
+      ok: oidcDisabled || Boolean(oidcData?.running),
+      statusLabel: oidcDisabled ? t("result.status.disabled") : undefined,
       facts: [
-        oidcData?.running
+        oidcDisabled ? t("result.status.disabled") : oidcData?.running
           ? t("result.status.running")
           : t("result.status.stopped"),
         oidcData?.pid != null
@@ -360,6 +296,7 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
 
   return (
     <div className="view-stack">
+      <StackHealthSummary health={health} />
       <Card className="status-board">
         <ul className="status-board-list">
           {rows.map((row) => (
@@ -394,6 +331,8 @@ function StatusView({ data }: { data: Record<string, unknown> }) {
 }
 
 type StatusRowModel = {
+  statusLabel?: string;
+  neutral?: boolean;
   title: string;
   ok: boolean;
   facts: Array<string | null | undefined>;
@@ -402,7 +341,7 @@ type StatusRowModel = {
   hint?: string;
 };
 
-function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
+function StatusRow({ title, ok, facts, error, action, hint, statusLabel, neutral }: StatusRowModel) {
   const t = useT();
   const emDash = t("common.emDash");
   const visibleFacts = facts.filter(
@@ -411,11 +350,11 @@ function StatusRow({ title, ok, facts, error, action, hint }: StatusRowModel) {
   );
 
   return (
-    <li className={`status-board-row${ok ? "" : " is-warn"}`}>
+    <li className={`status-board-row${ok || neutral ? "" : " is-warn"}`}>
       <div className="status-board-main">
         <span className="status-board-title">{title}</span>
-        <Badge tone={ok ? "ok" : "warn"}>
-          {ok ? t("result.status.ok") : t("result.status.check")}
+        <Badge tone={neutral ? "neutral" : ok ? "ok" : "warn"}>
+          {statusLabel ?? (ok ? t("result.status.ok") : t("result.status.check"))}
         </Badge>
         <p className="status-board-facts" title={visibleFacts.join(" · ")}>
           {visibleFacts.length > 0 ? visibleFacts.join(" · ") : emDash}

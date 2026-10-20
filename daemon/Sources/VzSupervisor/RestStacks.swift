@@ -29,10 +29,12 @@ enum RestStackStore {
     }
 
     static func readText(at url: URL) throws -> String {
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileReadNoSuchFileError {
             throw StackStoreError.notFound(url.path)
         }
-        return try String(contentsOf: url, encoding: .utf8)
     }
 
     static func writeText(_ content: String, at url: URL) throws {

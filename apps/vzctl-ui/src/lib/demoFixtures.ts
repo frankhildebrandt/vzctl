@@ -233,6 +233,7 @@ function statusBundle(): string {
     exit_code: 0,
     summary: { message: "demo status" },
     sections: {
+      health: { ok: true, data: { summary: { health: "ok" }, warnings: [] } },
       stack: {
         ok: true,
         data: {

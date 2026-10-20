@@ -23,3 +23,14 @@ import Testing
     let encoded = try JSONRPCFraming.encode(response)
     #expect(try JSONRPCFraming.decode(JSONRPCResponse.self, from: encoded) == response)
 }
+
+@Test func foundationConversionPreservesNumbersAndBooleans() throws {
+    let data = Data(#"{"zero":0,"one":1,"two":2,"fraction":0.25,"yes":true,"no":false,"nested":[0,1,true,null]}"#.utf8)
+    let foundation = try JSONSerialization.jsonObject(with: data)
+    let expected = try JSONDecoder().decode(JSONValue.self, from: data)
+    #expect(JSONValue.fromAny(foundation) == expected)
+    #expect(JSONValue.fromAny(0) == .number(0))
+    #expect(JSONValue.fromAny(1) == .number(1))
+    #expect(JSONValue.fromAny(true) == .bool(true))
+    #expect(JSONValue.fromAny(false) == .bool(false))
+}

@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type MouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import type { Dnd, Graph } from "@antv/x6";
@@ -158,7 +157,7 @@ export function TopologyEditor({ projectPath, toolbarHost }: Props) {
       const dnd = dndRef.current;
       if (!graph || !dnd) return;
       const preview = createPalettePreviewNode(graph, kind);
-      dnd.start(preview, event.nativeEvent);
+      dnd.start(preview, event);
     },
     [],
   );

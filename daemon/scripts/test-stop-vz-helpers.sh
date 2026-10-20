@@ -103,9 +103,9 @@ assert_before \
   '"$stop_helpers" "$(id -u)"' \
   'bootout "$domain/$net_label"'
 assert_before \
-  "$root/packaging/macos/postinstall" \
-  '"$stop_helpers" "$uid"' \
-  'bootout "$domain/$label_net"'
+  "$root/packaging/macos/preinstall" \
+  '"$script_dir/stop-vz-helpers.sh" "$console_uid"' \
+  'stop_agent vz-net net 600'
 grep -qF '"$scripts_dir/stop-vz-helpers.sh"' "$root/scripts/package-macos.sh" \
   || fail "pkg does not include the helper shutdown guard"
 

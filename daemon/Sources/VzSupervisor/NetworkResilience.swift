@@ -550,7 +550,7 @@ enum HostRouteScanner {
                       networkCIDR.overlaps(routeCIDR)
                 else { return nil }
                 return NetworkCIDRConflict(
-                    network: network.name,
+                    network: network.id,
                     cidr: network.cidr,
                     hostRoute: route.cidr,
                     interface: route.interface

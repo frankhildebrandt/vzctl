@@ -100,6 +100,12 @@ pub(crate) struct Spec {
     /// Stack probes executed by `stack status` / `doctor --stack`.
     #[serde(default)]
     pub(crate) observability: ObservabilityConfig,
+    #[serde(default)]
+    pub(crate) kubernetes: crate::kubernetes::KubernetesConfig,
+    #[serde(default, rename = "serviceProviders")]
+    pub(crate) service_providers: BTreeMap<String, crate::controllers::ProviderConfig>,
+    #[serde(default, rename = "serviceClaims")]
+    pub(crate) service_claims: BTreeMap<String, crate::controllers::ClaimConfig>,
     #[schemars(length(min = 1))]
     pub(crate) vms: BTreeMap<String, VmConfig>,
 }
@@ -193,6 +199,7 @@ pub(crate) struct ObservabilityProbe {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProbeExpect {
     Tcp,
+    #[serde(alias = "http_2xx")]
     Http2xx,
     Dns,
 }
@@ -712,6 +719,14 @@ pub(crate) fn json_schema() -> Value {
             "title".to_string(),
             json!("vzctl hypernetwork/v1 Environment"),
         );
+    }
+    // schemars 0.8 ignores serde aliases when generating enum variants.
+    // Validation and exported schemas must accept the same migration spelling.
+    if let Some(values) = schema
+        .pointer_mut("/definitions/ProbeExpect/enum")
+        .and_then(Value::as_array_mut)
+    {
+        values.push(json!("http_2xx"));
     }
     schema
 }
@@ -1307,6 +1322,8 @@ fn validate_references(
     detect_dependency_cycles(&environment.spec.vms, &mut issues);
     validate_certs_ingress_oidc(environment, &mut issues);
     validate_observability(environment, &mut issues);
+    crate::kubernetes::validate(environment, config_dir, &mut issues);
+    issues.extend(crate::controllers::validate_config(environment));
     sort_and_deduplicate(&mut issues);
     issues
 }
@@ -1338,7 +1355,8 @@ fn validate_observability(environment: &Environment, issues: &mut Vec<Validation
                 "semantic",
             ));
         }
-        if probe.target.contains('@') || probe.target.contains("://") && !valid_probe_url(&probe.target)
+        if probe.target.contains('@')
+            || probe.target.contains("://") && !valid_probe_url(&probe.target)
         {
             issues.push(ValidationIssue::new(
                 format!("{base}.target"),
@@ -1351,7 +1369,7 @@ fn validate_observability(environment: &Environment, issues: &mut Vec<Validation
                 if !valid_probe_url(&probe.target) {
                     issues.push(ValidationIssue::new(
                         format!("{base}.target"),
-                        "http_2xx probes require an http(s) URL without credentials",
+                        "http2xx probes require an http(s) URL without credentials",
                         "semantic",
                     ));
                 }
@@ -1376,7 +1394,8 @@ fn valid_data_source_host(host: &str) -> bool {
     }
     if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
         let octets = ip.octets();
-        return octets[0] == 10
+        return ip.is_loopback()
+            || octets[0] == 10
             || (octets[0] == 172 && (16..=31).contains(&octets[1]))
             || (octets[0] == 192 && octets[1] == 168);
     }
@@ -1461,7 +1480,7 @@ fn validate_sql_data_source_type(
         if !valid_data_source_host(&entry.host) {
             issues.push(ValidationIssue::new(
                 format!("{entry_base}.host"),
-                "host must end with .vz.test or be a private RFC1918 IPv4 address",
+                "host must end with .vz.test or be a private RFC1918 or loopback IPv4 address",
                 "semantic",
             ));
         }
@@ -1542,7 +1561,7 @@ fn validate_nats_data_source_type(
         if !valid_data_source_host(&entry.host) {
             issues.push(ValidationIssue::new(
                 format!("{entry_base}.host"),
-                "host must end with .vz.test or be a private RFC1918 IPv4 address",
+                "host must end with .vz.test or be a private RFC1918 or loopback IPv4 address",
                 "semantic",
             ));
         }
@@ -2149,10 +2168,7 @@ pub(crate) fn journald_units_for_vm_config(vm: &VmConfig) -> &[String] {
 }
 
 /// Resolve journald units for a runtime VM id (`{project}/{vm}`) from a stack environment.
-pub(crate) fn journald_units_for_runtime_vm(
-    environment: &Environment,
-    vm_id: &str,
-) -> Vec<String> {
+pub(crate) fn journald_units_for_runtime_vm(environment: &Environment, vm_id: &str) -> Vec<String> {
     let Some((project, vm_key)) = split_runtime_vm_id(vm_id) else {
         return Vec::new();
     };
@@ -2172,11 +2188,7 @@ pub(crate) fn split_runtime_vm_id(vm_id: &str) -> Option<(String, String)> {
     let slash = vm_id.find('/')?;
     let project = vm_id[..slash].to_string();
     let vm_key = vm_id[slash + 1..].to_string();
-    if project.is_empty()
-        || vm_key.is_empty()
-        || !valid_name(&project)
-        || !valid_name(&vm_key)
-    {
+    if project.is_empty() || vm_key.is_empty() || !valid_name(&project) || !valid_name(&vm_key) {
         return None;
     }
     Some((project, vm_key))
@@ -2805,6 +2817,9 @@ pub(crate) fn scaffold_environment(name: &str, cidr: &str) -> Result<Environment
             ingress: None,
             oidc: None,
             observability: ObservabilityConfig::default(),
+            kubernetes: crate::kubernetes::KubernetesConfig::default(),
+            service_providers: BTreeMap::new(),
+            service_claims: BTreeMap::new(),
             vms: BTreeMap::new(),
         },
     })
@@ -3234,6 +3249,23 @@ pub(crate) fn remove_mount(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_probe_expect_accepts_legacy_spelling_and_emits_canonical() {
+        for spelling in ["http2xx", "http_2xx"] {
+            let expect: ProbeExpect = serde_json::from_value(json!(spelling)).unwrap();
+            assert_eq!(expect, ProbeExpect::Http2xx);
+            assert_eq!(serde_json::to_value(expect).unwrap(), json!("http2xx"));
+            let schema = json_schema();
+            let validator = JSONSchema::compile(&schema).unwrap();
+            let mut document: Value = serde_yaml::from_str(include_str!(
+                "../../../examples/edge-dmz/hypernetwork.config.yaml"
+            ))
+            .unwrap();
+            document["spec"]["observability"] = json!({"probes": [{"name": "web", "from": "host", "target": "https://example.test", "expect": spelling}]});
+            assert!(validator.is_valid(&document), "schema rejects {spelling}");
+        }
+    }
 
     #[test]
     fn journald_units_validate_and_resolve() {
@@ -3733,6 +3765,37 @@ spec:
         }));
     }
 
+    const LOOPBACK_DATA_SOURCES: &str =
+        include_str!("../tests/fixtures/validate/valid-data-sources-loopback.yaml");
+
+    #[test]
+    fn observability_loopback_sources_accept_sql_and_nats_via_vm() {
+        validate_source(LOOPBACK_DATA_SOURCES).unwrap();
+    }
+
+    #[test]
+    fn observability_loopback_sources_still_reject_public_hosts() {
+        let issues =
+            validate_source(&LOOPBACK_DATA_SOURCES.replace("host: 127.0.0.1", "host: 8.8.8.8"))
+                .unwrap_err();
+        for kind in ["postgres", "mysql", "nats"] {
+            assert!(issues.iter().any(|issue| issue.path
+                == format!("$.spec.observability.dataSources.{kind}.entries.local.host")));
+        }
+    }
+
+    #[test]
+    fn observability_loopback_sources_require_existing_via_vm() {
+        let issues =
+            validate_source(&LOOPBACK_DATA_SOURCES.replace("via: web", "via: absent")).unwrap_err();
+        for kind in ["postgres", "mysql", "nats"] {
+            assert!(issues.iter().any(|issue| issue.path
+                == format!("$.spec.observability.dataSources.{kind}.via")
+                && issue.message.contains("unknown VM")));
+        }
+        assert!(validate_source(&LOOPBACK_DATA_SOURCES.replace("        via: web\n", "")).is_err());
+    }
+
     #[test]
     fn observability_data_sources_require_valid_default_and_via() {
         let source = r#"
@@ -3765,9 +3828,9 @@ spec:
       networks: [{ name: lan, ip: 10.90.0.10 }]
 "#;
         let issues = validate_source(source).unwrap_err();
-        assert!(issues.iter().any(|issue| {
-            issue.path.contains("dataSources.postgres.default")
-        }));
+        assert!(issues
+            .iter()
+            .any(|issue| { issue.path.contains("dataSources.postgres.default") }));
         assert!(issues.iter().any(|issue| {
             issue.path.contains("dataSources.postgres.via") && issue.message.contains("unknown VM")
         }));

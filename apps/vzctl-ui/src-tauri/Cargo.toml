@@ -1,6 +1,6 @@
 [package]
 name = "vzctl-ui"
-version = "0.0.1"
+version = "0.3.0-alpha4"
 description = "vzctl Tauri UI — REST control-plane client"
 authors = ["vzctl"]
 edition = "2021"

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Alert,
@@ -14,7 +14,7 @@ import {
   TableCard,
 } from "@/components/ui";
 import { useT } from "@/lib/i18n";
-import { deleteNet, getDefaultNet, listNets, netKeys, type NetRecord } from "@/lib/nets";
+import { deleteNet, getDefaultNet, listNets, netKeys, networkLabel, networkDeleteId, networkAttachmentCount, isDefaultNetwork, type NetRecord } from "@/lib/nets";
 
 export function NetworksPage() {
   const t = useT();
@@ -33,7 +33,7 @@ export function NetworksPage() {
   });
 
   const remove = useMutation({
-    mutationFn: async (name: string) => deleteNet(name),
+    mutationFn: async ({ id, project }: { id: string; project?: string }) => deleteNet(id, project),
     onSuccess: async () => {
       setPendingDelete(null);
       await queryClient.invalidateQueries({ queryKey: netKeys.all });
@@ -42,15 +42,7 @@ export function NetworksPage() {
 
   const networks = netsQuery.data?.networks ?? [];
   const attachments = netsQuery.data?.attachments ?? [];
-  const attachmentCount = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const row of attachments) {
-      const key = row.network_name ?? row.network;
-      if (!key) continue;
-      map.set(key, (map.get(key) ?? 0) + 1);
-    }
-    return map;
-  }, [attachments]);
+  const ambiguous = networks.some((net) => networkDeleteId(net, networks) === null);
 
   return (
     <section>
@@ -61,7 +53,7 @@ export function NetworksPage() {
             {t("networks.subtitle")}
             {defaultQuery.data
               ? t("networks.default", {
-                  name: defaultQuery.data.name,
+                  name: networkLabel(defaultQuery.data),
                   cidr: defaultQuery.data.cidr ?? "",
                 })
               : ""}
@@ -72,6 +64,7 @@ export function NetworksPage() {
       {netsQuery.isError && (
         <Alert title={t("common.error")}>{String(netsQuery.error)}</Alert>
       )}
+      {ambiguous && <Alert title={t("networks.ambiguousTitle")}>{t("networks.ambiguousDesc")}</Alert>}
       {netsQuery.isLoading && <LoadingState message={t("networks.loading")} />}
 
       {!netsQuery.isLoading && networks.length === 0 && (
@@ -92,20 +85,20 @@ export function NetworksPage() {
               </tr>
             </thead>
             <tbody>
-              {networks.map((net) => (
-                <tr key={net.name}>
+              {networks.map((net, index) => (
+                <tr key={net.id ?? `${net.project ?? "global"}/${net.name}/${index}`}>
                   <td>
-                    <Mono>{net.name}</Mono>
-                    {defaultQuery.data?.name === net.name ? (
+                    <Mono>{networkLabel(net)}</Mono>
+                    {isDefaultNetwork(net, defaultQuery.data ?? null, networks) ? (
                       <Badge>{t("networks.badgeDefault")}</Badge>
                     ) : null}
                   </td>
                   <td>{net.cidr ?? t("common.emDash")}</td>
                   <td>{net.backend ?? "vmnet"}</td>
                   <td>{net.runtime_state ?? t("common.emDash")}</td>
-                  <td>{attachmentCount.get(net.name) ?? 0}</td>
+                  <td>{networkAttachmentCount(net, { networks, attachments }) ?? t("common.emDash")}</td>
                   <td>
-                    <Button tone="danger" onClick={() => setPendingDelete(net)}>
+                    <Button tone="danger" disabled={remove.isPending || networkDeleteId(net, networks) === null} onClick={() => setPendingDelete(net)}>
                       {t("networks.delete")}
                     </Button>
                   </td>
@@ -121,13 +114,15 @@ export function NetworksPage() {
         title={t("networks.deleteTitle")}
         message={
           pendingDelete
-            ? t("networks.deleteMessage", { name: pendingDelete.name })
+            ? t("networks.deleteMessage", { name: networkLabel(pendingDelete) })
             : ""
         }
         confirmLabel={t("dialog.delete")}
+        busy={remove.isPending}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => {
-          if (pendingDelete) remove.mutate(pendingDelete.name);
+          const id = pendingDelete && networkDeleteId(pendingDelete, networks);
+          if (id) remove.mutate({ id, project: pendingDelete?.project });
         }}
       />
       <FieldError message={remove.isError ? String(remove.error) : null} />

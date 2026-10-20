@@ -1,3 +1,5 @@
+import { api, apiRequest, encodeId } from "@/lib/api";
+import { isDemoMode } from "@/lib/demo";
 import { invoke } from "@tauri-apps/api/core";
 import { parse, stringify } from "yaml";
 import type { MessageKey } from "@/lib/i18n";
@@ -218,7 +220,6 @@ export function validateUplinkDraft(draft: {
 }
 
 export async function loadHostOidcUplink(): Promise<HostOidcUplinkState> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode()) {
     return { uplink: null, secretPresent: false, stateDir: await getVzctlStateDir() };
   }
@@ -226,7 +227,6 @@ export async function loadHostOidcUplink(): Promise<HostOidcUplinkState> {
   let uplink: OidcUplinkConfig | null = null;
   let secretPresent = false;
   try {
-    const { api } = await import("@/lib/api");
     const yaml = await api.getText("/v1/oidc/uplink");
     if (yaml.trim()) {
       const parsed = parse(yaml) as unknown;
@@ -284,7 +284,6 @@ export async function saveHostOidcUplink(input: {
 
   const file: HostOidcUplinkFile = { uplink };
   const yaml = stringify(file, { lineWidth: 100 });
-  const { api } = await import("@/lib/api");
   await api.putText("/v1/oidc/uplink", yaml, "text/yaml; charset=utf-8");
   if (input.clientSecret.trim()) {
     await invoke("write_secret_file", {
@@ -309,7 +308,6 @@ export async function saveProjectUplinkSecret(
     throw new OidcMessageError("oidc.error.secretTauriOnly");
   }
   if (!secret.trim()) throw new OidcMessageError("oidc.error.projectSecretEmpty");
-  const { apiRequest, encodeId } = await import("@/lib/api");
   await apiRequest(`/v1/projects/${encodeId(project)}/oidc/secret`, {
     method: "PUT",
     rawBody: `${secret.trim()}\n`,

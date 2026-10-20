@@ -7,6 +7,7 @@ final class RestRouter: @unchecked Sendable {
     let jobs: RestJobRunner
     let database: StateDatabase
     let stateDirectory: URL
+    private let statusCache = RestStatusCache()
 
     init(jobs: RestJobRunner, database: StateDatabase, stateDirectory: URL) {
         self.jobs = jobs
@@ -48,7 +49,9 @@ final class RestRouter: @unchecked Sendable {
 
     func handle(_ request: RestHTTPRequest) -> RestHTTPResponse {
         do {
-            return try route(request)
+            let response = try route(request)
+            if request.method != "GET", (200..<300).contains(response.status) { statusCache.invalidate() }
+            return response
         } catch let error as RestRouteError {
             return (try? RestHTTPResponse.error(
                 error.status,
@@ -56,6 +59,10 @@ final class RestRouter: @unchecked Sendable {
                 message: error.message,
                 details: error.details
             )) ?? RestHTTPResponse.text(error.status, error.message)
+        } catch let error as StackStoreError {
+            return (try? RestHTTPResponse.error(
+                404, code: .notFound, message: error.description
+            )) ?? RestHTTPResponse.text(404, error.description)
         } catch {
             return (try? RestHTTPResponse.error(
                 500,
@@ -126,6 +133,15 @@ final class RestRouter: @unchecked Sendable {
     // MARK: - Jobs
 
     private func routeJobs(method: String, rest: [String]) throws -> RestHTTPResponse {
+        if rest.count == 3, rest[2] == "cancel", method == "POST" {
+            guard jobs.get(rest[1]) != nil else {
+                throw RestRouteError(404, .notFound, "job not found")
+            }
+            guard jobs.cancel(rest[1]) else {
+                throw RestRouteError(409, .conflict, "job has already finished")
+            }
+            return try RestHTTPResponse.jsonValue(202, .object(["jobId": .string(rest[1])]))
+        }
         guard rest.count == 2, method == "GET" else {
             throw RestRouteError(404, .notFound, "job route")
         }
@@ -162,6 +178,7 @@ final class RestRouter: @unchecked Sendable {
                 return try RestHTTPResponse.jsonValue(200, stack.json)
             }
             if method == "DELETE" {
+                try server?.controllerReconciler.unregister(configPath: RestStackStore.configURL(for: stack.path).path)
                 try database.deleteStack(id: stackId)
                 return RestHTTPResponse.empty(204)
             }
@@ -190,11 +207,16 @@ final class RestRouter: @unchecked Sendable {
             case ("status", "GET"):
                 return try RestHTTPResponse.jsonValue(
                     200,
-                    try RestStatusBundle.build(
+                    try statusCache.get(
                         path: stack.path,
-                        jobs: jobs,
-                        rpcVMs: { try self.rpcResult("vm.list") }
-                    )
+                        config: try? Data(contentsOf: RestStackStore.configURL(for: stack.path))
+                    ) {
+                        try RestStatusBundle.build(
+                            path: stack.path, jobs: jobs,
+                            rpcVMs: { try self.rpcResult("vm.list") },
+                            inspectStack: { try self.database.stackState(stackID: $0) }
+                        )
+                    }
                 )
             case ("up", "POST"):
                 return try startStackJob(kind: "up", path: stack.path, body: request.body)
@@ -211,7 +233,7 @@ final class RestRouter: @unchecked Sendable {
             return try routeStackDebug(
                 stackPath: stack.path,
                 method: method,
-                rest: Array(rest.dropFirst(2)),
+                rest: Array(rest.dropFirst(3)),
                 request: request
             )
         }
@@ -224,18 +246,19 @@ final class RestRouter: @unchecked Sendable {
         rest: [String],
         request: RestHTTPRequest
     ) throws -> RestHTTPResponse {
-        var base = ["debug", "-C", stackPath, "--format", "json"]
-        if rest == ["sources", "list"], method == "GET" {
+        var base = ["debug"]
+        let common = ["-C", stackPath, "--format", "json"]
+        if (rest == ["sources"] || rest == ["sources", "list"]), method == "GET" {
             if let source = request.query["type"], !source.isEmpty {
                 base += ["sources", "list", "--type", source]
             } else {
                 base += ["sources", "list"]
             }
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         if rest == ["doctor"], method == "GET" {
             base.append("doctor")
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         if rest == ["postgres", "query"], method == "POST" {
             let obj = try bodyObject(request)
@@ -244,7 +267,7 @@ final class RestRouter: @unchecked Sendable {
             }
             base += ["postgres", "query"]
             appendDebugQueryFlags(&base, obj: obj, request: request)
-            base += ["--", sql]
+            base += common + ["--", sql]
             return try workerJSON(base)
         }
         if rest == ["mysql", "query"], method == "POST" {
@@ -254,7 +277,7 @@ final class RestRouter: @unchecked Sendable {
             }
             base += ["mysql", "query"]
             appendDebugQueryFlags(&base, obj: obj, request: request)
-            base += ["--", sql]
+            base += common + ["--", sql]
             return try workerJSON(base)
         }
         if rest == ["nats", "streams"], method == "GET" {
@@ -262,7 +285,7 @@ final class RestRouter: @unchecked Sendable {
             if let source = request.query["source"], !source.isEmpty {
                 base += ["--source", source]
             }
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         if rest == ["nats", "sub"], method == "POST" {
             let obj = try bodyObject(request)
@@ -271,7 +294,7 @@ final class RestRouter: @unchecked Sendable {
             }
             base += ["nats", "sub", "--subject", subject]
             appendDebugNatsFlags(&base, obj: obj, request: request)
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         if rest == ["nats", "kv", "get"], method == "POST" {
             let obj = try bodyObject(request)
@@ -285,7 +308,7 @@ final class RestRouter: @unchecked Sendable {
             if let source = optionalString(obj["source"]) ?? request.query["source"] {
                 base += ["--source", source]
             }
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         if rest == ["nats", "kv", "watch"], method == "POST" {
             let obj = try bodyObject(request)
@@ -297,7 +320,7 @@ final class RestRouter: @unchecked Sendable {
                 base += ["--key", key]
             }
             appendDebugNatsFlags(&base, obj: obj, request: request)
-            return try workerJSON(base)
+            return try workerJSON(base + common)
         }
         throw RestRouteError(404, .notFound, "stack debug route")
     }
@@ -412,7 +435,7 @@ final class RestRouter: @unchecked Sendable {
             if optionalBool(obj["resume"]) == true { args.append("--resume") }
             if optionalBool(obj["abort"]) == true { args.append("--abort") }
         }
-        let jobId = jobs.start(kind: "stack.\(kind)", arguments: args)
+        let jobId = try jobs.start(kind: "stack.\(kind)", arguments: args)
         return try RestHTTPResponse.jsonValue(202, .object(["jobId": .string(jobId)]))
     }
 
@@ -646,9 +669,13 @@ final class RestRouter: @unchecked Sendable {
             }
         }
         guard rest.count >= 2 else { throw RestRouteError(404, .notFound, "net route") }
-        let name = rest[1]
+        let name = decodePathSegment(rest[1])
         if rest.count == 2, method == "DELETE" {
-            return try rpcOK("net.delete", params: .object(["name": .string(name)]))
+            var params: [String: JSONValue] = ["name": .string(name)]
+            if let project = request.query["project"], !project.isEmpty {
+                params["project"] = .string(project)
+            }
+            return try rpcOK("net.delete", params: .object(params))
         }
         if rest.count == 3, rest[2] == "attach", method == "POST" {
             var obj = try bodyObject(request)
@@ -695,7 +722,7 @@ final class RestRouter: @unchecked Sendable {
             }
         }
         arguments += ["--format", "json"]
-        let jobId = jobs.start(
+        let jobId = try jobs.start(
             kind: "image.\(action)",
             arguments: arguments
         )

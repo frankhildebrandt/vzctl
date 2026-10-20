@@ -1,4 +1,5 @@
-import { api, encodeId } from "@/lib/api";
+import { isDemoMode } from "@/lib/demo";
+import { ApiError, api, encodeId } from "@/lib/api";
 import {
   configPath,
   diagramPath,
@@ -38,7 +39,6 @@ export async function loadProject(projectDir: string): Promise<{
   env: Environment;
   diagram: DiagramState;
 }> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode()) {
     const mem = readMemory().get(projectDir);
     if (mem) return mem;
@@ -51,8 +51,13 @@ export async function loadProject(projectDir: string): Promise<{
   let diagramRaw: string | null = null;
   try {
     diagramRaw = await api.getText(`/v1/stacks/${encodeId(stackId)}/diagram`);
-  } catch {
-    diagramRaw = null;
+  } catch (error) {
+    // A missing optional sidecar is fine; outages/permission failures must not
+    // become an empty diagram that the next save would overwrite.
+    // Older supervisors returned 500/internal for this exact missing-file case.
+    const legacyMissing = error instanceof ApiError && error.status === 500
+      && error.code === "internal" && error.message === `not found: ${diagramPath(projectDir)}`;
+    if (!(error instanceof ApiError) || (error.status !== 404 && !legacyMissing)) throw error;
   }
   return { env, diagram: parseDiagramState(diagramRaw) };
 }
@@ -62,7 +67,6 @@ export async function saveProject(
   env: Environment,
   diagram: DiagramState,
 ): Promise<void> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode()) {
     const map = readMemory();
     map.set(projectDir, { env, diagram });
@@ -101,13 +105,7 @@ export async function loadProjectFlexible(projectDir: string): Promise<{
   env: Environment;
   diagram: DiagramState;
 }> {
-  try {
-    return await loadProject(projectDir);
-  } catch (err) {
-    const mem = readMemory().get(projectDir);
-    if (mem) return mem;
-    throw err;
-  }
+  return loadProject(projectDir);
 }
 
 export async function saveProjectFlexible(
@@ -115,32 +113,21 @@ export async function saveProjectFlexible(
   env: Environment,
   diagram: DiagramState,
 ): Promise<void> {
-  try {
-    await saveProject(projectDir, env, diagram);
-  } catch {
-    const map = readMemory();
-    map.set(projectDir, { env, diagram });
-    writeMemory(map);
-  }
+  // Only explicit demo mode may save in memory (handled by saveProject).
+  // A failed real write must reach the editor, which keeps the dirty state.
+  return saveProject(projectDir, env, diagram);
 }
 
 export async function createProjectFlexible(
   projectDir: string,
   name: string,
 ): Promise<{ env: Environment; diagram: DiagramState }> {
-  try {
-    return await createProject(projectDir, name);
-  } catch (err) {
+  if (isDemoMode()) {
     const files = scaffoldFiles({ name });
-    const map = readMemory();
-    map.set(projectDir, { env: files.env, diagram: files.diagram });
-    writeMemory(map);
-    if (String(err).includes("nur in der Tauri-App") || String(err).includes("fetch")) {
-      return { env: files.env, diagram: files.diagram };
-    }
-    // Still return scaffold for demo/dev.
+    await saveProject(projectDir, files.env, files.diagram);
     return { env: files.env, diagram: files.diagram };
   }
+  return createProject(projectDir, name);
 }
 
 // Keep path helpers available for orphan recovery / diagnostics.

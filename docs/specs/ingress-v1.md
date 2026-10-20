@@ -27,6 +27,10 @@ Embedded Caddy reverse proxy on Host loopback. Config comes from
     `.1` des Listener-Netzes
     (not `.0` — guest TCP to `.0` is blackholed on macOS vmnet; docker-backend
     CIDRs are omitted)
+    - Dies gilt unabhängig vom Backend-Port, auch für Docker-Published-Ports
+      und Kubernetes-NodePorts. Caddy behält die numerische Backend-IP und den
+      Backend-Port; der öffentliche DNS-Name wird nie als Upstream verwendet.
+      Ohne aktives Gateway entsteht kein Guest-Override auf VM-IP oder Loopback.
   - Supervisor `HostGatewayIngressProxy`: public `:80/:443` on vmnet `.1` **and**
     `ingress.bind` (default `127.0.0.1`) → Caddy on unprivileged loopback ports
     (`http_port+18000` / `https_port+18000`, e.g. `18080`/`18443`)

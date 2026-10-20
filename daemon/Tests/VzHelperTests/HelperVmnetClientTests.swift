@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 import VzDaemonKit
@@ -45,7 +46,6 @@ import VzDaemonKit
 private final class MockSupervisorSocket: @unchecked Sendable {
     private let listenFD: Int32
     private let path: String
-    private var acceptTask: Task<Void, Never>?
 
     init(path: String, response: JSONRPCResponse) throws {
         self.path = path
@@ -82,7 +82,8 @@ private final class MockSupervisorSocket: @unchecked Sendable {
         }
 
         let encoded = try JSONRPCFraming.encode(response)
-        acceptTask = Task.detached {
+        // accept/read block: they must not occupy Swift's cooperative test pool.
+        DispatchQueue.global().async {
             let client = Darwin.accept(fd, nil, nil)
             guard client >= 0 else { return }
             defer { Darwin.close(client) }
@@ -105,7 +106,6 @@ private final class MockSupervisorSocket: @unchecked Sendable {
     }
 
     func stop() {
-        acceptTask?.cancel()
         Darwin.close(listenFD)
         unlink(path)
     }

@@ -1188,6 +1188,7 @@ fn emit_validation_failure(format: Format, command: &str, path: &Path, issues: &
             }
         }
         Format::Json => {
+            eprintln!("invalid: {}", path.display());
             let errors: Vec<Value> = issues
                 .iter()
                 .map(|issue| {
@@ -1198,7 +1199,7 @@ fn emit_validation_failure(format: Format, command: &str, path: &Path, issues: &
                     })
                 })
                 .collect();
-            eprintln!(
+            println!(
                 "{}",
                 json!({
                     "apiVersion": API_VERSION,
@@ -1218,19 +1219,12 @@ fn emit_validation_failure(format: Format, command: &str, path: &Path, issues: &
 }
 
 fn emit_failure(format: Format, command: &str, failure: &Failure) {
-    match format {
-        Format::Human => eprintln!("{}", failure.message),
-        Format::Json => eprintln!(
-            "{}",
-            json!({
-                "apiVersion": API_VERSION,
-                "command": command,
-                "status": "fail",
-                "exit_code": failure.code,
-                "error": { "message": failure.message },
-            })
-        ),
-    }
+    crate::emit_command_failure(
+        format == Format::Json,
+        command,
+        failure.code,
+        &failure.message,
+    );
 }
 
 fn usage() -> &'static str {

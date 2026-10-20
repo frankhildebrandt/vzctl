@@ -1,0 +1,43 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata:
+  name: k3s-lab
+spec:
+  project: k3s-lab
+  domain: k3s-lab.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: {enabled: true, upstream: system}
+  images:
+    ubuntu:
+      from: ubuntu-latest
+      role: base
+      tag: k3s-lab-v1
+  networks:
+    lan: {cidr: 10.120.0.0/24, mode: shared}
+  routes: []
+  policies: []
+  vms:
+    server:
+      from: ubuntu
+      disk: 24G
+      cpus: 2
+      memory: 4Gi
+      networks:
+        - {name: lan, ip: 10.120.0.10}
+  kubernetes:
+    clusters:
+      dev:
+        version: v1.37.1+k3s1
+        # Official sha256sum-arm64.txt, retrieved 2026-10-20; k3s-arm64 entry.
+        sha256: a1561ca4aef8b99f5588a840d4468ac39c8c1cd92470bbcb9634823fa221741a
+        server: server
+        network: lan
+        podCIDR: 10.42.0.0/16
+        serviceCIDR: 10.43.0.0/16
+        defaultNamespace: app
+        manifests:
+          - kubernetes/namespace.yaml
+          - kubernetes/configmap.yaml

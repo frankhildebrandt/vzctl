@@ -1,9 +1,32 @@
 use std::borrow::Cow;
 
 const BLOCKED_KEYWORDS: &[&str] = &[
-    "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "COPY",
-    "CALL", "EXEC", "EXECUTE", "MERGE", "REPLACE", "LOAD", "IMPORT", "EXPORT", "SET", "USE",
-    "LOCK", "UNLOCK", "RENAME", "HANDLER", "PREPARE", "DEALLOCATE",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DROP",
+    "CREATE",
+    "ALTER",
+    "TRUNCATE",
+    "GRANT",
+    "REVOKE",
+    "COPY",
+    "CALL",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "REPLACE",
+    "LOAD",
+    "IMPORT",
+    "EXPORT",
+    "SET",
+    "USE",
+    "LOCK",
+    "UNLOCK",
+    "RENAME",
+    "HANDLER",
+    "PREPARE",
+    "DEALLOCATE",
 ];
 
 /// Returns Ok(normalized SQL) or an error message for non read-only statements.
@@ -29,7 +52,9 @@ pub(crate) fn validate_read_only_sql(sql: &str) -> Result<String, String> {
         first.as_ref(),
         "SELECT" | "EXPLAIN" | "SHOW" | "DESCRIBE" | "DESC" | "WITH"
     ) {
-        return Err(format!("only read-only statements are allowed (got {first})"));
+        return Err(format!(
+            "only read-only statements are allowed (got {first})"
+        ));
     }
     Ok(trimmed.to_string())
 }
@@ -76,7 +101,13 @@ fn contains_statement_separator(sql: &str) -> bool {
     false
 }
 
-pub(crate) fn build_psql_argv(host: &str, port: u16, user: &str, database: &str, sql: &str) -> Vec<String> {
+pub(crate) fn build_psql_argv(
+    host: &str,
+    port: u16,
+    user: &str,
+    database: &str,
+    sql: &str,
+) -> Vec<String> {
     vec![
         "psql".into(),
         "-h".into(),
@@ -129,7 +160,10 @@ pub(crate) fn parse_psql_tsv(stdout: &str) -> (Vec<String>, Vec<Vec<String>>) {
     let rows = if lines.len() == 1 && columns.len() == 1 && !stdout.contains('|') {
         vec![columns.clone()]
     } else {
-        lines.iter().map(|line| line.split('|').map(str::to_string).collect()).collect()
+        lines
+            .iter()
+            .map(|line| line.split('|').map(str::to_string).collect())
+            .collect()
     };
     (columns, rows)
 }

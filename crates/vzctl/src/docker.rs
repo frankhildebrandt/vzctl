@@ -1,4 +1,7 @@
+mod bindings;
+mod transport;
 use crate::config::ContainerConfig;
+pub(crate) use bindings::for_vm as binding_consumers;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
@@ -103,17 +106,21 @@ pub(crate) fn ensure_ssh_keypair(
     if pubkey.is_empty() {
         return Err(format!("empty public key at {}", public_key.display()));
     }
-    write_ssh_config(state_dir, project, &private_key)?;
     Ok((private_key, pubkey))
 }
 
-fn write_ssh_config(state_dir: &Path, project: &str, private_key: &Path) -> Result<(), String> {
+fn write_ssh_config(
+    state_dir: &Path,
+    project: &str,
+    private_key: &Path,
+    address: Ipv4Addr,
+) -> Result<(), String> {
     let directory = project_docker_dir(state_dir, project);
     let config_path = directory.join("ssh_config");
     let host = ssh_hostname(project);
     // Quote paths: Application Support contains spaces (OpenSSH otherwise errors).
     let body = format!(
-        "Host {host}\n  User {DOCKER_USER}\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile \"{}/known_hosts\"\n",
+        "Host {host}\n  HostName {address}\n  Port 22\n  User {DOCKER_USER}\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile \"{}/known_hosts\"\n",
         private_key.display(),
         directory.display()
     );
@@ -382,11 +389,15 @@ pub(crate) fn render_user_data(config: &YamlValue) -> Result<String, String> {
 pub(crate) fn ensure_context(
     project: &str,
     state_dir: &Path,
-    host: Option<&str>,
+    vm_key: Option<&str>,
 ) -> Result<String, String> {
+    // Resolve before writing keys/config or touching Docker contexts. The service
+    // alias may legitimately be an HTTP ingress endpoint on host loopback.
+    let address = transport::management_address(project, state_dir, vm_key)?;
     let name = context_name(project);
     let (private_key, _) = ensure_ssh_keypair(state_dir, project)?;
-    let hostname = host.unwrap_or(&ssh_hostname(project)).to_string();
+    write_ssh_config(state_dir, project, &private_key, address)?;
+    let hostname = ssh_hostname(project);
     let docker_host = format!("ssh://{DOCKER_USER}@{hostname}");
     let ssh_config = ssh_config_path(state_dir, project);
     // Recreated VMs rotate SSH host keys; drop stale pins so accept-new can relearn.
@@ -489,8 +500,14 @@ pub(crate) fn docker_binary_available() -> bool {
     let Ok(docker) = resolve_docker_bin() else {
         return false;
     };
+    docker_cli_available_at(&docker)
+}
+
+fn docker_cli_available_at(docker: &Path) -> bool {
+    // Client availability must not depend on the selected default daemon.
+    // Managed VM contexts are checked separately by doctor_check.
     Command::new(docker)
-        .arg("version")
+        .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -516,16 +533,46 @@ pub(crate) fn ensure_vm_containers(
     vm_key: &str,
     compose_files: &[String],
     containers: &BTreeMap<String, ContainerConfig>,
+    claims: &BTreeMap<String, crate::controllers::ClaimConfig>,
 ) -> Result<(), String> {
     if compose_files.is_empty() && containers.is_empty() {
         return Ok(());
     }
-    let (context, ssh_command) = docker_session(project, state_dir)?;
+    let bindings = bindings::for_vm(vm_key, claims);
+    let mut known = containers.keys().cloned().collect::<BTreeSet<_>>();
+    if !bindings.is_empty() {
+        for file in compose_files {
+            known.extend(bindings::compose_services(&config_dir.join(file))?);
+        }
+        for container in bindings.keys() {
+            if !known.contains(container) {
+                return Err(format!("binding consumer {vm_key}/{container} does not name a declared container or Compose service"));
+            }
+        }
+    }
+    let (context, ssh_command) = docker_session(project, state_dir, vm_key)?;
+    let override_dir = project_docker_dir(state_dir, project).join("compose-bindings");
     for compose_file in compose_files {
-        ensure_compose_file(&context, &ssh_command, config_dir, vm_key, compose_file)?;
+        ensure_compose_file(
+            &context,
+            &ssh_command,
+            config_dir,
+            vm_key,
+            compose_file,
+            &bindings,
+            &override_dir,
+        )?;
     }
     for (name, container) in containers {
-        ensure_one_container(&context, &ssh_command, config_dir, vm_key, name, container)?;
+        ensure_one_container(
+            &context,
+            &ssh_command,
+            config_dir,
+            vm_key,
+            name,
+            container,
+            bindings.get(name).map_or(&[], Vec::as_slice),
+        )?;
     }
     Ok(())
 }
@@ -539,7 +586,7 @@ pub(crate) fn collect_vm_container_dns(
     compose_files: &[String],
     docker_cidr: ipnet::Ipv4Net,
 ) -> Result<Vec<ContainerDNSAddress>, String> {
-    let (context, ssh_command) = docker_session(project, state_dir)?;
+    let (context, ssh_command) = docker_session(project, state_dir, vm_key)?;
     let (code, stdout, stderr) =
         docker_output(&context, &ssh_command, &["ps".into(), "-q".into()])?;
     if code != 0 {
@@ -725,8 +772,12 @@ fn dns_host_label(value: &str) -> bool {
             .is_some_and(u8::is_ascii_alphanumeric)
 }
 
-fn docker_session(project: &str, state_dir: &Path) -> Result<(String, String), String> {
-    let context = ensure_context(project, state_dir, None)?;
+fn docker_session(
+    project: &str,
+    state_dir: &Path,
+    vm_key: &str,
+) -> Result<(String, String), String> {
+    let context = ensure_context(project, state_dir, Some(vm_key))?;
     let private_key = project_docker_dir(state_dir, project).join("id_ed25519");
     let ssh_config = ssh_config_path(state_dir, project);
     let ssh_command = format!(
@@ -770,6 +821,8 @@ fn ensure_compose_file(
     config_dir: &Path,
     vm_key: &str,
     compose_file: &str,
+    bindings: &bindings::ContainerBindings,
+    override_dir: &Path,
 ) -> Result<(), String> {
     let path = if Path::new(compose_file).is_absolute() {
         PathBuf::from(compose_file)
@@ -781,7 +834,7 @@ fn ensure_compose_file(
     }
     let project_name = compose_project_name(vm_key, compose_file);
     let project_directory = path.parent().unwrap_or(config_dir).to_path_buf();
-    let args = vec![
+    let mut args = vec![
         "compose".into(),
         "-f".into(),
         path.display().to_string(),
@@ -789,9 +842,30 @@ fn ensure_compose_file(
         project_name,
         "--project-directory".into(),
         project_directory.display().to_string(),
-        "up".into(),
-        "-d".into(),
     ];
+    if !bindings.is_empty() {
+        let value = bindings::compose_override(&bindings::compose_services(&path)?, bindings);
+        if value["services"]
+            .as_object()
+            .is_some_and(|services| !services.is_empty())
+        {
+            fs::create_dir_all(override_dir).map_err(|error| error.to_string())?;
+            fs::set_permissions(override_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|error| error.to_string())?;
+            let key = format!(
+                "{:x}",
+                Sha256::digest(format!("{vm_key}:{}", path.display()))
+            );
+            let override_path = override_dir.join(format!("{key}.json"));
+            fs::write(
+                &override_path,
+                serde_json::to_vec(&value).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            args.extend(["-f".into(), override_path.display().to_string()]);
+        }
+    }
+    args.extend(["up".into(), "-d".into()]);
     let (code, _stdout, stderr) = docker_output(context, ssh_command, &args)?;
     if code != 0 {
         return Err(format!(
@@ -810,8 +884,12 @@ fn ensure_one_container(
     vm_key: &str,
     name: &str,
     container: &ContainerConfig,
+    bindings: &[String],
 ) -> Result<(), String> {
-    let resolved_volumes = resolve_container_volumes(&container.volumes, config_dir)?;
+    let resolved_volumes = bindings::with_mounts(
+        resolve_container_volumes(&container.volumes, config_dir)?,
+        bindings,
+    )?;
     let hash = container_config_hash(container, &resolved_volumes);
     let inspect = inspect_container(context, ssh_command, name)?;
     match inspect {
@@ -950,8 +1028,21 @@ pub(crate) fn build_run_args(
         args.push(port.clone());
     }
     for volume in resolved_volumes {
-        args.push("-v".into());
-        args.push(volume.clone());
+        let parts = volume.split(':').collect::<Vec<_>>();
+        if parts.len() == 3
+            && parts[0].starts_with("/var/lib/vzctl/bindings/")
+            && parts[1].starts_with("/run/vzctl/bindings/")
+            && parts[2] == "ro"
+        {
+            args.push("--mount".into());
+            args.push(format!(
+                "type=bind,src={},dst={},readonly",
+                parts[0], parts[1]
+            ));
+        } else {
+            args.push("-v".into());
+            args.push(volume.clone());
+        }
     }
     args.push(container.image.clone());
     args.extend(container.command.iter().cloned());
@@ -1288,6 +1379,14 @@ pub(crate) fn command(
     socket_path: &Path,
 ) -> ExitCode {
     let args = args.collect::<Vec<_>>();
+    let requested = if args
+        .windows(2)
+        .any(|pair| pair[0] == "--format" && pair[1] == "json")
+    {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Human
+    };
     let parsed = match parse_docker_args(args) {
         Ok(parsed) => parsed,
         Err(error) if error == "help" => {
@@ -1299,12 +1398,21 @@ pub(crate) fn command(
                 "usage: vzctl docker [--project P] [--format human|json] <ps|inspect|start|stop|restart|run> ...\n\
                  \x20      vzctl docker [--project P] [--] <docker-args...>"
             );
-            return ExitCode::from(EXIT_USAGE);
+            return docker_failure(
+                requested,
+                "docker",
+                EXIT_USAGE,
+                "missing docker command".into(),
+            );
         }
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::from(EXIT_USAGE);
-        }
+        Err(error) => return docker_failure(requested, "docker", EXIT_USAGE, error),
+    };
+
+    let command_name = structured_command(&parsed.op);
+    let error_format = if command_name.is_some() {
+        parsed.format
+    } else {
+        OutputFormat::Human
     };
 
     let project = match parsed
@@ -1314,16 +1422,24 @@ pub(crate) fn command(
     {
         Some(project) => project,
         None => {
-            eprintln!("cannot determine project; pass --project");
-            return ExitCode::from(EXIT_INVALID);
+            return docker_failure(
+                error_format,
+                command_name.unwrap_or("docker"),
+                EXIT_INVALID,
+                "cannot determine project; pass --project".into(),
+            );
         }
     };
 
     let context = match ensure_context(&project, state_dir, None) {
         Ok(name) => name,
         Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::from(EXIT_RUNTIME);
+            return docker_failure(
+                error_format,
+                command_name.unwrap_or("docker"),
+                EXIT_RUNTIME,
+                error,
+            );
         }
     };
 
@@ -1526,6 +1642,29 @@ fn print_envelope_or_human(
     ExitCode::from(exit_code)
 }
 
+fn structured_command(op: &DockerOp) -> Option<&'static str> {
+    match op {
+        DockerOp::Ps { .. } => Some("docker.ps"),
+        DockerOp::Inspect { .. } => Some("docker.inspect"),
+        DockerOp::Start { .. } => Some("docker.start"),
+        DockerOp::Stop { .. } => Some("docker.stop"),
+        DockerOp::Restart { .. } => Some("docker.restart"),
+        DockerOp::Run { .. } => Some("docker.run"),
+        DockerOp::Passthrough(_) => None,
+    }
+}
+
+fn docker_failure(format: OutputFormat, command: &str, code: u8, message: String) -> ExitCode {
+    eprintln!("{message}");
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            envelope(command, "fail", code, json!({"message": message}))
+        );
+    }
+    ExitCode::from(code)
+}
+
 fn run_structured_op(
     op: &DockerOp,
     project: &str,
@@ -1545,8 +1684,12 @@ fn run_structured_op(
             let (code, stdout, stderr) = match docker_output(context, ssh_command, &args) {
                 Ok(v) => v,
                 Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::from(EXIT_RUNTIME);
+                    return docker_failure(
+                        format,
+                        structured_command(op).unwrap_or("docker"),
+                        EXIT_RUNTIME,
+                        error,
+                    );
                 }
             };
             if code != 0 {
@@ -1595,8 +1738,12 @@ fn run_structured_op(
             let (code, stdout, stderr) = match docker_output(context, ssh_command, &args) {
                 Ok(v) => v,
                 Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::from(EXIT_RUNTIME);
+                    return docker_failure(
+                        format,
+                        structured_command(op).unwrap_or("docker"),
+                        EXIT_RUNTIME,
+                        error,
+                    );
                 }
             };
             if code != 0 {
@@ -1642,8 +1789,12 @@ fn run_structured_op(
             let (code, stdout, stderr) = match docker_output(context, ssh_command, &args) {
                 Ok(v) => v,
                 Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::from(EXIT_RUNTIME);
+                    return docker_failure(
+                        format,
+                        structured_command(op).unwrap_or("docker"),
+                        EXIT_RUNTIME,
+                        error,
+                    );
                 }
             };
             let message = if code == 0 {
@@ -1690,8 +1841,12 @@ fn run_structured_op(
             let (code, stdout, stderr) = match docker_output(context, ssh_command, &args) {
                 Ok(v) => v,
                 Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::from(EXIT_RUNTIME);
+                    return docker_failure(
+                        format,
+                        structured_command(op).unwrap_or("docker"),
+                        EXIT_RUNTIME,
+                        error,
+                    );
                 }
             };
             let container_id = stdout.trim().to_string();
@@ -2112,6 +2267,39 @@ runcmd: [[systemctl, enable, --now, docker]]
     }
 
     #[test]
+    fn docker_ssh_transport_does_not_resolve_the_ingress_service_alias() {
+        let root = std::env::temp_dir().join(format!("vzctl-ssh-ingress-{}", std::process::id()));
+        let directory = project_docker_dir(&root, "controller-lab");
+        fs::create_dir_all(&directory).unwrap();
+        let key = directory.join("id_ed25519");
+        fs::write(&key, "synthetic-unused-key").unwrap();
+        write_ssh_config(
+            &root,
+            "controller-lab",
+            &key,
+            "10.123.0.10".parse().unwrap(),
+        )
+        .unwrap();
+        let output = Command::new("ssh")
+            .args(["-G", "-F"])
+            .arg(ssh_config_path(&root, "controller-lab"))
+            .arg(ssh_hostname("controller-lab"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let effective = String::from_utf8(output.stdout).unwrap();
+        // The app is legitimately published at docker.svc.* -> 127.0.0.1.
+        // SSH must instead reach the selected VM directly, without DNS lookup.
+        assert!(
+            effective.lines().any(|line| line == "hostname 10.123.0.10"),
+            "SSH still resolves the app's service alias"
+        );
+        assert!(effective.lines().any(|line| line == "user vzctl"));
+        assert!(effective.lines().any(|line| line == "port 22"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn write_ssh_config_quotes_paths_with_spaces() {
         let root = std::env::temp_dir().join(format!("vzctl-ssh-config-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2119,7 +2307,7 @@ runcmd: [[systemctl, enable, --now, docker]]
         fs::create_dir_all(&docker_dir).unwrap();
         let key = docker_dir.join("id_ed25519");
         fs::write(&key, "dummy").unwrap();
-        write_ssh_config(&root, "edge-dmz", &key).unwrap();
+        write_ssh_config(&root, "edge-dmz", &key, "10.95.0.10".parse().unwrap()).unwrap();
         let body = fs::read_to_string(ssh_config_path(&root, "edge-dmz")).unwrap();
         assert!(
             body.contains(&format!("IdentityFile \"{}\"", key.display())),
@@ -2166,6 +2354,32 @@ runcmd: [[systemctl, enable, --now, docker]]
         assert_eq!(value["command"], "docker.ps");
         assert_eq!(value["status"], "ok");
         assert_eq!(value["summary"]["containers"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn docker_cli_probe_does_not_require_a_default_daemon() {
+        let root = std::env::temp_dir().join(format!(
+            "vzctl-docker-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let binary = root.join("docker");
+        fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$#\" = 1 ] && [ \"$1\" = --version ]; then\n  echo 'Docker version test'\n  exit 0\nfi\n# Installed client, unreachable default engine.\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let available = docker_cli_available_at(&binary);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            available,
+            "installed client must not require a default engine"
+        );
     }
 
     #[test]

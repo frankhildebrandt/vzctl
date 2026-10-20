@@ -1,0 +1,33 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: { name: loopback }
+spec:
+  project: loopback
+  domain: loopback.vz.test
+  dns: { enabled: true, hostResolver: true, hostListen: '127.0.0.1:15353', forward: { enabled: true, upstream: system } }
+  images: { ubuntu-base: { from: ubuntu-latest, role: base, tag: v1 } }
+  networks: { lan: { cidr: 10.90.0.0/24, mode: shared } }
+  routes: []
+  policies: []
+  observability:
+    dataSources:
+      postgres:
+        default: local
+        via: web
+        entries:
+          local: { host: 127.0.0.1, port: 5432, database: app, user: reader }
+      mysql:
+        default: local
+        via: web
+        entries:
+          local: { host: 127.0.0.1, port: 3306, database: app, user: reader }
+      nats:
+        default: local
+        via: web
+        entries:
+          local: { host: 127.0.0.1, port: 4222 }
+  vms:
+    web:
+      from: ubuntu-base
+      disk: 4G
+      networks: [{ name: lan, ip: 10.90.0.10 }]

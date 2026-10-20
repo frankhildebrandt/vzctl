@@ -138,6 +138,13 @@ header.header {
   backdrop-filter: blur(10px);
 }
 
+/* The mobile toggle lives in the dark sidebar, but is shown on the light header. */
+.sl-menu-button {
+  color: var(--vz-ink);
+  background: var(--vz-panel);
+  border: 1px solid var(--vz-line);
+}
+
 .content-panel {
   border-top-color: var(--vz-line);
 }

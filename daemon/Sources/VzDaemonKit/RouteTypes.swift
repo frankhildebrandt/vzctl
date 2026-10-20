@@ -130,11 +130,12 @@ public enum DockerBackendRoutes {
         networks: [NetworkRecord],
         attachments: [NetworkAttachmentRecord]
     ) -> [StaticRoute] {
-        let byName = Dictionary(uniqueKeysWithValues: networks.map { ($0.name, $0) })
+        let byID = Dictionary(grouping: networks, by: \.id)
+            .compactMapValues { $0.count == 1 ? $0.first : nil }
         let byVM = Dictionary(grouping: attachments, by: \.vmID)
         var routes: [StaticRoute] = []
         for network in networks where network.isDockerBackend {
-            guard let owner = attachments.first(where: { $0.networkName == network.name }) else {
+            guard let owner = attachments.first(where: { $0.networkID == network.id }) else {
                 continue
             }
             if owner.vmID == vmID {
@@ -143,14 +144,14 @@ public enum DockerBackendRoutes {
             guard let ownerAttachments = byVM[owner.vmID] else { continue }
             guard let routerAttachments = byVM[vmID] else { continue }
             let ownerParents = ownerAttachments.filter {
-                byName[$0.networkName]?.isDockerBackend != true
+                byID[$0.networkID]?.isDockerBackend == false
             }
             let routerParents = Set(
                 routerAttachments
-                    .filter { byName[$0.networkName]?.isDockerBackend != true }
-                    .map(\.networkName)
+                    .filter { byID[$0.networkID]?.isDockerBackend == false }
+                    .map(\.networkID)
             )
-            for parent in ownerParents where routerParents.contains(parent.networkName) {
+            for parent in ownerParents where routerParents.contains(parent.networkID) {
                 routes.append(StaticRoute(destination: network.cidr, via: parent.ip))
             }
         }
@@ -235,7 +236,11 @@ public struct RouterPlan: Equatable, Sendable {
         policies: [ForwardPolicy] = [],
         staticRoutes: [StaticRoute] = []
     ) throws {
-        let records = Dictionary(uniqueKeysWithValues: networkRecords.map { ($0.name, $0) })
+        let grouped = Dictionary(grouping: networkRecords, by: \.id)
+        guard grouped.values.allSatisfy({ $0.count == 1 }) else {
+            throw RouteApplyError.invalid("network inventory contains duplicate IDs")
+        }
+        let records = grouped.compactMapValues(\.first)
         let selected = attachments
             .filter { $0.vmID == vmID }
             .sorted { $0.networkName < $1.networkName }
@@ -245,13 +250,16 @@ public struct RouterPlan: Equatable, Sendable {
             )
         }
         let isDockerRouter = selected.contains {
-            records[$0.networkName]?.isDockerBackend == true
+            records[$0.networkID]?.isDockerBackend == true
         }
         networks = try selected.map { attachment in
-            guard let network = records[attachment.networkName] else {
+            guard let network = records[attachment.networkID] else {
                 throw RouteApplyError.invalid(
                     "router attachment references unknown network \(attachment.networkName)"
                 )
+            }
+            guard network.name == attachment.networkName else {
+                throw RouteApplyError.invalid("router attachment network identity mismatch")
             }
             let expected = IPv4CIDR.router(for: network.cidr)
             if network.isDockerBackend || !isDockerRouter {

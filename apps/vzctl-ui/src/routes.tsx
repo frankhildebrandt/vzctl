@@ -1,3 +1,6 @@
+import { ApplyJournalPanel } from "@/components/ApplyJournalPanel";
+import { pickDirectory } from "@/lib/dialogs";
+import { createProjectFlexible, loadProjectFlexible } from "@/features/persistence/projectIo";
 import {
   Link,
   Outlet,
@@ -10,7 +13,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { TerminalSessionRoot } from "@/components/TerminalDock";
 import { ApplyProgress, ConsoleLog, useApplyProgress } from "@/components/ApplyProgress";
@@ -91,7 +94,7 @@ import {
   recoverOrphanByCidrChange,
   requestHostReboot,
 } from "@/lib/vmnetOrphanRecovery";
-import { TopologyEditor } from "@/features/topology-editor/TopologyEditor";
+const TopologyEditor = lazy(() => import("@/features/topology-editor/TopologyEditor").then((module) => ({ default: module.TopologyEditor })));
 import { useT } from "@/lib/i18n";
 import { useEditorStore } from "@/store/editorStore";
 import { DEMO_PROJECT_PATH, enableDemoMode } from "@/lib/demo";
@@ -384,7 +387,6 @@ function ProjectListPage() {
     mutationFn: async () => {
       const name = createName.trim();
       if (!name) throw new Error(t("projects.nameRequired"));
-      const { pickDirectory } = await import("@/lib/dialogs");
       const parent = await pickDirectory(t("projects.pickParent"));
       if (!parent) return null;
       const sep = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
@@ -394,9 +396,6 @@ function ProjectListPage() {
         .replace(/^-+|-+$/g, "")
         .slice(0, 63);
       const path = `${parent.replace(/[/\\]+$/, "")}${sep}${slug}`;
-      const { createProjectFlexible } = await import(
-        "@/features/persistence/projectIo"
-      );
       await createProjectFlexible(path, slug);
       await rememberProject(path);
       return path;
@@ -576,9 +575,6 @@ function ProjectDetailPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const { loadProjectFlexible } = await import(
-          "@/features/persistence/projectIo"
-        );
         const { env, diagram } = await loadProjectFlexible(path);
         if (!cancelled) loadEditor(path, env, diagram);
       } catch (err) {
@@ -644,18 +640,19 @@ function ProjectDetailPage() {
     }
     if (statusQuery.isError) {
       setBusyLabel(null);
-      setResult({ kind: "error", raw: String(statusQuery.error) });
+      setResult((previous) => previous.sticky ? previous : { kind: "error", raw: String(statusQuery.error) });
       return;
     }
     if (statusQuery.data) {
       setBusyLabel(null);
-      setResult({ kind: "status", raw: statusQuery.data });
+      setResult((previous) => previous.sticky ? previous : { kind: "status", raw: statusQuery.data });
     }
   }, [
     statusQuery.isLoading,
     statusQuery.isError,
     statusQuery.error,
     statusQuery.data,
+    statusQuery.dataUpdatedAt,
   ]);
 
   const suggestedCidr = useMemo(() => {
@@ -678,6 +675,7 @@ function ProjectDetailPage() {
       purge?: boolean;
     }) => runVzctl(path, command, { force, purge }),
     onMutate: ({ command, purge }) => {
+      setResult({ kind: "idle", raw: "" });
       setBusyLabel(purge ? t("apply.busy.down") : t("apply.busy.mode", { mode: command }));
       setOrphan(null);
       setOrphanError(null);
@@ -703,12 +701,12 @@ function ProjectDetailPage() {
       const info = parseVmnetOrphanError(err);
       if (info && (command === "up" || command === "apply")) {
         setOrphan(info);
-        setResult({ kind: "error", raw: String(err) });
+        setResult({ kind: "error", raw: String(err), sticky: true });
         progress.end(false);
         setLogOpen(true);
         return;
       }
-      setResult({ kind: "error", raw: String(err) });
+      setResult({ kind: "error", raw: String(err), sticky: true });
       if (command === "up" || command === "apply" || command === "down") {
         progress.end(false);
         // Keep log open on failure so the error stays visible.
@@ -741,7 +739,7 @@ function ProjectDetailPage() {
       setResult({ kind: "status", raw: response.data ?? "" });
       rememberProject(path);
     } catch (err) {
-      setResult({ kind: "error", raw: String(err) });
+      setResult({ kind: "error", raw: String(err), sticky: true });
     } finally {
       setBusyLabel(null);
     }
@@ -755,7 +753,7 @@ function ProjectDetailPage() {
       setResult({ kind: "diff", raw: response.data ?? "" });
       rememberProject(path);
     } catch (err) {
-      setResult({ kind: "error", raw: String(err) });
+      setResult({ kind: "error", raw: String(err), sticky: true });
     } finally {
       setBusyLabel(null);
     }
@@ -995,10 +993,12 @@ function ProjectDetailPage() {
         topologyError ? (
           <Alert title={t("stack.topologyLoadFail")}>{topologyError}</Alert>
         ) : (
-          <TopologyEditor
-            projectPath={path}
-            toolbarHost={topologyToolbarHost}
-          />
+          <Suspense fallback={<p>{t("common.loading")}</p>}>
+            <TopologyEditor
+              projectPath={path}
+              toolbarHost={topologyToolbarHost}
+            />
+          </Suspense>
         )
       ) : tab === "config" ? (
         <section>
@@ -1022,6 +1022,13 @@ function ProjectDetailPage() {
         inventory={stack.inventory}
         loading={statusQuery.isFetching && !stack.inventory}
       />
+
+      <ApplyJournalPanel raw={statusQuery.data} path={path} disabled={progress.state.active}
+        onDone={() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.diff(path) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.status(path) });
+          setResult({ kind: "idle", raw: "" });
+        }} />
 
       <IngressLinksCard
         ingress={ingress}
@@ -1078,7 +1085,7 @@ function ProjectDetailPage() {
         />
       ) : null}
 
-      {!progress.state.active ? (
+      {!progress.state.active || result.sticky ? (
         <ResultPanel
           result={result}
           busyLabel={busyLabel}
@@ -1089,7 +1096,6 @@ function ProjectDetailPage() {
               queryKey: queryKeys.status(path),
             });
             setResult({ kind: "idle", raw: "" });
-            setLogOpen(false);
           }}
         />
       ) : null}

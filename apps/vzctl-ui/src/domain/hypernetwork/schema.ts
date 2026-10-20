@@ -36,6 +36,7 @@ export const AllowRuleSchema = z.object({
 export const PolicyConfigSchema = z.object({
   name: nameId,
   network: z.string().min(1),
+  via: z.string().min(1).optional(),
   forward: z.literal("deny-all"),
   allow: z.array(AllowRuleSchema).default([]),
 });
@@ -50,6 +51,17 @@ export const VmMountSchema = z.object({
   target: z.string().min(1),
   readOnly: z.boolean().default(false),
 });
+
+export const ContainerConfigSchema = z.object({
+  image: z.string().min(1),
+  ports: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  volumes: z.array(z.string()).optional(),
+  restart: z.string().optional(),
+  command: z.array(z.string()).optional(),
+  workdir: z.string().optional(),
+  user: z.string().optional(),
+}).strict();
 
 export const VmConfigSchema = z.preprocess((value) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -72,6 +84,8 @@ export const VmConfigSchema = z.preprocess((value) => {
   requires: z.array(z.string()).default([]),
   ports: z.array(z.string()).default([]),
   mounts: z.array(VmMountSchema).default([]),
+  composeFiles: z.array(z.string()).optional(),
+  containers: z.record(z.string(), ContainerConfigSchema).optional(),
   logs: z
     .object({
       journald: z.array(z.string().min(1)).default([]),
@@ -138,9 +152,18 @@ export const ResilienceSchema = z
   })
   .strict();
 
+// These connections execute inside the configured via VM, including loopback.
+const DataSourceHostSchema = z.string().refine((host) => {
+  if (host.endsWith(".vz.test")) return true;
+  if (!z.ipv4().safeParse(host).success) return false;
+  const [first, second] = host.split(".").map(Number);
+  return first === 127 || first === 10 || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}, "host must end with .vz.test or be a private RFC1918 or loopback IPv4 address");
+
 const SqlDataSourceEntrySchema = z
   .object({
-    host: z.string().min(1),
+    host: DataSourceHostSchema,
     port: z.number().int().min(1).max(65535),
     database: z.string().min(1),
     user: z.string().min(1),
@@ -151,7 +174,7 @@ const SqlDataSourceEntrySchema = z
 
 const NatsDataSourceEntrySchema = z
   .object({
-    host: z.string().min(1),
+    host: DataSourceHostSchema,
     port: z.number().int().min(1).max(65535).default(4222),
     user: z.string().optional(),
     passwordFile: z.string().optional(),
@@ -182,7 +205,9 @@ export const ObservabilityProbeSchema = z
     name: nameId,
     from: z.string().min(1),
     target: z.string().min(1),
-    expect: z.enum(["tcp", "http_2xx", "dns"]),
+    // Rust serializes Http2xx as http2xx; accept the documented legacy spelling.
+    expect: z.enum(["tcp", "http2xx", "http_2xx", "dns"])
+      .transform((value) => value === "http_2xx" ? "http2xx" as const : value),
   })
   .strict();
 
@@ -233,6 +258,76 @@ export const OidcConfigSchema = z
   })
   .passthrough();
 
+const kubernetesName = z.string().max(63).regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+const kubernetesResourceName = z.string().max(253).refine(
+  (value) => value.split(".").every((label) => kubernetesName.safeParse(label).success),
+  "Ungültiger Kubernetes-Ressourcenname",
+);
+export const KubernetesClusterSchema = z.object({
+  version: z.string().regex(/^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$/),
+  sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  server: nameId,
+  agents: z.array(nameId).default([]),
+  network: nameId,
+  podCIDR: z.string().min(1),
+  serviceCIDR: z.string().min(1),
+  defaultNamespace: kubernetesName.default("default"),
+  manifests: z.array(z.string().min(1).refine((path) => !path.includes("://"), "Nur lokale Manifestpfade sind erlaubt")).max(32).default([]),
+}).strict();
+export const KubernetesSchema = z.object({
+  clusters: z.record(kubernetesName, KubernetesClusterSchema).default({}),
+}).strict();
+
+const ServiceKindSchema = z.enum(["ingress", "oidc", "postgres", "s3"]);
+export const ServiceProviderSchema = z.object({
+  kind: ServiceKindSchema,
+  via: nameId.optional(),
+  endpoint: z.string().min(1).optional(),
+  advertiseEndpoint: z.string().min(1).optional(),
+  adminUser: z.string().min(1).optional(),
+  passwordFile: z.string().min(1).optional(),
+  accessKeyFile: z.string().min(1).optional(),
+  secretKeyFile: z.string().min(1).optional(),
+  implementation: z.string().min(1).optional(),
+}).strict();
+const KubernetesConsumerSchema = z.object({
+  cluster: kubernetesName, namespace: kubernetesName, secret: kubernetesResourceName,
+}).strict();
+const ServiceConsumerSchema = z.union([
+  z.object({ vm: nameId }).strict(),
+  z.object({ container: z.string().min(1) }).strict(),
+  z.object({ kubernetes: KubernetesConsumerSchema }).strict(),
+]);
+const ServiceBackendSchema = z.union([
+  z.object({ vm: nameId, port: z.number().int().min(1).max(65535) }).strict(),
+  z.object({ kubernetes: z.object({
+    cluster: kubernetesName, namespace: kubernetesName, service: kubernetesResourceName,
+    port: z.number().int().min(1).max(65535),
+  }).strict() }).strict(),
+]);
+export const ServiceClaimSchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const next = { ...value } as Record<string, unknown>;
+  for (const [alias, canonical] of [["clientId", "clientID"], ["redirectUris", "redirectURIs"]]) {
+    if (next[canonical] === undefined && next[alias] !== undefined) {
+      next[canonical] = next[alias];
+      delete next[alias];
+    }
+  }
+  return next;
+}, z.object({
+  kind: ServiceKindSchema,
+  provider: nameId.optional(),
+  database: z.string().min(1).optional(), bucket: z.string().min(1).optional(),
+  clientID: z.string().min(1).optional(), redirectURIs: z.array(z.string()).default([]),
+  scopes: z.array(z.string()).default([]), host: z.string().min(1).optional(),
+  backend: ServiceBackendSchema.optional(), consumers: z.array(ServiceConsumerSchema).default([]),
+}).strict().superRefine((claim, ctx) => {
+  const field = { postgres: "database", s3: "bucket", oidc: "clientID", ingress: "host" }[claim.kind] as "database" | "bucket" | "clientID" | "host";
+  if (!claim[field]) ctx.addIssue({ code: "custom", path: [field], message: "Dienstname fehlt" });
+  if (claim.kind === "ingress" && !claim.backend) ctx.addIssue({ code: "custom", path: ["backend"], message: "Ingress-Backend fehlt" });
+}));
+
 export const SpecSchema = z.object({
   project: nameId,
   domain: z.string().regex(/\.vz\.test$/, "domain muss auf .vz.test enden"),
@@ -249,6 +344,9 @@ export const SpecSchema = z.object({
   oidc: OidcConfigSchema.optional(),
   resilience: ResilienceSchema.optional(),
   observability: ObservabilitySchema,
+  kubernetes: KubernetesSchema.optional(),
+  serviceProviders: z.record(nameId, ServiceProviderSchema).optional(),
+  serviceClaims: z.record(nameId, ServiceClaimSchema).optional(),
 });
 
 export const EnvironmentSchema = z.object({

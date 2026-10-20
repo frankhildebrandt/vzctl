@@ -31,6 +31,7 @@ export function ConfirmDialog({
     confirmLabel ??
     (tone === "danger" ? t("dialog.delete") : t("dialog.confirmDefault"));
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   return (
     <Dialog
@@ -38,10 +39,11 @@ export function ConfirmDialog({
       title={title}
       busy={busy}
       onCancel={onCancel}
-      initialFocusRef={confirmRef}
+      initialFocusRef={tone === "danger" ? cancelRef : confirmRef}
       actions={
         <>
           <Button
+            ref={cancelRef}
             tone="secondary"
             disabled={busy}
             onClick={(event) => {

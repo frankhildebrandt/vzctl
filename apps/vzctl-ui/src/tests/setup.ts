@@ -16,7 +16,7 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-Object.defineProperty(globalThis, "document", {
+if (typeof document === "undefined") Object.defineProperty(globalThis, "document", {
   value: {
     documentElement: {
       dataset: {} as DOMStringMap,

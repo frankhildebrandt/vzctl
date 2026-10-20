@@ -56,6 +56,13 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    #[cfg(test)]
+    pub(crate) fn for_test_tcp(address: String) -> Self {
+        Self {
+            upstream: Upstream::Tcp(address),
+        }
+    }
+
     pub fn from_env() -> Result<Self, String> {
         Ok(Self {
             upstream: resolve_upstream()?,
@@ -89,15 +96,12 @@ impl ApiClient {
         let mut stream = connect_upstream(&self.upstream)?;
         let host = match &self.upstream {
             Upstream::Unix(_) => "localhost".to_string(),
-            Upstream::Tcp(address) => address
-                .split(':')
-                .next()
-                .unwrap_or("127.0.0.1")
-                .to_string(),
+            Upstream::Tcp(address) => address.split(':').next().unwrap_or("127.0.0.1").to_string(),
         };
 
         let body_bytes = body.map(str::as_bytes).unwrap_or(b"");
-        let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
         if body_bytes.is_empty() {
             if matches!(method, "POST" | "PUT" | "PATCH") {
                 request.push_str("Content-Length: 0\r\n");
@@ -166,7 +170,11 @@ fn parse_listen(raw: &str) -> Result<Upstream, String> {
         let (host, _port) = rest
             .rsplit_once(':')
             .ok_or_else(|| "VZCTL_API_LISTEN tcp needs host:port".to_string())?;
-        let host = if host == "localhost" { "127.0.0.1" } else { host };
+        let host = if host == "localhost" {
+            "127.0.0.1"
+        } else {
+            host
+        };
         return Ok(Upstream::Tcp(format!("{host}:{_port}")));
     }
     Err(format!(
@@ -240,8 +248,7 @@ fn parse_json_response(response: &ApiResponse) -> Result<Value, String> {
             response.body.trim()
         ));
     }
-    serde_json::from_str(&response.body)
-        .map_err(|error| format!("invalid JSON body: {error}"))
+    serde_json::from_str(&response.body).map_err(|error| format!("invalid JSON body: {error}"))
 }
 
 #[cfg(test)]

@@ -10,6 +10,11 @@ pub struct VzctlCli {
 }
 
 impl VzctlCli {
+    #[cfg(test)]
+    pub(crate) fn for_test(binary: PathBuf) -> Self {
+        Self { binary }
+    }
+
     pub fn from_env() -> Self {
         let binary = std::env::var_os("VZCTL_BIN")
             .map(PathBuf::from)
@@ -80,14 +85,6 @@ impl VzctlCli {
     /// Tail serial console log via `vzctl vm logs --format json`.
     pub fn vm_logs(&self, vm_id: &str, tail: Option<u32>) -> Result<Value, String> {
         let tail = tail.unwrap_or(200).to_string();
-        self.run_json(&[
-            "vm",
-            "logs",
-            vm_id,
-            "--format",
-            "json",
-            "--tail",
-            &tail,
-        ])
+        self.run_json(&["vm", "logs", vm_id, "--format", "json", "--tail", &tail])
     }
 }

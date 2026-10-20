@@ -1,3 +1,5 @@
+import { isDemoMode, DEMO_PROJECT_PATH } from "@/lib/demo";
+import { getT } from "@/lib/i18n";
 import { api, encodeId } from "@/lib/api";
 
 export type VzctlCommand = "diff" | "up" | "apply" | "down" | "status" | "validate";
@@ -159,32 +161,12 @@ export async function runVzctl(
       !options.abort
     ) {
       await ensureHostResolver(path, command, options.purge === true);
-      try {
-        await runVzctlOnce(path, "apply", { abort: true });
-      } catch {
-        // no incomplete journal — fine
-      }
       return await runVzctlOnce(path, command, options);
     }
 
-    const canAutoAbort =
-      (command === "apply" || command === "up") &&
-      !options.resume &&
-      !options.abort &&
-      isIncompleteJournalError(message);
-    if (!canAutoAbort) throw err;
-
-    // Match pre-REST Tauri recovery: clear failed/incomplete journal, then retry.
-    await runVzctlOnce(path, "apply", { abort: true });
-    return await runVzctlOnce(path, command, options);
+    // Journal and lease recovery require an explicit user choice.
+    throw err;
   }
-}
-
-function isIncompleteJournalError(raw: string): boolean {
-  return (
-    raw.includes("incomplete journal") ||
-    (raw.includes("--resume") && raw.includes("--abort"))
-  );
 }
 
 function isResolverPermissionError(raw: string): boolean {
@@ -305,17 +287,14 @@ export async function runVzctlArgv(args: string[]): Promise<string> {
 }
 
 export async function subscribeEvents(): Promise<void> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("subscribe_events");
 }
 
 export async function pickEnvironment(): Promise<string | null> {
-  const { isDemoMode, DEMO_PROJECT_PATH } = await import("@/lib/demo");
   if (isDemoMode()) return DEMO_PROJECT_PATH;
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const { getT } = await import("@/lib/i18n");
   const selected = await open({
     directory: true,
     multiple: false,

@@ -11,6 +11,10 @@ pub fn api_json(client: &ApiClient, path: &str) -> Result<String, String> {
     Ok(json_pretty(&client.get_json(path)?))
 }
 
-pub fn api_post_json(client: &ApiClient, path: &str, body: Option<&Value>) -> Result<String, String> {
+pub fn api_post_json(
+    client: &ApiClient,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<String, String> {
     Ok(json_pretty(&client.post_json(path, body)?))
 }
