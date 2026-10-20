@@ -12,8 +12,9 @@ vzctl net attach router --network lan --ip 10.90.0.2
 ```
 
 `--role router` schreibt `roles: ["router"]` in das VM-Manifest und ergänzt
-das NoCloud-Template um den persistenten Sysctl
-`net.ipv4.ip_forward=1`. Eine Router-VM braucht mindestens zwei Attachments.
+das NoCloud-Template um einen geschlossenen Bootdefault
+`net.ipv4.ip_forward=0`. Der Bootstrap aktiviert Forwarding erst nach dem
+Anlegen der eigenen Deny-Tabelle. Eine Router-VM braucht mindestens zwei Attachments.
 Für jedes Netz ist ausschließlich die aus dem CIDR abgeleitete `.2` zulässig
 (Ausnahme: Docker+Router-VMs — Parent-vmnet behält die Guest-IP, nur das
 `backend: docker`-Netz braucht `.2` als `bip`).
@@ -25,7 +26,7 @@ Peer-Router bekommen für `backend: docker`-CIDRs automatisch Static Routes
 ## Konfiguration anwenden
 
 ```bash
-vzctl route apply
+vzctl route apply --router router
 vzctl route plan --config examples/edge-dmz/hypernetwork.config.yaml
 vzctl route apply --config examples/edge-dmz/hypernetwork.config.yaml
 vzctl route status --router router --format json
@@ -66,7 +67,7 @@ begrenzt. Bei mehreren laufenden Routern wird eine Policy über `via` oder
 (eindeutig) über ihr Quellnetz genau einem Router zugeordnet; keine oder
 mehrdeutige Zuordnungen sind ungültig (`set policies.*.via`).
 
-Der Apply schreibt atomar:
+Der Apply speichert bzw. setzt:
 
 - `/etc/sysctl.d/90-vzctl-router.conf`;
 - `/etc/vzctl/routes.json`;
@@ -76,6 +77,53 @@ Der Apply schreibt atomar:
 
 Identische Inhalte und bereits gesetzte Laufzeitwerte ergeben
 `changed: false`. Damit ist ein wiederholtes `route apply` idempotent.
+
+## Wiederherstellung nach Gast-Neustart
+
+`route apply` installiert und aktiviert einen eigenen Boot-Dienst:
+`vzctl-router.service` auf systemd oder `/etc/init.d/vzctl-router` im
+OpenRC-Runlevel `default`. Der Dienst ruft
+`/usr/local/lib/vzctl/router-apply --restore` auf und liest den letzten
+gespeicherten Plan aus `/etc/vzctl/`. Er läuft nach Netzwerkbereitschaft und,
+falls vorhanden, nach dem Boot-Lauf des Distributionsdienstes `nftables`.
+
+Zusätzlich installiert Apply auch für vorhandene VMs Start-Guards für Docker
+und den Guest-Agent. Unter systemd sind dies privilegierte `ExecStartPre`-
+Aufrufe, unter OpenRC eine eigene Bootstrap-Abhängigkeit. Der persistente
+Sysctl bleibt beim Boot zunächst auf `0`; Bootstrap und Restore aktivieren
+Forwarding erst mit vorhandenen eigenen Regeln. Eigene bereits aktive Regeln
+werden bei einem bloßen Dienstneustart erhalten.
+
+Die Wiederherstellung ersetzt ausschließlich die Tabelle `inet vzctl`.
+Löschen der alten eigenen Tabelle und Laden der neuen Regeln erfolgen in
+einer nftables-Transaktion; ein fehlerhafter Regelsatz lässt die bisherige
+Tabelle bestehen. Es gibt kein globales `flush ruleset`. Andere Tabellen
+und `/etc/nftables.conf` bleiben unverändert; der Distributionsdienst
+`nftables` wird weder aktiviert noch gestartet. Der neue Dienst wird beim
+Apply nur für spätere Boots aktiviert, nicht zusätzlich live gestartet.
+
+Ein enger Migrationsfall entfernt außerdem eine alte, von vzctl selbst
+erzeugte globale `ip/filter/FORWARD`-Drop-Chain. Voraussetzung sind der genaue
+alte Befehl in einer geschützten CloudInit-Provenienzdatei sowie eine leere
+Standard-Chain. Entfernung und neue eigene Regeln bilden eine gemeinsame
+Transaktion. Bei fremden Regeln oder unklarer Herkunft wird vor persistenten
+Änderungen abgebrochen. Bei einem späteren nft-Transaktionsfehler bleiben
+eigene konservative Boot-Guards bestehen; laufende Firewall und gespeicherte
+Routen bleiben unverändert.
+
+Eine vorhandene fremde Unit unter dem vzctl-Dienstnamen, eine verlinkte Unit,
+ein nicht unterstütztes Init-System oder ein Enable-Fehler bricht den Apply
+sichtbar ab. Restore lehnt fehlende oder verlinkte gespeicherte Dateien ab.
+Ein Enable-Fehler kann nach erfolgreicher Anwendung der Laufzeitregeln
+auftreten; er bedeutet dann ausdrücklich, dass die Boot-Persistenz noch
+nicht hergestellt ist.
+
+Der Helper ist Teil des Guest-Utils-Fingerprints. Bestehende Gäste erhalten
+ihn über den normalen Guest-Utils-Rollout; ein anschließendes `route apply`
+(auch innerhalb von Stack-Apply) richtet den Boot-Dienst ein. Allein der
+Dateiaustausch aktiviert noch keinen Dienst. Ein späterer manueller globaler
+Firewall-Flush durch fremde Werkzeuge ist außerhalb dieser Boot-Garantie;
+danach muss der gespeicherte vzctl-Plan erneut angewendet werden.
 
 Die Forward-Chain hat immer `policy drop`. Zusätzlich erlaubt sie
 `established,related` Rückverkehr und ausschließlich die gerenderten

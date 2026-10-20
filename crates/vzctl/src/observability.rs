@@ -1,3 +1,8 @@
+mod activity;
+#[cfg(test)]
+mod activity_tests;
+use activity::{skipped, validate_inventory, Activity};
+
 use crate::config::{
     config_path, validate_path, Environment, ObservabilityProbe, ProbeExpect, ValidationIssue,
     VmConfig,
@@ -28,6 +33,7 @@ pub(crate) const INGRESS_UNREACHABLE: &str = "INGRESS_UNREACHABLE";
 pub(crate) const INGRESS_GATEWAY_DOWN: &str = "INGRESS_GATEWAY_DOWN";
 pub(crate) const INGRESS_CADDY_BACKEND_DOWN: &str = "INGRESS_CADDY_BACKEND_DOWN";
 pub(crate) const INGRESS_CADDY_ORPHAN: &str = "INGRESS_CADDY_ORPHAN";
+pub(crate) const NETWORK_EGRESS_DEGRADED: &str = "NETWORK_EGRESS_DEGRADED";
 pub(crate) const MOUNT_MISSING: &str = "MOUNT_MISSING";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,8 +108,7 @@ pub(crate) fn stack_status_command(args: &[String], socket_path: &Path) -> ExitC
     match parse_status(args) {
         Ok(options) => emit_status(&options, socket_path),
         Err((message, code)) => {
-            eprintln!("{message}");
-            ExitCode::from(code)
+            crate::emit_command_failure(crate::json_requested(args), "stack.status", code, &message)
         }
     }
 }
@@ -134,7 +139,10 @@ fn parse_status(args: &[String]) -> Result<StatusOptions, (String, u8)> {
                     "human" => Format::Human,
                     "json" => Format::Json,
                     other => {
-                        return Err((format!("unsupported stack status format: {other}"), EXIT_USAGE))
+                        return Err((
+                            format!("unsupported stack status format: {other}"),
+                            EXIT_USAGE,
+                        ))
                     }
                 };
                 index += 2;
@@ -220,8 +228,14 @@ impl StatusReport {
             },
             "exit_code": self.health.exit(),
             "summary": {
-                "message": format!("stack {} {}", self.project, self.health.as_str()),
+                "message": if self.health == Health::Ok && self.stack["checks"] == "skipped" {
+                    format!("stack {} stopped; dependent checks skipped", self.project)
+                } else {
+                    format!("stack {} {}", self.project, self.health.as_str())
+                },
                 "health": self.health.as_str(),
+                "checks": self.stack["checks"],
+                "stopped_vms": self.vms.iter().filter(|vm| vm["state"] == "stopped").count(),
                 "warning_count": self.warnings.len(),
                 "critical_count": criticals,
                 "elapsed_ms": elapsed.as_millis() as u64,
@@ -235,9 +249,8 @@ impl StatusReport {
 
 fn collect_status(directory: &Path, socket_path: &Path) -> Result<StatusReport, (String, u8)> {
     let config_file = config_path(directory);
-    let environment = validate_path(&config_file).map_err(|issues| {
-        (format_issues(&config_file, &issues), EXIT_INVALID)
-    })?;
+    let environment = validate_path(&config_file)
+        .map_err(|issues| (format_issues(&config_file, &issues), EXIT_INVALID))?;
     collect_status_from(&environment, socket_path)
 }
 
@@ -246,25 +259,30 @@ fn collect_status_from(
     socket_path: &Path,
 ) -> Result<StatusReport, (String, u8)> {
     let project = environment.spec.project.clone();
-    let runtime =
-        crate::vm::supervisor_rpc_deadline(socket_path, "vm.list", json!({}), 3).unwrap_or(json!([]));
+    let runtime = crate::vm::supervisor_rpc_deadline(socket_path, "vm.list", json!({}), 3)
+        .map_err(|_| {
+            (
+                "VM inventory unavailable; stopped state cannot be determined".into(),
+                EXIT_INVALID,
+            )
+        })?;
+    validate_inventory(&runtime)?;
+    let activity = Activity::new(environment, &runtime);
     let nets = crate::vm::supervisor_rpc_deadline(socket_path, "net.list", json!({}), 3)
         .unwrap_or(json!({ "attachments": [] }));
     let dns = crate::vm::supervisor_rpc_deadline(socket_path, "dns.status", json!({}), 3)
         .unwrap_or(json!({ "ok": false }));
-    let services = crate::vm::supervisor_rpc_deadline(
-        socket_path,
-        SUPERVISOR_HEALTH_METHOD,
-        json!({}),
-        3,
-    )
-    .unwrap_or(json!({ "ok": false }));
+    let services =
+        crate::vm::supervisor_rpc_deadline(socket_path, SUPERVISOR_HEALTH_METHOD, json!({}), 3)
+            .unwrap_or(json!({ "ok": false }));
 
     let mut health = Health::Ok;
     let mut warnings = Vec::new();
     let mut vms = Vec::new();
 
-    if dns["ok"].as_bool() != Some(true) {
+    if (!activity.all_stopped() || activity.host_ingress_needed())
+        && dns["ok"].as_bool() != Some(true)
+    {
         warnings.push(Warning {
             code: DNS_HOST_PROBE_FAIL,
             severity: Health::Critical,
@@ -287,15 +305,46 @@ fn collect_status_from(
             &mut health,
         ));
     }
-    apply_yaml_probes(environment, socket_path, &mut vms, &mut warnings, &mut health);
-    let routes = route_snapshot(environment, socket_path, &mut warnings, &mut health);
-    let ingress = ingress_snapshot(environment, socket_path, &services, &mut warnings, &mut health);
+    let declared_probes = apply_yaml_probes(
+        environment,
+        socket_path,
+        &activity,
+        &mut vms,
+        &mut warnings,
+        &mut health,
+    );
+    append_network_health(
+        environment,
+        &services,
+        Some(&activity),
+        &mut warnings,
+        &mut health,
+    );
+    let routes = route_snapshot(
+        environment,
+        socket_path,
+        &activity,
+        &mut warnings,
+        &mut health,
+    );
+    let ingress = ingress_snapshot(
+        environment,
+        socket_path,
+        &services,
+        &activity,
+        &mut warnings,
+        &mut health,
+    );
     Ok(StatusReport {
         health,
-        project,
+        project: project.clone(),
         vms,
         stack: json!({
-            "dns": dns_sections(&dns),
+            "project": project,
+            "oidc": {"enabled": environment.spec.oidc.as_ref().is_some_and(|oidc| oidc.enabled)},
+            "checks": if activity.checks_skipped() { "skipped" } else { "evaluated" },
+            "dns": if activity.all_stopped() && !activity.host_ingress_needed() { skipped(None) } else { dns_sections(&dns) },
+            "probes": declared_probes,
             "routes": routes,
             "ingress": ingress,
             "services": services,
@@ -321,7 +370,7 @@ fn inspect_declared_vm(
         .flatten()
         .find(|item| item["vm_id"] == runtime_id);
     let state = record
-        .and_then(|item| item["state"].as_str())
+        .map(|item| item["state"].as_str().unwrap_or("unknown"))
         .unwrap_or("stopped");
     let pid = record
         .and_then(|item| item.get("pid").cloned())
@@ -331,7 +380,9 @@ fn inspect_declared_vm(
     let mut stats = Value::Null;
     let mut probes = Vec::new();
 
-    if state != "running" {
+    if state == "stopped" {
+        agent = skipped(Some(name));
+    } else if state != "running" {
         warnings.push(Warning {
             code: VM_NOT_RUNNING,
             severity: Health::Critical,
@@ -346,8 +397,7 @@ fn inspect_declared_vm(
             "vm.agent.health",
             json!({ "vm_id": runtime_id }),
             3,
-        )
-        {
+        ) {
             Ok(detail) => {
                 let status = detail["status"].as_str().unwrap_or("unknown");
                 agent = json!({
@@ -418,6 +468,7 @@ fn inspect_declared_vm(
                 vm,
                 &runtime_id,
                 socket_path,
+                &Activity::new(environment, runtime),
                 warnings,
                 health,
             ));
@@ -449,6 +500,7 @@ fn inspect_declared_vm(
         "id": runtime_id,
         "name": name,
         "state": state,
+        "checks": if state == "stopped" { skipped(Some(name)) } else { json!({"status":"evaluated"}) },
         "pid": pid,
         "roles": vm.roles,
         "ips": ips,
@@ -493,14 +545,23 @@ fn builtin_peer_probes(
     vm: &VmConfig,
     runtime_id: &str,
     socket_path: &Path,
+    activity: &Activity<'_>,
     warnings: &mut Vec<Warning>,
     health: &mut Health,
 ) -> Vec<Value> {
     let Some((peer_name, peer_ip, net_name)) = first_peer(environment, name, vm) else {
         return Vec::new();
     };
-    let fqdn = format!("{peer_name}.{net_name}.{}.vz.test", environment.spec.project);
+    let fqdn = format!(
+        "{peer_name}.{net_name}.{}.vz.test",
+        environment.spec.project
+    );
     let target = format!("{fqdn}:22");
+    if activity.stopped(&peer_name) {
+        return vec![
+            json!({"name":"peer-ssh", "target":target, "result":skipped(Some(&peer_name))}),
+        ];
+    }
     match crate::vm::supervisor_rpc_deadline(
         socket_path,
         "vm.agent.network_probe",
@@ -568,13 +629,22 @@ fn record_dns_split(
 fn apply_yaml_probes(
     environment: &Environment,
     socket_path: &Path,
+    activity: &Activity<'_>,
     vms: &mut [Value],
     warnings: &mut Vec<Warning>,
     health: &mut Health,
-) {
+) -> Vec<Value> {
     let project = &environment.spec.project;
+    let mut reports = Vec::new();
     for probe in &environment.spec.observability.probes {
-        let result = run_declared_probe(environment, socket_path, probe);
+        let result = if let Some(vm) = activity.probe_dependency(probe) {
+            skipped(Some(&vm))
+        } else {
+            run_declared_probe(environment, socket_path, probe)
+        };
+        reports.push(
+            json!({"name":probe.name, "from":probe.from, "target":probe.target, "result":result}),
+        );
         if probe.from != "host" {
             let runtime_id = format!("{project}/{}", probe.from);
             if let Some(vm) = vms.iter_mut().find(|vm| vm["id"] == runtime_id) {
@@ -615,6 +685,7 @@ fn apply_yaml_probes(
             );
         }
     }
+    reports
 }
 
 fn expect_name(expect: ProbeExpect) -> &'static str {
@@ -656,7 +727,10 @@ fn guest_connect_probe(
     } else {
         format!("{raw_target}:22")
     };
-    let hostname = target.rsplit_once(':').map(|(host, _)| host).unwrap_or(&target);
+    let hostname = target
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(&target);
     let mut params = json!({
         "vm_id": runtime_id,
         "target": target,
@@ -734,42 +808,102 @@ pub(crate) fn dns_sections(dns: &Value) -> Value {
 fn route_snapshot(
     environment: &Environment,
     socket_path: &Path,
+    activity: &Activity<'_>,
     warnings: &mut Vec<Warning>,
     health: &mut Health,
 ) -> Value {
-    let has_router = environment
-        .spec
-        .vms
-        .values()
-        .any(|vm| vm.roles.iter().any(|role| role == "router"));
-    if !has_router {
-        return json!({ "routers": [] });
-    }
-    match crate::vm::supervisor_rpc_deadline(
-        socket_path,
-        "route.status",
-        json!({ "policies": [] }),
-        3,
-    ) {
-        Ok(status) => {
-            for router in status["routers"].as_array().into_iter().flatten() {
-                let rules = router["rules"].as_array().map(Vec::len).unwrap_or(0);
-                let active = router["active"].as_bool().unwrap_or(false);
-                if !active || rules == 0 {
-                    push_warning(
-                        warnings,
-                        health,
-                        ROUTE_STATUS_AMBIGUOUS,
-                        Health::Degraded,
-                        "route status has no extra allow rules; policy-drop may still be active".into(),
-                        router["vm_id"].as_str().map(str::to_string),
-                        "empty allow-list is valid for deny-all; use route status --format json",
-                    );
+    route_snapshot_with(environment, Some(activity), warnings, health, |id| {
+        crate::vm::supervisor_rpc_deadline(socket_path, "route.status", json!({ "router": id }), 3)
+    })
+}
+
+fn route_snapshot_with(
+    environment: &Environment,
+    activity: Option<&Activity<'_>>,
+    warnings: &mut Vec<Warning>,
+    health: &mut Health,
+    mut query: impl FnMut(&str) -> Result<Value, (u8, String)>,
+) -> Value {
+    let mut routers = Vec::new();
+    for (name, vm) in &environment.spec.vms {
+        if !vm.roles.iter().any(|role| role == "router") {
+            continue;
+        }
+        let id = format!("{}/{}", environment.spec.project, name);
+        if activity.is_some_and(|activity| activity.stopped(name)) {
+            routers.push(json!({"vm_id":id, "status":"skipped", "reason":"vm_stopped"}));
+            continue;
+        }
+        // Query each declared router, not unrelated projects on this host.
+        let result = query(&id);
+        match result {
+            Ok(status) => {
+                for router in status["routers"].as_array().into_iter().flatten() {
+                    if router["active"].as_bool() != Some(true) {
+                        push_warning(
+                            warnings,
+                            health,
+                            ROUTE_STATUS_AMBIGUOUS,
+                            Health::Degraded,
+                            format!("{id} routing is not active"),
+                            Some(id.clone()),
+                            "vzctl route status --format json",
+                        );
+                    }
+                    // An active deny-all policy legitimately has no allow rules.
+                    routers.push(router.clone());
                 }
             }
-            status
+            Err((_, message)) => {
+                push_warning(
+                    warnings,
+                    health,
+                    ROUTE_STATUS_AMBIGUOUS,
+                    Health::Degraded,
+                    format!("{id} routing could not be checked: {message}"),
+                    Some(id.clone()),
+                    "vzctl route status --format json",
+                );
+                routers.push(json!({"vm_id":id,"error":message}));
+            }
         }
-        Err((_, message)) => json!({ "error": message }),
+    }
+    json!({"routers":routers})
+}
+
+fn append_network_health(
+    environment: &Environment,
+    services: &Value,
+    activity: Option<&Activity<'_>>,
+    warnings: &mut Vec<Warning>,
+    health: &mut Health,
+) {
+    let egress = &services["network_resilience"]["network_egress"];
+    for name in environment.spec.networks.keys() {
+        if activity.is_some_and(|activity| !activity.network_needed(name)) {
+            continue;
+        }
+        let qualified = format!("{}/{}", environment.spec.project, name);
+        let probe = egress.get(&qualified).or_else(|| egress.get(name));
+        let Some(probe) = probe else {
+            continue;
+        };
+        let classification = probe["classification"].as_str().unwrap_or("unknown");
+        if matches!(classification, "offline" | "captive") {
+            push_warning(
+                warnings,
+                health,
+                NETWORK_EGRESS_DEGRADED,
+                Health::Degraded,
+                format!(
+                    "network {qualified} egress {classification}: phase={}, error={}",
+                    probe["phase"].as_str().unwrap_or("unknown"),
+                    probe["error_code"].as_str().unwrap_or("unknown")
+                ),
+                None,
+                "vzctl stack status --format json; vzctl doctor --format json",
+            );
+        }
     }
 }
 
@@ -777,6 +911,7 @@ fn ingress_snapshot(
     environment: &Environment,
     socket_path: &Path,
     services: &Value,
+    activity: &Activity<'_>,
     warnings: &mut Vec<Warning>,
     health: &mut Health,
 ) -> Value {
@@ -787,6 +922,27 @@ fn ingress_snapshot(
     };
     if !ingress.enabled {
         return json!({ "enabled": false });
+    }
+    let mut skipped_routes = Vec::new();
+    let active_routes = ingress
+        .routes
+        .iter()
+        .filter(|route| {
+            if let Some(vm) = activity.ingress_dependency(route) {
+                skipped_routes.push(
+                    json!({"host":route.host,"status":"skipped","reason":"vm_stopped","vm":vm}),
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+    if active_routes.is_empty()
+        && !activity.host_ingress_needed()
+        && (activity.all_stopped() || !ingress.routes.is_empty())
+    {
+        return json!({"enabled":true,"status":"skipped","reason":"vm_stopped","skipped_routes":skipped_routes});
     }
     let bind = format!("{}:{}", ingress.bind, ingress.https_port);
     let gateway_ok = tcp_probe(&bind);
@@ -805,9 +961,7 @@ fn ingress_snapshot(
             running && (name == caddy_name || name == "caddy-shared")
         })
     });
-    let ingress_bindings = json_u64(
-        edge.and_then(|value| value.get("ingress_bindings")),
-    );
+    let ingress_bindings = json_u64(edge.and_then(|value| value.get("ingress_bindings")));
     let ingress_loopback_ok = edge
         .and_then(|value| value.get("ingress_loopback_ok"))
         .and_then(Value::as_bool)
@@ -815,7 +969,7 @@ fn ingress_snapshot(
     let orphan_caddy = json_u64(edge.and_then(|value| value.get("ingress_orphan_caddy")));
     let mut dns_hosts = serde_json::Map::new();
     let mut dns_ok = true;
-    for route in &ingress.routes {
+    for route in active_routes {
         match crate::vm::supervisor_rpc_deadline(
             socket_path,
             "dns.lookup",
@@ -826,12 +980,7 @@ fn ingress_snapshot(
                 let host_ips = response
                     .get("host")
                     .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                    })
+                    .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
                     .unwrap_or_default();
                 let route_ok = host_ips.iter().any(|ip| *ip == "127.0.0.1");
                 dns_ok &= route_ok;
@@ -918,6 +1067,8 @@ fn ingress_snapshot(
     }
     json!({
         "enabled": true,
+        "status": "evaluated",
+        "skipped_routes": skipped_routes,
         "bind": bind,
         "ok": ok,
         "gateway_ok": gateway_ok,
@@ -948,9 +1099,9 @@ fn json_u64(value: Option<&Value>) -> u64 {
         .as_u64()
         .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
         .or_else(|| {
-            value.as_f64().and_then(|n| {
-                (n.is_finite() && n >= 0.0 && n == n.trunc()).then_some(n as u64)
-            })
+            value
+                .as_f64()
+                .and_then(|n| (n.is_finite() && n >= 0.0 && n == n.trunc()).then_some(n as u64))
         })
         .unwrap_or(0)
 }
@@ -1005,8 +1156,12 @@ pub(crate) fn doctor_stack_checks(directory: &Path, socket_path: &Path) -> Vec<c
         Ok(report) if report.warnings.is_empty() => vec![crate::Check {
             id: "stack.status".into(),
             status: crate::CheckStatus::Ok,
-            message: format!("stack {} ok", report.project),
-            details: json!({ "health": "ok" }),
+            message: if report.stack["checks"] == "skipped" {
+                format!("stack {} stopped; dependent checks skipped", report.project)
+            } else {
+                format!("stack {} ok", report.project)
+            },
+            details: json!({ "health": "ok", "checks":report.stack["checks"] }),
         }],
         Ok(report) => report
             .warnings
@@ -1083,9 +1238,7 @@ pub(crate) fn stack_watch_command(args: &[String], socket_path: &Path) -> ExitCo
                 index += 2;
             }
             "-h" | "--help" => {
-                eprintln!(
-                    "usage: vzctl stack watch [-C dir] [--filter glob] [--interval sec]"
-                );
+                eprintln!("usage: vzctl stack watch [-C dir] [--filter glob] [--interval sec]");
                 return ExitCode::from(EXIT_USAGE);
             }
             other => {
@@ -1199,7 +1352,9 @@ fn subscribe_events(
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket_path).ok()?;
-    stream.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
     let request = json!({
         "jsonrpc": "2.0",
         "method": "events.subscribe",
@@ -1269,7 +1424,10 @@ mod tests {
 
     #[test]
     fn watch_filter_matches_prefix() {
-        assert!(watch_match(Some("probe.*,stack.status"), "probe.dns_guest_probe_fail"));
+        assert!(watch_match(
+            Some("probe.*,stack.status"),
+            "probe.dns_guest_probe_fail"
+        ));
         assert!(!watch_match(Some("vm.*"), "stack.status"));
     }
 
@@ -1310,6 +1468,10 @@ mod tests {
             &environment,
             Path::new("/tmp/vzctl-no-supervisor.sock"),
             &services,
+            &Activity::new(
+                &environment,
+                &json!([{"vm_id":"demo/web","state":"running"}]),
+            ),
             &mut warnings,
             &mut health,
         );
@@ -1330,6 +1492,10 @@ mod tests {
             &environment,
             Path::new("/tmp/vzctl-no-supervisor.sock"),
             &json!({ "ok": false }),
+            &Activity::new(
+                &environment,
+                &json!([{"vm_id":"demo/web","state":"running"}]),
+            ),
             &mut warnings,
             &mut health,
         );
@@ -1343,7 +1509,58 @@ mod tests {
             .any(|warning| warning.message.contains("no active gateway bindings")));
     }
 
-    fn status_ingress_environment() -> Environment {
+    #[test]
+    fn routing_is_project_scoped_and_errors_degrade_health() {
+        let mut environment = status_ingress_environment();
+        environment
+            .spec
+            .vms
+            .get_mut("web")
+            .unwrap()
+            .roles
+            .push("router".into());
+        let mut warnings = Vec::new();
+        let mut health = Health::Ok;
+        let snapshot = route_snapshot_with(&environment, None, &mut warnings, &mut health, |id| {
+            assert_eq!(id, "demo/web");
+            Err((1, "no active vzctl nftables rules".into()))
+        });
+        assert_eq!(health, Health::Degraded);
+        assert_eq!(warnings[0].vm_id.as_deref(), Some("demo/web"));
+        assert_eq!(
+            snapshot["routers"][0]["error"],
+            "no active vzctl nftables rules"
+        );
+        warnings.clear();
+        health = Health::Ok;
+        route_snapshot_with(&environment, None, &mut warnings, &mut health, |_| {
+            Ok(json!({"routers":[{"vm_id":"demo/web","active":true,"rules":[]}]}))
+        });
+        assert_eq!(
+            health,
+            Health::Ok,
+            "active deny-all is a valid configuration"
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn network_egress_warnings_are_scoped_to_stack_networks() {
+        let environment = status_ingress_environment();
+        let services = json!({"network_resilience":{"network_egress":{
+            "demo/lan":{"classification":"offline","phase":"dns","error_code":"timeout"},
+            "other/lan":{"classification":"captive","phase":"http"}
+        }}});
+        let mut warnings = Vec::new();
+        let mut health = Health::Ok;
+        append_network_health(&environment, &services, None, &mut warnings, &mut health);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(health, Health::Degraded);
+        assert!(warnings[0].message.contains("demo/lan"));
+        assert!(warnings[0].message.contains("timeout"));
+    }
+
+    pub(super) fn status_ingress_environment() -> Environment {
         crate::config::validate_source(
             r#"
 apiVersion: hypernetwork/v1

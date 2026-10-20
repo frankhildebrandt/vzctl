@@ -1,12 +1,30 @@
 #!/bin/sh
 # Privileged router apply helper for vzctl-agent (invoked via sudo -n).
-# Usage: router-apply <nftables-config>
+# Usage: router-apply <nftables-config> | --restore | --bootstrap
 # JSON plan on stdin → /etc/vzctl/routes.json
 set -eu
 
 nftables_config=${1:-}
+if [ "$nftables_config" = --bootstrap ]; then
+  command -v nft >/dev/null 2>&1 || {
+    sysctl -q -w net.ipv4.ip_forward=0
+    echo 'nftables backend is required for router bootstrap' >&2
+    exit 1
+  }
+  # Existing desired rules must survive Docker/agent restarts.
+  if ! nft list table inet vzctl >/dev/null 2>&1; then
+    sysctl -q -w net.ipv4.ip_forward=0
+    printf '%s\n' 'table inet vzctl { chain forward { type filter hook forward priority 0; policy drop; } }' | nft -f -
+  fi
+  # Docker must observe forwarding already enabled. Otherwise its startup can
+  # install another global DROP policy. Own deny rules always precede this.
+  sysctl -q -w net.ipv4.ip_forward=1
+  exit 0
+fi
+restore=false
+[ "$nftables_config" != --restore ] || restore=true
 [ -n "$nftables_config" ] || {
-  echo "usage: router-apply <nftables-config>" >&2
+  echo "usage: router-apply <nftables-config> | --restore" >&2
   exit 2
 }
 
@@ -21,39 +39,257 @@ install_if_changed() {
   fi
 }
 
+managed_unit_check() {
+  target=$1
+  if [ -L "$target" ] ||
+     { [ -e "$target" ] && { [ ! -f "$target" ] || ! grep -qx '# Managed by vzctl router-apply' "$target"; }; }; then
+    echo "refusing to replace unmanaged router boot unit: $target" >&2
+    exit 1
+  fi
+}
+
 umask 022
 mkdir -p /etc/vzctl /etc/sysctl.d
 routes_tmp=$(mktemp)
 sysctl_tmp=$(mktemp)
 nft_tmp=$(mktemp)
 load_tmp=$(mktemp)
-trap 'rm -f "$routes_tmp" "$sysctl_tmp" "$nft_tmp" "$load_tmp"' EXIT
-cat >"$routes_tmp"
+unit_tmp=$(mktemp)
+inventory_tmp=$(mktemp)
+legacy_tmp=$(mktemp)
+guard_tmp=$(mktemp)
+bootstrap_tmp=$(mktemp)
+trap 'rm -f "$routes_tmp" "$sysctl_tmp" "$nft_tmp" "$load_tmp" "$unit_tmp" "$inventory_tmp" "$legacy_tmp" "$guard_tmp" "$bootstrap_tmp"' EXIT
+if [ "$restore" = true ]; then
+  for saved in /etc/vzctl/vzctl.nft /etc/vzctl/routes.json; do
+    if [ -L "$saved" ] || [ ! -s "$saved" ] || [ ! -f "$saved" ]; then
+      echo "missing or unsafe saved router configuration: $saved" >&2
+      exit 1
+    fi
+  done
+  nftables_config=$(cat /etc/vzctl/vzctl.nft)
+  cat /etc/vzctl/routes.json >"$routes_tmp"
+else
+  cat >"$routes_tmp"
+fi
 printf '%s\n' "$nftables_config" >"$nft_tmp"
-printf 'net.ipv4.ip_forward=1\n' >"$sysctl_tmp"
+printf 'net.ipv4.ip_forward=0\n' >"$sysctl_tmp"
 if ! command -v nft >/dev/null 2>&1; then
   echo 'nftables backend is required' >&2
   exit 1
 fi
-if [ ! -f /etc/vzctl/routes.json ] ||
+command -v python3 >/dev/null 2>&1 || {
+  echo 'python3 is required for router firewall ownership checks' >&2
+  exit 1
+}
+nft -j list ruleset >"$inventory_tmp"
+# The old generated cloud-init used the global iptables FORWARD policy. Only
+# its exact empty chain may be removed, and only in the same nft transaction
+# that installs the replacement deny/allow rules. Never print cloud-init data.
+python3 - "$inventory_tmp" >"$legacy_tmp" <<'PY'
+import json, os, pathlib, stat, sys
+def fail():
+    raise SystemExit("unowned or nonempty legacy ip/filter/FORWARD drop chain; refusing router mutation")
+try:
+    data = json.loads(pathlib.Path(sys.argv[1]).read_text())["nftables"]
+    if not isinstance(data, list) or not all(isinstance(x, dict) for x in data):
+        fail()
+    chains = [x["chain"] for x in data if "chain" in x and
+              (x["chain"].get("family"), x["chain"].get("table"), x["chain"].get("name")) == ("ip", "filter", "FORWARD")]
+    if len(chains) > 1:
+        fail()
+    if chains and chains[0].get("policy") == "drop":
+        chain = chains[0]
+        if (chain.get("type"), chain.get("hook"), chain.get("prio")) != ("filter", "forward", 0):
+            fail()
+        if any("rule" in x and (x["rule"].get("family"), x["rule"].get("table"), x["rule"].get("chain")) ==
+               ("ip", "filter", "FORWARD") for x in data):
+            fail()
+        source = pathlib.Path("/var/lib/cloud/instance/scripts/runcmd")
+        resolved = source.resolve(strict=True)
+        instances = pathlib.Path("/var/lib/cloud/instances").resolve(strict=True)
+        relative = resolved.relative_to(instances)
+        if len(relative.parts) != 3 or relative.parts[1:] != ("scripts", "runcmd"):
+            fail()
+        metadata = resolved.stat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            fail()
+        for directory in [resolved.parent, resolved.parent.parent, instances, instances.parent]:
+            metadata = directory.stat()
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                fail()
+        expected = "'sh' '-c' 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true'"
+        if expected not in resolved.read_text().splitlines():
+            fail()
+        print("delete chain ip filter FORWARD")
+except (ValueError, KeyError, TypeError, OSError):
+    fail()
+PY
+
+# Own a separate boot service; never enable or alter the distro's nftables
+# service/configuration. Ordering after it avoids its boot-time global flush
+# removing our table. Restore does not recurse into service management.
+init=
+if [ "$restore" = false ]; then
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    init=systemd
+    unit=/etc/systemd/system/vzctl-router.service
+    managed_unit_check "$unit"
+    for service in docker vzctl-agent; do
+      managed_unit_check "/etc/systemd/system/$service.service.d/20-vzctl-router-bootstrap.conf"
+    done
+    cat >"$guard_tmp" <<'GUARD'
+# Managed by vzctl router-apply
+[Unit]
+After=systemd-sysctl.service nftables.service
+
+[Service]
+ExecStartPre=+/usr/local/lib/vzctl/router-apply --bootstrap
+GUARD
+    cat >"$unit_tmp" <<'UNIT'
+# Managed by vzctl router-apply
+[Unit]
+Description=Restore vzctl router rules
+Wants=network-online.target
+After=network-online.target nftables.service
+Before=vzctl-agent.service
+ConditionPathExists=/etc/vzctl/vzctl.nft
+ConditionPathExists=/etc/vzctl/routes.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/vzctl/router-apply --restore
+ExecReload=/usr/local/lib/vzctl/router-apply --restore
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  elif [ -x /sbin/openrc-run ] && command -v rc-update >/dev/null 2>&1; then
+    init=openrc
+    unit=/etc/init.d/vzctl-router
+    managed_unit_check "$unit"
+    managed_unit_check /etc/init.d/vzctl-router-bootstrap
+    for service in docker vzctl-agent; do
+      managed_unit_check "/etc/conf.d/$service"
+      # Runlevel-specific overrides could silently remove the dependency.
+      for override in "/etc/conf.d/$service".*; do
+        [ ! -e "$override" ] && [ ! -L "$override" ] || {
+          echo "refusing ambiguous OpenRC router guard override: $override" >&2
+          exit 1
+        }
+      done
+    done
+    cat >"$guard_tmp" <<'GUARD'
+# Managed by vzctl router-apply
+rc_need="${rc_need:-} vzctl-router-bootstrap"
+GUARD
+    cat >"$bootstrap_tmp" <<'UNIT'
+#!/sbin/openrc-run
+# Managed by vzctl router-apply
+description="Install fail-closed vzctl router bootstrap"
+
+depend() {
+    need localmount
+    after sysctl nftables
+    before docker vzctl-agent vzctl-router
+}
+
+start() {
+    ebegin "Installing vzctl router bootstrap"
+    /usr/local/lib/vzctl/router-apply --bootstrap
+    eend $?
+}
+UNIT
+    cat >"$unit_tmp" <<'UNIT'
+#!/sbin/openrc-run
+# Managed by vzctl router-apply
+description="Restore vzctl router rules"
+
+depend() {
+    need net vzctl-router-bootstrap
+    after nftables
+    before vzctl-agent
+}
+
+start() {
+    ebegin "Restoring vzctl router rules"
+    /usr/local/lib/vzctl/router-apply --restore
+    eend $?
+}
+UNIT
+  else
+    echo 'no supported init for persistent vzctl router rules' >&2
+    exit 1
+  fi
+fi
+
+# Persist a closed boot default and guards before removing the legacy global
+# DROP. This also protects existing VMs which never receive a new cloud-init.
+# All ownership checks above run before these writes or any nft transaction.
+install_if_changed "$sysctl_tmp" /etc/sysctl.d/90-vzctl-router.conf 0644
+boot_guards_installed=false
+if [ "$init" = systemd ]; then
+  for service in docker vzctl-agent; do
+    directory="/etc/systemd/system/$service.service.d"
+    mkdir -p "$directory"
+    install_if_changed "$guard_tmp" "$directory/20-vzctl-router-bootstrap.conf" 0644
+  done
+  systemctl daemon-reload
+  boot_guards_installed=true
+elif [ "$init" = openrc ]; then
+  mkdir -p /etc/conf.d
+  install_if_changed "$bootstrap_tmp" /etc/init.d/vzctl-router-bootstrap 0755
+  for service in docker vzctl-agent; do
+    install_if_changed "$guard_tmp" "/etc/conf.d/$service" 0644
+  done
+  boot_guards_installed=true
+fi
+
+if [ -s "$legacy_tmp" ] ||
+   [ "$restore" = true ] ||
+   [ ! -f /etc/vzctl/routes.json ] ||
    ! cmp -s "$routes_tmp" /etc/vzctl/routes.json ||
    [ ! -f /etc/vzctl/vzctl.nft ] ||
    ! cmp -s "$nft_tmp" /etc/vzctl/vzctl.nft ||
    ! nft list table inet vzctl >/dev/null 2>&1; then
+  cat "$legacy_tmp" >"$load_tmp"
   if nft list table inet vzctl >/dev/null 2>&1; then
-    printf 'delete table inet vzctl\n' >"$load_tmp"
+    printf 'delete table inet vzctl\n' >>"$load_tmp"
   fi
   cat "$nft_tmp" >>"$load_tmp"
-  nft -f "$load_tmp"
-  install -m 0644 "$routes_tmp" /etc/vzctl/routes.json
-  install -m 0644 "$nft_tmp" /etc/vzctl/vzctl.nft
+  if ! nft -f "$load_tmp"; then
+    echo "router firewall transaction failed; boot_guards_installed=$boot_guards_installed, closed boot default retained; existing firewall and saved rules unchanged" >&2
+    exit 1
+  fi
+  if [ "$restore" = false ]; then
+    install -m 0644 "$routes_tmp" /etc/vzctl/routes.json
+    install -m 0644 "$nft_tmp" /etc/vzctl/vzctl.nft
+  fi
   changed=true
 fi
-install_if_changed "$sysctl_tmp" /etc/sysctl.d/90-vzctl-router.conf 0644
 if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
   changed=true
 fi
 sysctl -q -w net.ipv4.ip_forward=1
+
+if [ "$init" = systemd ]; then
+  if [ ! -f "$unit" ] || ! cmp -s "$unit_tmp" "$unit"; then
+    install -m 0644 "$unit_tmp" "$unit"
+    systemctl daemon-reload
+    changed=true
+  fi
+  if [ "$(systemctl is-enabled vzctl-router.service 2>/dev/null || true)" != enabled ]; then
+    systemctl enable vzctl-router.service >/dev/null
+    changed=true
+  fi
+elif [ "$init" = openrc ]; then
+  install_if_changed "$unit_tmp" "$unit" 0755
+  if [ ! -e /etc/runlevels/default/vzctl-router ]; then
+    rc-update add vzctl-router default >/dev/null
+    changed=true
+  fi
+fi
 
 # Install static routes from the plan (docker-backend CIDRs via peer).
 if command -v python3 >/dev/null 2>&1; then

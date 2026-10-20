@@ -32,7 +32,17 @@ jobs:
           cache: npm
           cache-dependency-path: apps/vzctl-ui/package-lock.json
 
+      - name: Prepare strict X.509 verification
+        run: |
+          brew install openssl@3
+          openssl_prefix="$(brew --prefix openssl@3)"
+          "${openssl_prefix}/bin/openssl" version
+          printf 'VZCTL_TEST_OPENSSL=%s/bin/openssl\n' "${openssl_prefix}" >> "$GITHUB_ENV"
+
       - name: CI
+        env:
+          RUSTFLAGS: "-D warnings"
+          SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
         run: make ci
 
       - name: Build release binaries
@@ -40,6 +50,11 @@ jobs:
 
       - name: Build UI app
         run: make ui-build
+
+      - name: Build vendored runtime dependencies (no installation)
+        run: |
+          brew install qemu
+          make vendor
 
       - name: Package tar.gz / pkg / dmg
         env:
@@ -61,10 +76,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             dist/*.tar.gz \
             dist/*.pkg \
             dist/*.dmg \
             dist/*.sha256 \
             --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+            --title "${GITHUB_REF_NAME}" \
+            "${release_flags[@]}"

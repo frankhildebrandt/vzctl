@@ -155,18 +155,23 @@ enum DNSZoneBuilder {
         ingressGuestAddresses: [String: [String: String]] = [:],
         runtimeRecords: [DNSRuntimeRecord] = []
     ) -> DNSZone {
-        let networks = Dictionary(uniqueKeysWithValues: snapshot.networks.map { ($0.name, $0) })
+        // A stable network ID may retain a legacy short name, or contain a project
+        // prefix. Duplicate IDs are invalid input; never select an arbitrary owner.
+        let networks = Dictionary(grouping: snapshot.networks, by: \.id)
+            .compactMapValues { $0.count == 1 ? $0.first : nil }
         var records: [String: Set<String>] = [:]
         var wildcardRecords: [String: Set<String>] = [:]
         var shortRecords: [String: [String: Set<String>]] = [:]
         var ptrRecords: [String: Set<String>] = [:]
         var zones: Set<String> = []
         for attachment in snapshot.attachments {
-            guard let network = networks[attachment.networkName],
+            guard let network = networks[attachment.networkID],
+                  attachment.networkName == network.name,
                   network.runtimeState == "active",
+                  let cidr = try? IPv4CIDR(network.cidr), cidr.contains(attachment.ip),
                   let project = attachment.project ?? network.project,
                   let vm = dnsLabel(vmDNSLabel(attachment.vmID)),
-                  let net = dnsLabel(attachment.networkName),
+                  let net = dnsLabel(network.name),
                   let stack = dnsLabel(project),
                   ipv4Bytes(attachment.ip) != nil
             else {
@@ -180,7 +185,7 @@ enum DNSZoneBuilder {
                 name: vm,
                 fqdn: fqdn,
                 ip: attachment.ip,
-                listenerNetwork: attachment.networkName,
+                listenerNetwork: network.id,
                 stack: stack,
                 records: &records,
                 wildcardRecords: &wildcardRecords,
@@ -549,7 +554,7 @@ final class DNSServer: @unchecked Sendable {
             let hostService = IPv4CIDR.hostService(for: network.cidr)
             guard !gateway.isEmpty, !hostService.isEmpty else { return nil }
             return DNSGuestContext(
-                network: network.name,
+                network: network.id,
                 project: network.project.map(DNSZoneBuilder.canonicalName),
                 stack: network.project.map(DNSZoneBuilder.canonicalName),
                 gateway: gateway,

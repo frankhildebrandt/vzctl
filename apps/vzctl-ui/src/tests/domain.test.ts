@@ -45,6 +45,33 @@ describe("cidr / ip", () => {
 });
 
 describe("yaml round-trip", () => {
+  it.each(["http2xx", "http_2xx"])("preserves observability and normalizes %s on YAML round-trip", (expectation) => {
+    const raw = serializeEnvironmentYaml(scaffoldEnvironment({ name: "observed" })) + `
+  observability:
+    probes:
+      - name: web
+        from: web
+        target: https://web.test
+        expect: ${expectation}
+    dataSources:
+      postgres:
+        default: app
+        via: web
+        entries:
+          app: {host: db.vz.test, port: 5432, database: app, user: app, passwordFile: secrets/db}
+      nats:
+        default: bus
+        via: web
+        entries:
+          bus: {host: bus.vz.test, tokenFile: secrets/nats}
+`;
+    const env = parseEnvironmentYaml(raw);
+    expect(env.spec.observability?.probes[0]?.expect).toBe("http2xx");
+    const yaml = serializeEnvironmentYaml(env);
+    expect(yaml).toContain("expect: http2xx");
+    expect(parseEnvironmentYaml(yaml).spec.observability).toEqual(env.spec.observability);
+  });
+
   it("parses edge-dmz example", () => {
     const raw = readFileSync(
       join(root, "examples/edge-dmz/hypernetwork.config.yaml"),
@@ -315,5 +342,21 @@ describe("commands", () => {
     ]);
     expect(snap.diagram.edges["attach:web:lan"]).toBeUndefined();
     expect(snap.diagram.edges["attach:web:mgmt"]).toBeTruthy();
+  });
+});
+
+describe("via-VM loopback data sources", () => {
+  const fixture = readFileSync(join(root, "crates/vzctl/tests/fixtures/validate/valid-data-sources-loopback.yaml"), "utf8");
+  it("preserves SQL and NATS loopback hosts and via on YAML round-trip", () => {
+    const env = parseEnvironmentYaml(fixture);
+    expect(parseEnvironmentYaml(serializeEnvironmentYaml(env)).spec.observability).toEqual(env.spec.observability);
+    for (const type of Object.values(env.spec.observability!.dataSources!)) {
+      expect(type.via).toBe("web");
+      expect(type.entries.local.host).toBe("127.0.0.1");
+    }
+  });
+  it("rejects public hosts and missing via", () => {
+    expect(() => parseEnvironmentYaml(fixture.replaceAll("host: 127.0.0.1", "host: 8.8.8.8"))).toThrow();
+    expect(() => parseEnvironmentYaml(fixture.replaceAll("        via: web\n", ""))).toThrow();
   });
 });

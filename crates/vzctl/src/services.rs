@@ -154,6 +154,7 @@ struct Options {
 
 pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     let args = args.collect::<Vec<_>>();
+    let json = crate::json_requested(&args);
     let mut iter = args.into_iter().peekable();
     let Some(subcommand) = iter.next() else {
         print_usage();
@@ -162,20 +163,23 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> ExitCode {
     match subcommand.as_str() {
         "status" | "start" | "stop" | "restart" => match parse_options(&subcommand, iter) {
             Ok(options) => run(options),
-            Err(failure) => {
-                eprintln!("{}", failure.message);
-                ExitCode::from(failure.code)
-            }
+            Err(failure) => crate::emit_command_failure(
+                json,
+                &format!("services.{subcommand}"),
+                failure.code,
+                &failure.message,
+            ),
         },
         "-h" | "--help" | "help" => {
             print_usage();
             ExitCode::SUCCESS
         }
-        other => {
-            eprintln!("unknown services subcommand: {other}");
-            print_usage();
-            ExitCode::from(EXIT_USAGE)
-        }
+        other => crate::emit_command_failure(
+            json,
+            "services",
+            EXIT_USAGE,
+            &format!("unknown services subcommand: {other}"),
+        ),
     }
 }
 
@@ -810,6 +814,13 @@ fn restart_one(spec: ServiceSpec) -> Result<Vec<ServiceChange>, Failure> {
 
 fn restart_target(target: ServiceId) -> Result<Vec<ServiceChange>, Failure> {
     ensure_plists_for(target)?;
+    restart_target_services(target, restart_one)
+}
+
+fn restart_target_services(
+    target: ServiceId,
+    mut restart_service: impl FnMut(ServiceSpec) -> Result<Vec<ServiceChange>, Failure>,
+) -> Result<Vec<ServiceChange>, Failure> {
     match target {
         ServiceId::All => {
             let mut changes = stop_target(ServiceId::All)?;
@@ -829,24 +840,17 @@ fn restart_target(target: ServiceId) -> Result<Vec<ServiceChange>, Failure> {
             changes.push(stop_one(SERVICE_NET)?);
             changes.push(start_one(SERVICE_NET)?);
             for spec in [SERVICE_EDGE, SERVICE_SUPERVISOR] {
-                changes.extend(restart_one(spec)?);
+                changes.extend(restart_service(spec)?);
             }
             for change in &mut changes {
                 change.action = Action::Restart;
             }
             Ok(changes)
         }
-        ServiceId::Edge => restart_one(SERVICE_EDGE),
-        ServiceId::Supervisor => {
-            let mut changes = Vec::new();
-            for spec in [SERVICE_EDGE, SERVICE_SUPERVISOR] {
-                changes.extend(restart_one(spec)?);
-            }
-            for change in &mut changes {
-                change.action = Action::Restart;
-            }
-            Ok(changes)
-        }
+        ServiceId::Edge => restart_service(SERVICE_EDGE),
+        // The CP reconciles the existing edge on startup. Its independent
+        // DNS/Caddy/port owners must survive a supervisor-only restart.
+        ServiceId::Supervisor => restart_service(SERVICE_SUPERVISOR),
     }
 }
 
@@ -968,6 +972,24 @@ fn emit_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervisor_restart_preserves_edge_and_network_owners() {
+        let mut restarted = Vec::new();
+        let changes = restart_target_services(ServiceId::Supervisor, |spec| {
+            restarted.push(spec.id);
+            Ok(vec![ServiceChange {
+                spec,
+                action: Action::Restart,
+                changed: true,
+                message: format!("restarted {}", spec.label),
+            }])
+        })
+        .unwrap();
+        assert_eq!(restarted, [ServiceId::Supervisor]);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].spec.id, ServiceId::Supervisor);
+    }
 
     #[test]
     fn parse_service_target() {

@@ -77,6 +77,9 @@ pub(crate) fn print_topic(topic: &str) -> bool {
         "docker" => print_docker(),
         "port" => print_port(),
         "doctor" => print_doctor(),
+        "diagnose" => print_diagnose(),
+        "kubernetes" => print_kubernetes(),
+        "controller" => print_controller(),
         "version" => print_version(),
         "services" => print_services(),
         "certs" => print_certs(),
@@ -109,7 +112,9 @@ Commands:
   vm, ps           VM lifecycle and host process list
   net, route       Networks and guest forwarding
   dns, docker, port, debug
-  doctor, version, services, certs, oidc, events, status
+  doctor, diagnose, version, services, certs, oidc, events, status
+  kubernetes       Pinned K3s clusters and manifest reconciliation
+  controller       Service claims, bindings and reconciliation
   skill            Print or install the agent skill
 
 Most commands accept --format human|json.
@@ -173,7 +178,7 @@ vzctl stack — write hypernetwork.config.yaml (source of truth)
 Mutations validate then write atomically. Default directory is `.`.
 `status` aggregates VM/agent/DNS/route health (exit 0 ok, 1 degraded, 2 critical).
 `watch` emits NDJSON from status ticks plus event-like probe codes.
-`--format human|json` is accepted on every subcommand."
+`--format human|json` is accepted except on `watch`, which always emits NDJSON."
     );
 }
 
@@ -232,6 +237,7 @@ vzctl image — ARM64 cloud/server disks (not installer ISOs)
   pull <alias> [--format human|json]
   bake <alias> --tag <tag> [--format human|json]
   seal <name|path> --tag <tag> [--format human|json]
+  rebake <alias> --tag <tag> [--format human|json]  (force bake + seal)
 
 Aliases include ubuntu-latest, ubuntu-26.04, ubuntu-24.04, ubuntu-22.04,
 ubuntu-20.04, debian-latest, debian-13, debian-12, debian-11, alpine-latest,
@@ -298,8 +304,8 @@ vzctl net — host networks and VM attachments
   attach <vm> --network <name> --ip <address>
        [--label key=value] [--project P] [--stack S]
   list [--format human|json]
-  detach <vm> --network <name>
-  delete <name>
+  detach <vm> --network <name-or-id> [--project P]
+  delete <name-or-id> [--project P]
   default show
   default set <name> --cidr CIDR
 
@@ -317,6 +323,9 @@ vzctl route — guest nftables forward policy
   status [--router <vm-id>] [--format human|json]
 
 Reads spec.policies from the environment file (default ./hypernetwork.config.yaml).
+plan/apply requires spec.project in that file or an explicit --router.
+A short router name is scoped to the config project; cross-project routers are rejected.
+status without --router reads all projects.
 `plan` does not mutate the guest. `via` is required when several routers match."
     );
 }
@@ -428,11 +437,12 @@ fn print_certs() {
 vzctl certs — local CA and leaf certs
 
   ca init [--force] [--format human|json]
+  ca upgrade --output <new-private-directory> [--format human|json]
   ca install [--format human|json]
   mint <san> [--san alias...] [--format human|json]
   fingerprint [--format human|json]
-  rollout [--vm NAME] [--format human|json]
-  verify --vm NAME --url URL"
+  rollout / verify are not standalone operations (exit 2).
+  Use apply for CA rollout; use vm exec with curl --fail for verification."
     );
 }
 
@@ -443,7 +453,8 @@ vzctl oidc — stack OIDC status
 
   status [--project P] [--format human|json]
   clients [--project P] [--format human|json]
-  token [--client ID]          (use Auth Code + PKCE in the browser)
+  token is not a token-issuing command (exit 2).
+  Use Auth Code + PKCE in the browser.
 
 Config lives in hypernetwork.config.yaml (`oidc:`). Secrets are file refs, never inline."
     );
@@ -469,4 +480,16 @@ vzctl skill — agent skill for hypercontainers
   --install-local     Write/update ./.agents/skills/vzctl
   --install-global    Write/update ~/.agents/skills/vzctl"
     );
+}
+
+fn print_diagnose() {
+    println!("vzctl diagnose — bounded support bundle\n\n  vzctl diagnose [-C STACK] --output <new-file.json> [--format human|json]\n\nIncludes host capacity, service sockets, allowlisted supervisor/VM state and recent journal metadata.\n-C adds bounded controller and Kubernetes status for that stack.\nNo raw logs, environment, config contents or credentials. File mode 0600; never overwrites.");
+}
+
+fn print_kubernetes() {
+    println!("vzctl kubernetes — declarative K3s clusters\n\n  status [-C DIR] [--cluster NAME] [--format human|json]\n  kubeconfig --cluster NAME --output PATH [-C DIR] [--format human|json]\n\nClusters and local manifest references live in hypernetwork.config.yaml.\nKubeconfig is written to a new private file (0600), never stdout.");
+}
+
+fn print_controller() {
+    println!("vzctl controller — declarative service claims\n\n  status [-C DIR] [--format human|json]\n  reconcile [-C DIR] [--format human|json]\n  watch [-C DIR] [--interval 5..3600] [--format human|json]\n\nProviders and claims live in hypernetwork.config.yaml. Status never includes credentials.\nWatch reloads the stack each cycle; JSON mode emits NDJSON snapshots with per-cycle exit_code.\nCtrl-C stops the stream with exit 0. Claims removed from YAML retain data.\nVM/Docker bindings: /run/vzctl/bindings/<claim>/binding.json inside containers,\n/var/lib/vzctl/bindings/<claim>/binding.json on VMs. Kubernetes receives Secrets.");
 }

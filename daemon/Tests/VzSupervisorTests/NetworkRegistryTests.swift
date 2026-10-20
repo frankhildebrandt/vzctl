@@ -3,6 +3,67 @@ import Testing
 @testable import VzDaemonKit
 @testable import VzSupervisor
 
+@Test func projectNetworkIdentityAcceptsConfigProjectNamesAndRejectsPathSegments() throws {
+    for project in ["demo.prod", "demo..prod", "Demo_1-prod"] {
+        let fixture = try RegistryFixture()
+        defer { fixture.cleanup() }
+        let network = try fixture.registry.create(
+            name: "lan", cidr: "10.124.0.0/24", mode: "shared",
+            labels: [:], project: project, stack: nil
+        )
+        #expect(network.id == "\(project)/lan")
+        #expect(network.name == "lan")
+    }
+    for project in ["../demo", "demo/other", ".demo", "demo prod", "demo\n"] {
+        let fixture = try RegistryFixture()
+        defer { fixture.cleanup() }
+        #expect(throws: NetworkRegistryError.self) {
+            try fixture.registry.create(
+                name: "lan", cidr: "10.124.0.0/24", mode: "shared",
+                labels: [:], project: project, stack: nil
+            )
+        }
+        #expect(fixture.backendState.reservations == 0)
+    }
+}
+
+@Test func projectScopedNetworksKeepIdenticalShortNamesIsolated() throws {
+    let fixture = try RegistryFixture()
+    defer { fixture.cleanup() }
+    for (project, cidr, ip) in [
+        ("iq-store", "10.92.0.0/24", "10.92.0.10"),
+        ("controller-lab", "10.123.0.0/24", "10.123.0.10"),
+    ] {
+        _ = try fixture.registry.create(
+            name: "lan", cidr: cidr, mode: "shared",
+            labels: [:], project: project, stack: "\(project):\(project)"
+        )
+        _ = try fixture.registry.attach(
+            vmID: "\(project)/client", networkName: "lan", ip: ip,
+            labels: [:], project: project, stack: "\(project):\(project)",
+            vmIsStopped: true
+        )
+    }
+    let snapshot = try fixture.registry.snapshot()
+    #expect(snapshot.networks.count == 2)
+    #expect(snapshot.networks.allSatisfy { $0.name == "lan" })
+    #expect(Set(snapshot.attachments.map(\.project)) == ["iq-store", "controller-lab"])
+    #expect(fixture.backendState.reservations == 2)
+    #expect(fixture.backendState.releases == 0)
+    _ = try fixture.registry.attach(
+        vmID: "iq-store/client", networkName: "controller-lab/lan", ip: "10.123.0.11",
+        labels: [:], project: "controller-lab", stack: "controller-lab:controller-lab",
+        vmIsStopped: true
+    )
+    #expect(throws: NetworkRegistryError.self) {
+        try fixture.registry.ensureVMNetwork(vmID: "iq-store/client", requestedNetwork: "lan", vmIsStopped: true)
+    }
+    let explicit = try fixture.registry.ensureVMNetwork(
+        vmID: "iq-store/client", requestedNetwork: "controller-lab/lan", vmIsStopped: true
+    )
+    #expect(explicit.network.id == "controller-lab/lan")
+}
+
 @Test func networkCRUDPersistsMetadataAndBlocksAttachedDelete() throws {
     let fixture = try RegistryFixture()
     defer { fixture.cleanup() }

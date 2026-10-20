@@ -3029,7 +3029,15 @@ button:focus-visible,
 @media (max-width: 1100px) {
   .topology-body {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(360px, 1fr) auto;
+    /* Stacked panels keep their content height; scroll the whole editor body
+       instead of squeezing the palette/inspector around the graph's minimum. */
+    grid-template-rows: max-content minmax(420px, 1fr) max-content;
+    overflow: auto;
+  }
+
+  .topology-palette-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .topology-editor {
@@ -3627,3 +3635,7 @@ button:focus-visible,
 .debug-nats-actions {
   margin: 0.75rem 0;
 }
+
+.stack-health-summary { margin: 0.6rem 0; font-size: 0.85rem; }
+.stack-health-summary ul { margin: 0.4rem 0; padding-left: 1.2rem; }
+.stack-health-summary p { margin: 0.3rem 0; }

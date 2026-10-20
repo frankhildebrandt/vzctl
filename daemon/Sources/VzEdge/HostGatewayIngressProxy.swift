@@ -5,6 +5,7 @@ import VzDaemonKit
 
 /// TCP proxy: guest-facing gateway `.0:80/:443` (+ loopback) → Caddy on unprivileged ports.
 final class HostGatewayIngressProxy: @unchecked Sendable {
+    typealias AcceptStreamFactory = @Sendable (Binding) throws -> DnsBindClient.TCPAcceptStream
     struct Binding: Equatable, Sendable {
         let gatewayIP: String
         let port: UInt16
@@ -35,10 +36,17 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
     private var cachedLoopbackGateways = Set<String>(["127.0.0.1"])
     private var cachedHTTPPort: UInt16 = 80
     private var cachedHTTPSPort: UInt16 = 443
+    private let acceptStreamFactory: AcceptStreamFactory
+
+    init(acceptStreamFactory: @escaping AcceptStreamFactory = {
+        try DnsBindClient.openTCPAcceptStream(address: $0.gatewayIP, port: $0.port)
+    }) {
+        self.acceptStreamFactory = acceptStreamFactory
+    }
 
     /// Ensures gateway listeners. Per-binding bind failures are skipped
     /// (same soft-fail pattern as DNS `.0:53`) so host loopback Caddy still starts.
-    func ensure(_ desired: [Binding]) -> EnsureResult {
+    func ensure(_ desired: [Binding], forceReopen: Bool = false) -> EnsureResult {
         lock.lock()
         defer { lock.unlock() }
 
@@ -50,6 +58,10 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var active: [Binding] = []
         var skipped: [(Binding, String)] = []
         for binding in desired {
+            if !forceReopen, listeners[binding.key]?.binding == binding {
+                active.append(binding)
+                continue
+            }
             listeners.removeValue(forKey: binding.key)?.close()
             do {
                 let listener = try openListener(binding)
@@ -89,7 +101,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
                 break
             }
             Thread.sleep(forTimeInterval: 0.2)
-            result = ensure(desired)
+            result = ensure(desired, forceReopen: true)
         }
         return result
     }
@@ -108,7 +120,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         ) {
             return true
         }
-        _ = ensure(snapshot.0)
+        _ = ensure(snapshot.0, forceReopen: true)
         return Self.loopbackReachable(
             gateways: snapshot.1,
             httpPort: snapshot.2,
@@ -162,7 +174,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         var lastError: Error?
         for attempt in 0 ..< 8 {
             do {
-                return try Listener(binding: binding)
+                return try Listener(binding: binding, acceptStreamFactory: acceptStreamFactory)
             } catch {
                 lastError = error
                 let text = "\(error)"
@@ -206,9 +218,11 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
         private var stopped = false
         private var localFD: Int32 = -1
         private var acceptStream: DnsBindClient.TCPAcceptStream?
+        private let acceptStreamFactory: AcceptStreamFactory
 
-        init(binding: Binding) throws {
+        init(binding: Binding, acceptStreamFactory: @escaping AcceptStreamFactory) throws {
             self.binding = binding
+            self.acceptStreamFactory = acceptStreamFactory
             queue = DispatchQueue(label: "vzctl.ingress.gw.\(binding.key)")
             try openAcceptSource()
             queue.async { [self] in
@@ -220,10 +234,7 @@ final class HostGatewayIngressProxy: @unchecked Sendable {
             if DnsBind.needsPrivilege(port: binding.port) {
                 acceptStream?.close()
                 acceptStream = nil
-                acceptStream = try DnsBindClient.openTCPAcceptStream(
-                    address: binding.gatewayIP,
-                    port: binding.port
-                )
+                acceptStream = try acceptStreamFactory(binding)
                 return
             }
             if localFD >= 0 {

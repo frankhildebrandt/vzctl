@@ -17,6 +17,13 @@ Data-Disk unter `/var/lib/docker` und legt Apt-Caches dorthin. User `vzctl`
    `docker.svc.{project}.vz.test` (nur auf vmnet-Attachments).
 4. Apply-Step `ensure_docker_context` legt Context `vzctl-{project}` an:
    `ssh://vzctl@docker.svc.{project}.vz.test`.
+   Der SSH-Alias erhält bei jedem Kontextzugriff ein `HostName` mit der aktuellen
+   privaten vmnet-Adresse der ausgewählten, laufenden Docker-VM. Dadurch darf
+   derselbe Service-Name als HTTPS-Ingress auf Host-Loopback zeigen, ohne den
+   SSH-Steuerkanal umzulenken. Logische Docker-Bridges sind keine SSH-Ziele.
+   Projektweite Zugriffe verlangen genau eine Docker-VM; VM-spezifische
+   Container-Schritte wählen ihren VM-Key. Fehlende oder mehrdeutige
+   Management-Attachments werden abgelehnt.
    SSH-Pfade mit Leerzeichen werden gequotet; `~/.ssh/config` bekommt ein
    `Include` auf die vzctl-`ssh_config` (Docker Desktop ignoriert oft
    `DOCKER_SSH_COMMAND`). Bei VM-Recreate werden stale Host-Keys entfernt.

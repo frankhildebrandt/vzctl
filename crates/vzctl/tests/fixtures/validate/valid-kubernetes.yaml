@@ -1,0 +1,43 @@
+apiVersion: hypernetwork/v1
+kind: Environment
+metadata: {name: kube-lab}
+spec:
+  project: kube-lab
+  domain: kube-lab.vz.test
+  dns:
+    enabled: true
+    hostResolver: true
+    hostListen: "127.0.0.1:15353"
+    forward: {enabled: true, upstream: system}
+  images:
+    ubuntu-base: {from: ubuntu-latest, role: base, tag: v1}
+  networks:
+    lan: {cidr: 10.90.0.0/24, mode: shared}
+  routes: []
+  policies: []
+  vms:
+    kube-server:
+      from: ubuntu-base
+      disk: 20G
+      cpus: 2
+      memory: 2Gi
+      networks: [{name: lan, ip: 10.90.0.10}]
+    kube-worker:
+      from: ubuntu-base
+      disk: 20G
+      cpus: 2
+      memory: 2Gi
+      networks: [{name: lan, ip: 10.90.0.11}]
+  kubernetes:
+    clusters:
+      dev:
+        version: v1.33.4+k3s1
+        # Syntactically valid fixture only; never an installable release hash.
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        server: kube-server
+        agents: [kube-worker]
+        network: lan
+        podCIDR: 10.42.0.0/16
+        serviceCIDR: 10.43.0.0/16
+        defaultNamespace: app
+        manifests: [kubernetes/workloads.yaml]

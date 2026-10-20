@@ -109,27 +109,19 @@ public extension JSONValue {
             return .null
         case let value as JSONValue:
             return value
-        case let value as Bool:
-            return .bool(value)
-        case let value as String:
-            return .string(value)
-        case let value as Int:
-            return .number(Double(value))
-        case let value as Int64:
-            return .number(Double(value))
-        case let value as UInt64:
-            return .number(Double(value))
-        case let value as Double:
-            return .number(value)
-        case let value as [Any]:
-            return .array(value.map(fromAny))
-        case let value as [String: Any]:
-            return .object(Dictionary(uniqueKeysWithValues: value.map { ($0.key, fromAny($0.value)) }))
+        // Foundation bridges NSNumber(0/1) to Bool. Inspect its CoreFoundation
+        // identity before any conditional cast to a Swift scalar.
         case let value as NSNumber:
             if CFGetTypeID(value) == CFBooleanGetTypeID() {
                 return .bool(value.boolValue)
             }
             return .number(value.doubleValue)
+        case let value as String:
+            return .string(value)
+        case let value as [Any]:
+            return .array(value.map(fromAny))
+        case let value as [String: Any]:
+            return .object(Dictionary(uniqueKeysWithValues: value.map { ($0.key, fromAny($0.value)) }))
         default:
             return .null
         }

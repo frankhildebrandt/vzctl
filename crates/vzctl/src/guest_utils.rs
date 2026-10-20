@@ -204,10 +204,23 @@ fn sha256_file(path: &Path) -> Result<String, GuestUtilsError> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
-fn bundle_fingerprint(deploy_sha256: &str, binary_sha256: &str) -> String {
+fn bundle_fingerprint(
+    deploy_sha256: &str,
+    binary_sha256: &str,
+    iwatch_sha256: Option<&str>,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(deploy_sha256.as_bytes());
     hasher.update(binary_sha256.as_bytes());
+    // A release tag alone does not establish that its optional binary was
+    // downloaded. Recovery from a failed download must create a new rollout.
+    match iwatch_sha256 {
+        Some(sha256) => {
+            hasher.update(b"\0iwatch:present\0");
+            hasher.update(sha256.as_bytes());
+        }
+        None => hasher.update(b"\0iwatch:absent\0"),
+    }
     hex::encode(hasher.finalize())
 }
 
@@ -215,10 +228,25 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
     let agent_version = agent_version_string()?;
     let deploy_sha256 = content_fingerprint(&agent_version);
     let staging = build_agent_staging(&agent_version)?;
+    cache_staged_bundle(state_dir, &agent_version, &deploy_sha256, &staging)
+}
+
+fn cache_staged_bundle(
+    state_dir: &Path,
+    agent_version: &str,
+    deploy_sha256: &str,
+    staging: &Path,
+) -> Result<GuestUtilsBundle, GuestUtilsError> {
     let staging_binary = staging.join("vzctl-agent");
     let binary_sha256 = sha256_file(&staging_binary)?;
-    let bundle_sha256 = bundle_fingerprint(&deploy_sha256, &binary_sha256);
-    let id = bundle_id(&agent_version, &bundle_sha256);
+    let iwatch_binary = staging.join("iwatch");
+    let iwatch_sha256 = if iwatch_binary.is_file() {
+        Some(sha256_file(&iwatch_binary)?)
+    } else {
+        None
+    };
+    let bundle_sha256 = bundle_fingerprint(deploy_sha256, &binary_sha256, iwatch_sha256.as_deref());
+    let id = bundle_id(agent_version, &bundle_sha256);
     let cache_dir = state_dir.join("guest-utils").join(&id);
     let binary_path = cache_dir.join("vzctl-agent");
     if !binary_path.is_file() {
@@ -246,11 +274,11 @@ pub fn ensure_cached_bundle(state_dir: &Path) -> Result<GuestUtilsBundle, GuestU
             })?;
         }
     }
-    let _ = fs::remove_dir_all(&staging);
+    let _ = fs::remove_dir_all(staging);
     Ok(GuestUtilsBundle {
         bundle_id: id,
-        agent_version,
-        content_sha256: deploy_sha256,
+        agent_version: agent_version.to_owned(),
+        content_sha256: deploy_sha256.to_owned(),
         binary_sha256,
         cache_dir,
     })
@@ -717,6 +745,99 @@ mod tests {
         &LOCK
     }
 
+    struct BundleCacheFixture(PathBuf);
+
+    impl BundleCacheFixture {
+        fn new() -> Self {
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "vzctl-bundle-cache-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn cache(&self, iwatch: Option<&[u8]>) -> GuestUtilsBundle {
+            let staging = self.0.join("staging");
+            fs::create_dir_all(&staging).unwrap();
+            fs::write(staging.join("vzctl-agent"), b"same-agent-binary").unwrap();
+            if let Some(bytes) = iwatch {
+                fs::write(staging.join("iwatch"), bytes).unwrap();
+            }
+            cache_staged_bundle(&self.0, "0.1.7", "same-deploy-fingerprint", &staging).unwrap()
+        }
+    }
+
+    impl Drop for BundleCacheFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn cached_bundle_recovers_iwatch_after_an_earlier_download_failure() {
+        let fixture = BundleCacheFixture::new();
+        let missing = fixture.cache(None);
+        assert!(!missing.cache_dir.join("iwatch").exists());
+        let recovered = fixture.cache(Some(b"verified-iwatch"));
+        assert_ne!(missing.bundle_id, recovered.bundle_id);
+        assert!(needs_update(Some(&missing.bundle_id), &recovered.bundle_id));
+        assert_eq!(
+            fs::read(recovered.cache_dir.join("iwatch")).unwrap(),
+            b"verified-iwatch"
+        );
+        assert!(!missing.cache_dir.join("iwatch").exists());
+    }
+
+    #[test]
+    fn cached_bundle_reuses_identical_iwatch_but_detects_changed_binary_bytes() {
+        let fixture = BundleCacheFixture::new();
+        let first = fixture.cache(Some(b"verified-iwatch"));
+        let same = fixture.cache(Some(b"verified-iwatch"));
+        assert_eq!(first.bundle_id, same.bundle_id);
+        assert_eq!(first.cache_dir, same.cache_dir);
+        assert!(!needs_update(Some(&first.bundle_id), &same.bundle_id));
+        assert_eq!(
+            fs::read(same.cache_dir.join("iwatch")).unwrap(),
+            b"verified-iwatch"
+        );
+        let changed = fixture.cache(Some(b"new-iwatch-with-same-version-tag"));
+        assert_ne!(same.bundle_id, changed.bundle_id);
+        assert_eq!(
+            fs::read(changed.cache_dir.join("iwatch")).unwrap(),
+            b"new-iwatch-with-same-version-tag"
+        );
+    }
+
+    #[test]
+    fn optional_iwatch_absence_is_stable_and_never_deletes_guest_binary() {
+        let fixture = BundleCacheFixture::new();
+        let present = fixture.cache(Some(b"previous-iwatch"));
+        let absent = fixture.cache(None);
+        let absent_again = fixture.cache(None);
+        assert_ne!(present.bundle_id, absent.bundle_id);
+        assert_eq!(absent.bundle_id, absent_again.bundle_id);
+        assert!(!needs_update(
+            Some(&absent.bundle_id),
+            &absent_again.bundle_id
+        ));
+        assert!(!absent.cache_dir.join("iwatch").exists());
+        assert_eq!(
+            fs::read(present.cache_dir.join("iwatch")).unwrap(),
+            b"previous-iwatch"
+        );
+        deploy_iwatch_binary("demo/web", &absent, &mut |_, _| {
+            panic!("optional absence must not upload, delete or mutate the guest")
+        })
+        .unwrap();
+    }
+
     #[test]
     fn bundle_id_uses_version_and_hash_prefix() {
         let hash = "abcdef0123456789";
@@ -782,10 +903,7 @@ mod tests {
 
     #[test]
     fn agent_binary_upload_pipes_raw_stdin_without_sudo() {
-        let dir = std::env::temp_dir().join(format!(
-            "vzctl-agent-upload-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("vzctl-agent-upload-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("vzctl-agent"), b"\x7fELFpayload").unwrap();
         let bundle = GuestUtilsBundle {
@@ -820,13 +938,15 @@ mod tests {
             "expected cat append, got {cat_argv:?}"
         );
         assert!(
-            cat_argv.iter().all(|argv| argv.first().map(String::as_str) == Some("sh")),
+            cat_argv
+                .iter()
+                .all(|argv| argv.first().map(String::as_str) == Some("sh")),
             "binary stdin must not go through sudo (use_pty), got {cat_argv:?}"
         );
         assert!(
-            cat_argv
+            cat_argv.iter().all(|argv| argv
                 .iter()
-                .all(|argv| argv.iter().all(|arg| arg != "sudo" && !arg.contains("base64 -d"))),
+                .all(|arg| arg != "sudo" && !arg.contains("base64 -d"))),
             "stdin_b64 is already decoded; base64 -d would fail, got {cat_argv:?}"
         );
     }

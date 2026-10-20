@@ -42,6 +42,8 @@ import {
   recoverOrphanByCidrChange,
   requestHostReboot,
 } from "@/lib/vmnetOrphanRecovery";
+import { StackHealthSummary } from "@/components/StackHealthSummary";
+import { parseStackHealth } from "@/lib/stackHealth";
 import { vmKeys } from "@/lib/vms";
 
 type ConfirmKind = "up" | "down" | "purge" | null;
@@ -71,6 +73,8 @@ export function StackCard({
     () => parseStackInventory(statusQuery.data ?? null),
     [statusQuery.data],
   );
+
+  const health = useMemo(() => parseStackHealth(statusQuery.isError ? null : statusQuery.data), [statusQuery.data, statusQuery.isError]);
 
   const stack = useMemo(
     () =>
@@ -257,6 +261,7 @@ export function StackCard({
         </div>
 
         <Muted className="stack-status-summary">{vmSummary}</Muted>
+        <StackHealthSummary health={health} />
 
         <StackVmList items={items} stackPath={project.path} />
 

@@ -1,3 +1,4 @@
+import { isDemoMode } from "@/lib/demo";
 export type IngressRouteLink = {
   host: string;
   url: string;
@@ -66,7 +67,6 @@ export function parseIngressInfo(
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
-  const { isDemoMode } = await import("@/lib/demo");
   if (isDemoMode() || !("__TAURI_INTERNALS__" in window)) {
     window.open(url, "_blank", "noopener,noreferrer");
     return;

@@ -75,10 +75,26 @@ release_lease → done
 - Zweiter `apply` bei aktivem Lease → **Exit 6**.
 - Holder tot (PID weg) → `doctor`/`apply --resume` darf Lease stehlen nach Grace (z. B. 30s).
 - Journal incomplete ohne Lease → Lease wird bei resume neu acquired.
+- TTL: 300 Sekunden. Der CLI-Owner erneuert alle 30 Sekunden über `stack.heartbeat`
+  (`id`, `stack_id`, `holder`), unabhängig von langen Pull-/Bake-/Guest-Schritten.
+  Renewal ändert keinen Checkpoint. Fremde, abgelaufene oder einem anderen Journal
+  zugehörige Leases dürfen weder erneuert noch per `stack.finish` abgeschlossen werden.
+- Scheitert ein Heartbeat, stoppt die CLI spätestens an der nächsten Step-Grenze mit
+  Exit 6. Bereits laufende externe Operationen werden dadurch nicht zurückgerollt.
+  CLI und Supervisor müssen gemeinsam auf eine Version mit Heartbeat-Unterstützung
+  aktualisiert werden; eine alte Gegenstelle wird vor dem ersten Step erkannt.
+- Der Resume-Hash umfasst das ganze normalisierte Config-Dokument und Fingerprints
+  von cloud-init-, Compose- und zugehörigen lokalen env/config/secret/include-Dateien
+  sowie den verwendeten OIDC-Dateien. Inhalte und Secrets gelangen nicht in den
+  Journal-Hash-Payload oder die Ressourcenlabels. Veränderungen benötigen Abort +
+  neues Apply. Bereits vor dieser Erweiterung angelegte Journale ebenso.
+- Gemountete Nutzdaten und veränderliche Remote-Image-Tags werden nicht als Dateien
+  gehasht. Dynamische Compose-Interpolation und Build-Kontexte sind keine vollständig
+  hermetisch eingefrorenen Inputs; diese müssen für reproduzierbares Resume gepinnt bleiben.
 
 ### Drift
 
-- `vzctl diff`: Desired vs Actual (VMs, nets, DNS zone, routes/policies).
+- `vzctl diff`: Desired vs Actual (VMs, nets, DNS zone, routes/policies, ports, volumes, certs, ingress, OIDC, resilience, observability und referenzierte Input-Dateien).
 - Recreate nur mit `--force` (destruktiv markiert).
 - Lockfile-only Drift (zombie helper) → `vzctl adopt` oder `vzctl doctor --fix-locks`.
 

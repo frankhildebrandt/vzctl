@@ -75,8 +75,8 @@ pub(crate) fn load_stack(config: &Path) -> Result<LoadedStack, String> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let environment = validate_path(&config_file)
-        .map_err(|issues| format_validation_issues(&issues))?;
+    let environment =
+        validate_path(&config_file).map_err(|issues| format_validation_issues(&issues))?;
     Ok(LoadedStack {
         _config_file: config_file,
         config_dir,
@@ -230,12 +230,8 @@ pub(crate) fn read_optional_secret(
         return Ok(None);
     };
     let resolved = resolve_secret_path(config_dir, path)?;
-    let content = fs::read_to_string(&resolved).map_err(|error| {
-        format!(
-            "cannot read secret file {}: {error}",
-            resolved.display()
-        )
-    })?;
+    let content = fs::read_to_string(&resolved)
+        .map_err(|error| format!("cannot read secret file {}: {error}", resolved.display()))?;
     Ok(Some(content.trim_end_matches('\n').to_string()))
 }
 

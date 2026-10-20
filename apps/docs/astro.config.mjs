@@ -46,6 +46,7 @@ export default defineConfig({
             { label: 'Hypernetwork', slug: 'docs/guides/hypernetwork' },
             { label: 'Netze & DNS', slug: 'docs/guides/networks-dns' },
             { label: 'Docker', slug: 'docs/guides/docker' },
+            { label: 'Kubernetes & Dienste', slug: 'docs/guides/kubernetes' },
             { label: 'Images', slug: 'docs/guides/images' },
             { label: 'CLI', slug: 'docs/guides/cli' },
           ],

@@ -135,7 +135,7 @@ export function StackDebugPage({ stackPath }: Props) {
             onClick={() => void doctorQuery.refetch()}
             disabled={doctorQuery.isFetching}
           >
-            {t("debug.doctorBtn")}
+            {t(doctorQuery.isFetching ? "debug.doctorRunning" : "debug.doctorBtn")}
           </Button>
         }
       />
@@ -144,12 +144,33 @@ export function StackDebugPage({ stackPath }: Props) {
         <Alert title={t("debug.noSourcesTitle")}>{t("debug.noSourcesDesc")}</Alert>
       ) : null}
 
-      {doctorQuery.data && doctorOk === false ? (
-        <Alert title={t("debug.doctorFailTitle")}>
-          {doctorQuery.data.doctor?.checks
-            ?.filter((c) => c.status !== "ok")
-            .map((c) => c.message ?? `${c.type}: ${c.tool ?? ""}`)
-            .join("\n") ?? t("debug.doctorFailDesc")}
+      {sourcesQuery.error && (
+        <Alert title={t("debug.sourcesErrorTitle")}>{String(sourcesQuery.error)}</Alert>
+      )}
+      {doctorQuery.isFetching ? (
+        <Alert tone="info" role="status" title={t("debug.doctorRunning")} />
+      ) : doctorQuery.error ? (
+        <Alert title={t("debug.doctorErrorTitle")}>{String(doctorQuery.error)}</Alert>
+      ) : doctorQuery.data ? (
+        <Alert
+          tone={doctorOk === true ? "info" : "danger"}
+          role="status"
+          title={t(doctorOk === true ? "debug.doctorReady" : "debug.doctorFailTitle")}
+        >
+          {doctorQuery.data.doctor?.checks?.length ? (
+            <ul>
+              {doctorQuery.data.doctor.checks.map((check, index) => (
+                <li key={`${check.type}:${check.vmId ?? check.via}:${index}`}>
+                  <strong>{check.tool ?? check.type}</strong>
+                  {check.vmId || check.via ? ` (${check.vmId ?? check.via})` : ""}
+                  {`: ${t(check.status === "ok" ? "debug.doctorCheckReady" : "debug.doctorCheckFailed")}`}
+                  {check.message ? ` — ${check.message}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>{t(doctorOk === true ? "debug.doctorNoChecks" : "debug.doctorFailDesc")}</p>
+          )}
         </Alert>
       ) : null}
 
@@ -242,15 +263,13 @@ export function StackDebugPage({ stackPath }: Props) {
       {(runSql.error ||
         runStreams.error ||
         runSub.error ||
-        runKvGet.error ||
-        sourcesQuery.error) && (
+        runKvGet.error) && (
         <Alert title={t("debug.errorTitle")}>
           {String(
             runSql.error ??
               runStreams.error ??
               runSub.error ??
-              runKvGet.error ??
-              sourcesQuery.error,
+              runKvGet.error,
           )}
         </Alert>
       )}

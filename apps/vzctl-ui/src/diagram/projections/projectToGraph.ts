@@ -33,6 +33,11 @@ const NET_PAD_BOTTOM = 16;
 const VM_W = 200;
 const VM_H = 100;
 const VM_GAP = 16;
+// Internet badges sit only 24px above their network. These short local links
+// need orthogonal segments, not obstacle-search routing through the network.
+// Orth does not avoid arbitrary nodes; NIC attachments and network routes keep
+// Manhattan routing below. User-placed obstacles may cross this decorative link.
+const UPLINK_ROUTER = { name: "orth", args: { padding: 6 } };
 
 function memoryLabel(memory: string | number | undefined): string {
   if (memory === undefined) return "1 GB";
@@ -319,6 +324,7 @@ export function projectToGraph(
       edgeIds.add(geid);
       const uplinkExisting = graph.getCellById(geid);
       if (uplinkExisting?.isEdge()) {
+        uplinkExisting.setRouter(UPLINK_ROUTER);
         uplinkExisting.setSource({ cell: gid, port: gatewayDownPortId() });
         uplinkExisting.setTarget({
           cell: id,
@@ -338,14 +344,7 @@ export function projectToGraph(
               sourceMarker: null,
             },
           },
-          router: {
-            name: "manhattan",
-            args: {
-              padding: 12,
-              startDirections: ["bottom"],
-              endDirections: ["top"],
-            },
-          },
+          router: UPLINK_ROUTER,
           data: { kind: "uplink", networkName: name },
           tools: [],
         });

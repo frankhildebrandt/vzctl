@@ -200,6 +200,7 @@ import VzDaemonKit
 
 @Test func destructiveFallbackIsAttemptedAtMostOncePerEpoch() async throws {
     let fallback = LockedCounter()
+    let completedRecoveries = LockedCounter()
     let controller = NetworkResilienceController(
         debounce: 0.001,
         recoveryBudget: 0.01,
@@ -209,12 +210,18 @@ import VzDaemonKit
             fallback.increment()
             return false
         },
-        event: { _, _ in }
+        event: { name, _ in
+            if name == "network.degraded" { completedRecoveries.increment() }
+        }
     )
+    defer { controller.stop() }
     controller.receiveForTest(satisfied: true, interfaces: ["wifi"], event: "path")
-    try await Task.sleep(for: .milliseconds(70))
+    let deadline = ContinuousClock.now + .seconds(2)
+    while completedRecoveries.value < 3, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(completedRecoveries.value >= 3)
     #expect(fallback.value == 1)
-    controller.stop()
 }
 
 @Test func restartFallbackRequiresCompleteStackOptIn() {
@@ -254,6 +261,38 @@ import VzDaemonKit
         networks: ["dmz"],
         snapshot: NetworkSnapshot(networks: [network], attachments: [owned]),
         policies: [disabled]
+    ))
+}
+
+@Test func restartFallbackUsesNetworkIdentityAcrossProjects() {
+    let networks = [
+        NetworkRecord(name: "lan", id: "a/lan", cidr: "10.80.0.0/24", project: "a", stack: "dev"),
+        NetworkRecord(name: "lan", id: "b/lan", cidr: "10.90.0.0/24", project: "b", stack: "dev"),
+    ]
+    let attachments = [
+        NetworkAttachmentRecord(
+            vmID: "a/router", networkName: "lan", networkID: "a/lan",
+            ip: "10.80.0.2", project: "a", stack: "dev"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "b/router", networkName: "lan", networkID: "b/lan",
+            ip: "10.90.0.2", project: "b", stack: "dev"
+        ),
+    ]
+    let policies = [NetworkResiliencePolicyRecord(
+        project: "a", stack: "dev", probeEnabled: true,
+        probeURL: "https://captive.apple.com/", restartVMs: true,
+        updatedAt: "2026-10-20T00:00:00Z"
+    )]
+    let snapshot = NetworkSnapshot(networks: networks, attachments: attachments)
+    #expect(SupervisorServer.networkFallbackPolicyAllows(
+        networks: ["a/lan"], snapshot: snapshot, policies: policies
+    ))
+    #expect(!SupervisorServer.networkFallbackPolicyAllows(
+        networks: ["b/lan"], snapshot: snapshot, policies: policies
+    ))
+    #expect(!SupervisorServer.networkFallbackPolicyAllows(
+        networks: ["lan"], snapshot: snapshot, policies: policies
     ))
 }
 

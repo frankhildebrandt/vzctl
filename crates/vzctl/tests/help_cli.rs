@@ -28,21 +28,38 @@ fn root_help_is_short_and_points_to_topics() {
     );
 }
 
-    #[test]
-    fn help_exit_codes_lists_table() {
-        let stdout = help_stdout(&["help", "exit-codes"]);
-        assert!(stdout.contains("  0   success"));
-        assert!(stdout.contains("  1   stack status degraded"));
-        assert!(stdout.contains("  25  host service lifecycle failed"));
-        let via_flag = help_stdout(&["help", "--exit-codes"]);
-        assert!(via_flag.contains("  10  supervisor"));
-    }
+#[test]
+fn help_exit_codes_lists_table() {
+    let stdout = help_stdout(&["help", "exit-codes"]);
+    assert!(stdout.contains("  0   success"));
+    assert!(stdout.contains("  1   stack status degraded"));
+    assert!(stdout.contains("  25  host service lifecycle failed"));
+    let via_flag = help_stdout(&["help", "--exit-codes"]);
+    assert!(via_flag.contains("  10  supervisor"));
+}
 
 #[test]
 fn namespace_help_matches_help_topic() {
     for command in [
-        "net", "vm", "image", "stack", "dns", "docker", "route", "port", "services", "certs",
-        "oidc", "events", "skill", "validate", "apply", "doctor",
+        "net",
+        "vm",
+        "image",
+        "stack",
+        "dns",
+        "docker",
+        "route",
+        "port",
+        "services",
+        "certs",
+        "oidc",
+        "events",
+        "skill",
+        "validate",
+        "apply",
+        "doctor",
+        "diagnose",
+        "controller",
+        "kubernetes",
     ] {
         let via_ns = help_stdout(&[command, "help"]);
         let via_topic = help_stdout(&["help", command]);
@@ -52,6 +69,15 @@ fn namespace_help_matches_help_topic() {
             "{command} help should name the command"
         );
     }
+}
+
+#[test]
+fn help_describes_rebake_and_stream_or_unsupported_exceptions() {
+    assert!(help_stdout(&["image", "help"]).contains("rebake <alias> --tag <tag>"));
+    assert!(help_stdout(&["stack", "help"]).contains("except on `watch`"));
+    assert!(help_stdout(&["controller", "help"]).contains("NDJSON snapshots"));
+    assert!(help_stdout(&["certs", "help"]).contains("not standalone operations"));
+    assert!(help_stdout(&["oidc", "help"]).contains("not a token-issuing command"));
 }
 
 #[test]

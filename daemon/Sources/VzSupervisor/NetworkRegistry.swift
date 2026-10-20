@@ -51,12 +51,12 @@ struct RemoteVzNetBackend: NetworkRuntimeBackend {
     func reserve(_ network: NetworkRecord) throws -> any NetworkRuntimeHandle {
         do {
             _ = try client.acquire(
-                name: network.name,
+                name: network.id,
                 cidr: network.cidr,
                 mode: network.mode,
                 natEgress: network.natEgress
             )
-            return RemoteVmnetHandle(name: network.name)
+            return RemoteVmnetHandle(name: network.id)
         } catch let error as VzNetClientError {
             throw NetworkRegistryError.runtime(error.description)
         } catch {
@@ -89,12 +89,14 @@ struct RemoteVzNetBackend: NetworkRuntimeBackend {
 
 struct SerializedVmnetAttachment: Sendable {
     let networkName: String
+    let networkID: String
     let ip: String
     let blob: Data
 
     var json: JSONValue {
         .object([
             "network": .string(networkName),
+            "network_id": .string(networkID),
             "ip": .string(ip),
             "serialization": .string(VmnetSerialization.base64(from: blob)),
         ])
@@ -187,12 +189,9 @@ final class NetworkRegistry: @unchecked Sendable {
                     "VM \(vmID) must be stopped before changing network attachments"
                 )
             }
-            guard let network = try database.networks().first(where: { $0.name == networkName })
-            else {
-                throw NetworkRegistryError.notFound("network not found: \(networkName)")
-            }
+            let network = try resolveNetwork(name: networkName, project: project ?? vmProject(vmID))
             if !network.isDockerBackend {
-                guard handles[networkName] != nil else {
+                guard handles[network.id] != nil else {
                     throw NetworkRegistryError.runtime(
                         "network \(networkName) is not active: \(network.lastError ?? "rebuild failed")"
                     )
@@ -206,7 +205,8 @@ final class NetworkRegistry: @unchecked Sendable {
             }
             let record = NetworkAttachmentRecord(
                 vmID: vmID,
-                networkName: networkName,
+                networkName: network.name,
+                networkID: network.id,
                 ip: ip,
                 labels: labels,
                 project: project ?? network.project,
@@ -214,17 +214,17 @@ final class NetworkRegistry: @unchecked Sendable {
             )
             do {
                 let current = try database.attachments().filter { $0.vmID == vmID }
-                if current.contains(where: { $0.networkName == networkName }) {
+                if current.contains(where: { $0.networkID == network.id }) {
                     try database.updateAttachment(record)
                 } else {
                     try database.insertAttachment(record)
                 }
                 for old in current where old.labels[Self.automaticLabel] == "true"
-                    && old.networkName != networkName
+                    && old.networkID != network.id
                 {
                     try database.deleteAttachment(
                         vmID: old.vmID,
-                        networkName: old.networkName
+                        networkName: old.networkID
                     )
                 }
             } catch {
@@ -261,7 +261,8 @@ final class NetworkRegistry: @unchecked Sendable {
         try lock.withLock {
             guard let configured = try database.defaultNetwork() else { return nil }
             let network = try database.networks().first {
-                $0.name == configured.name
+                $0.id == configured.name
+                    && $0.project == nil
                     && $0.cidr == configured.cidr
                     && $0.mode == "shared"
             }
@@ -291,9 +292,15 @@ final class NetworkRegistry: @unchecked Sendable {
                 try validateName(requestedNetwork, kind: "network")
                 // Multi-homed VMs (attach_nets before create) already have several
                 // explicit attachments — match by name, not only the first row.
-                if let existing = explicit.first(where: { $0.networkName == requestedNetwork }),
+                let matching = explicit.filter {
+                    $0.networkID == requestedNetwork || $0.networkName == requestedNetwork
+                }
+                guard matching.count <= 1 else {
+                    throw NetworkRegistryError.conflict("ambiguous attached network \(requestedNetwork); specify qualified identity")
+                }
+                if let existing = matching.first,
                    let selected = try database.networks().first(where: {
-                       $0.name == existing.networkName
+                       $0.id == existing.networkID
                    })
                 {
                     return VMNetworkSelection(
@@ -308,17 +315,12 @@ final class NetworkRegistry: @unchecked Sendable {
                         "VM \(vmID) already has explicit network attachments"
                     )
                 }
-                guard let selected = try database.networks().first(where: {
-                    $0.name == requestedNetwork
-                }) else {
-                    throw NetworkRegistryError.notFound("network not found: \(requestedNetwork)")
-                }
-                network = selected
+                network = try resolveNetwork(name: requestedNetwork, project: vmProject(vmID), allowGlobal: true)
                 automatic = false
             } else {
                 if let existing = explicit.first,
                    let selected = try database.networks().first(where: {
-                       $0.name == existing.networkName
+                       $0.id == existing.networkID
                    })
                 {
                     return VMNetworkSelection(
@@ -336,7 +338,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 automatic = true
             }
 
-            if let existing = current.first(where: { $0.networkName == network.name }) {
+            if let existing = current.first(where: { $0.networkID == network.id }) {
                 if !automatic, existing.labels[Self.automaticLabel] == "true" {
                     var promoted = existing
                     promoted.labels.removeValue(forKey: Self.automaticLabel)
@@ -359,7 +361,7 @@ final class NetworkRegistry: @unchecked Sendable {
 
             let used = Set(
                 try database.attachments()
-                    .filter { $0.networkName == network.name }
+                    .filter { $0.networkID == network.id }
                     .map(\.ip)
             )
             let cidr = try IPv4CIDR(network.cidr)
@@ -382,6 +384,7 @@ final class NetworkRegistry: @unchecked Sendable {
             let record = NetworkAttachmentRecord(
                 vmID: vmID,
                 networkName: network.name,
+                networkID: network.id,
                 ip: ip,
                 labels: labels,
                 project: network.project,
@@ -392,7 +395,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 for old in current where old.labels[Self.automaticLabel] == "true" {
                     try database.deleteAttachment(
                         vmID: old.vmID,
-                        networkName: old.networkName
+                        networkName: old.networkID
                     )
                 }
             } catch {
@@ -409,7 +412,7 @@ final class NetworkRegistry: @unchecked Sendable {
         }
     }
 
-    func detach(vmID: String, networkName: String, vmIsStopped: Bool) throws {
+    func detach(vmID: String, networkName: String, project: String? = nil, vmIsStopped: Bool) throws {
         try lock.withLock {
             try requireRunning()
             guard vmIsStopped else {
@@ -417,8 +420,17 @@ final class NetworkRegistry: @unchecked Sendable {
                     "VM \(vmID) must be stopped before changing network attachments"
                 )
             }
+            // Existing legacy attachments may intentionally have a different
+            // DNS/project owner than their underlying shared network.
+            let candidates = try database.attachments().filter {
+                $0.vmID == vmID && ($0.networkID == networkName || $0.networkName == networkName)
+                    && (project == nil || $0.project == project)
+            }
+            guard candidates.count == 1, let attachment = candidates.first else {
+                throw NetworkRegistryError.conflict("attachment missing or ambiguous: \(vmID) on \(networkName)")
+            }
             do {
-                try database.deleteAttachment(vmID: vmID, networkName: networkName)
+                try database.deleteAttachment(vmID: vmID, networkName: attachment.networkID)
             } catch {
                 throw NetworkRegistryError.notFound(
                     "attachment not found: \(vmID) on \(networkName)"
@@ -440,33 +452,31 @@ final class NetworkRegistry: @unchecked Sendable {
             }
             let names = try database.attachments()
                 .filter { $0.vmID == vmID }
-                .map(\.networkName)
+                .map(\.networkID)
             let removed = try database.deleteAttachments(vmID: vmID)
             _ = removed
             return names.sorted()
         }
     }
 
-    func delete(name: String) throws {
+    func delete(name: String, project: String? = nil) throws {
         try lock.withLock {
             try requireRunning()
-            let attachments = try database.attachments().filter { $0.networkName == name }
+            let network = try resolveNetwork(name: name, project: project)
+            let attachments = try database.attachments().filter { $0.networkID == network.id }
             guard attachments.isEmpty else {
                 let VMs = attachments.map(\.vmID).sorted().joined(separator: ", ")
                 throw NetworkRegistryError.conflict(
                     "network \(name) still has attached VMs: \(VMs)"
                 )
             }
-            guard try database.networks().contains(where: { $0.name == name }) else {
-                throw NetworkRegistryError.notFound("network not found: \(name)")
-            }
             do {
-                try database.deleteNetwork(name: name)
+                try database.deleteNetwork(name: network.id)
             } catch {
                 throw NetworkRegistryError.conflict("cannot delete network \(name): \(error)")
             }
-            if let handle = handles.removeValue(forKey: name) {
-                try backend.release(name: name, handle: handle)
+            if let handle = handles.removeValue(forKey: network.id) {
+                try backend.release(name: network.id, handle: handle)
             }
         }
     }
@@ -482,26 +492,24 @@ final class NetworkRegistry: @unchecked Sendable {
 
     /// Last-resort recovery for an opt-in stack after every attached helper has
     /// stopped. Desired state and attachments stay unchanged.
-    func recreateRuntime(name: String) throws {
+    func recreateRuntime(name: String, project: String? = nil) throws {
         try lock.withLock {
             try requireRunning()
-            guard let record = try database.networks().first(where: { $0.name == name }) else {
-                throw NetworkRegistryError.notFound("network not found: \(name)")
-            }
+            let record = try resolveNetwork(name: name, project: project)
             guard !record.isDockerBackend else {
                 throw NetworkRegistryError.invalid("docker backend has no vmnet runtime")
             }
-            guard let current = handles.removeValue(forKey: name) else {
+            guard let current = handles.removeValue(forKey: record.id) else {
                 throw NetworkRegistryError.runtime("network \(name) has no live handle")
             }
             do {
-                try backend.release(name: name, handle: current)
+                try backend.release(name: record.id, handle: current)
                 let replacement = try backend.reserve(record)
-                handles[name] = replacement
-                try database.updateNetworkRuntime(name: name, state: "active", error: nil)
+                handles[record.id] = replacement
+                try database.updateNetworkRuntime(name: record.id, state: "active", error: nil)
             } catch {
                 try? database.updateNetworkRuntime(
-                    name: name,
+                    name: record.id,
                     state: "orphaned",
                     error: String(describing: error)
                 )
@@ -517,7 +525,7 @@ final class NetworkRegistry: @unchecked Sendable {
     func serializedAttachments(for vmID: String) throws -> [SerializedVmnetAttachment] {
         try lock.withLock {
             try requireRunning()
-            let networks = Dictionary(uniqueKeysWithValues: try database.networks().map { ($0.name, $0) })
+            let networks = Dictionary(uniqueKeysWithValues: try database.networks().map { ($0.id, $0) })
             let attachments = try database.attachments()
                 .filter { $0.vmID == vmID }
                 .sorted { lhs, rhs in
@@ -527,17 +535,17 @@ final class NetworkRegistry: @unchecked Sendable {
                     return lhs.ip < rhs.ip
                 }
             return try attachments.compactMap { attachment in
-                if networks[attachment.networkName]?.isDockerBackend == true {
+                if networks[attachment.networkID]?.isDockerBackend == true {
                     return nil
                 }
-                guard let handle = handles[attachment.networkName] else {
+                guard let handle = handles[attachment.networkID] else {
                     throw NetworkRegistryError.runtime(
                         "network \(attachment.networkName) is not active for helper attach"
                     )
                 }
                 let blob: Data
                 do {
-                    blob = try backend.serialize(name: attachment.networkName, handle: handle)
+                    blob = try backend.serialize(name: attachment.networkID, handle: handle)
                 } catch {
                     throw NetworkRegistryError.runtime(
                         "cannot serialize network \(attachment.networkName): \(error)"
@@ -545,6 +553,7 @@ final class NetworkRegistry: @unchecked Sendable {
                 }
                 return SerializedVmnetAttachment(
                     networkName: attachment.networkName,
+                    networkID: attachment.networkID,
                     ip: attachment.ip,
                     blob: blob
                 )
@@ -572,18 +581,18 @@ final class NetworkRegistry: @unchecked Sendable {
     private func rebuild() throws {
         for var record in try database.networks() {
             if record.isDockerBackend {
-                try database.updateNetworkRuntime(name: record.name, state: "active", error: nil)
+                try database.updateNetworkRuntime(name: record.id, state: "active", error: nil)
                 continue
             }
             do {
                 let handle = try backend.reserve(record)
-                try database.updateNetworkRuntime(name: record.name, state: "active", error: nil)
-                handles[record.name] = handle
+                try database.updateNetworkRuntime(name: record.id, state: "active", error: nil)
+                handles[record.id] = handle
             } catch {
                 record.runtimeState = "orphaned"
                 record.lastError = String(describing: error)
                 try database.updateNetworkRuntime(
-                    name: record.name,
+                    name: record.id,
                     state: record.runtimeState,
                     error: record.lastError
                 )
@@ -596,7 +605,7 @@ final class NetworkRegistry: @unchecked Sendable {
         if let configured = try database.defaultNetwork() {
             return configured
         }
-        let shared = try database.networks().filter { $0.mode == "shared" }
+        let shared = try database.networks().filter { $0.mode == "shared" && $0.project == nil }
         let inferred: DefaultNetworkRecord?
         if shared.count == 1 {
             inferred = DefaultNetworkRecord(name: shared[0].name, cidr: shared[0].cidr)
@@ -615,13 +624,13 @@ final class NetworkRegistry: @unchecked Sendable {
     }
 
     private func ensureDefaultNetworkLocked(name: String, cidr: String) throws -> NetworkRecord {
-        if let existing = try database.networks().first(where: { $0.name == name }) {
+        if let existing = try database.networks().first(where: { $0.name == name && $0.project == nil }) {
             guard existing.cidr == cidr, existing.mode == "shared" else {
                 throw NetworkRegistryError.conflict(
                     "network \(name) exists with \(existing.cidr), expected \(cidr)"
                 )
             }
-            guard handles[name] != nil else {
+            guard handles[existing.id] != nil else {
                 throw NetworkRegistryError.runtime(
                     "network \(name) is not active: \(existing.lastError ?? "rebuild failed")"
                 )
@@ -649,6 +658,13 @@ final class NetworkRegistry: @unchecked Sendable {
         stack: String?
     ) throws -> NetworkRecord {
         try validateName(name, kind: "network")
+        if let project {
+            guard project.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil,
+                  !name.contains("/")
+            else {
+                throw NetworkRegistryError.invalid("project networks require an unqualified short name")
+            }
+        }
         guard mode == "shared" else {
             throw NetworkRegistryError.invalid(
                 "bridged mode is unsupported in v0.1; use --mode shared"
@@ -675,14 +691,19 @@ final class NetworkRegistry: @unchecked Sendable {
             throw NetworkRegistryError.invalid(String(describing: error))
         }
         let existing = try database.networks()
-        guard !existing.contains(where: { $0.name == name }) else {
+        let identity = project.map { "\($0)/\(name)" } ?? name
+        guard !existing.contains(where: { $0.name == name && $0.project == project }) else {
             throw NetworkRegistryError.conflict("network already exists: \(name)")
+        }
+        guard !existing.contains(where: { $0.id == identity }) else {
+            throw NetworkRegistryError.conflict("network identity already reserved: \(identity)")
         }
         guard !existing.contains(where: { $0.cidr == cidr.canonical }) else {
             throw NetworkRegistryError.conflict("CIDR already reserved: \(cidr.canonical)")
         }
         var record = NetworkRecord(
             name: name,
+            id: identity,
             cidr: cidr.canonical,
             mode: mode,
             natEgress: natEgress,
@@ -704,11 +725,36 @@ final class NetworkRegistry: @unchecked Sendable {
         do {
             try database.insertNetwork(record)
         } catch {
+            try? self.backend.release(name: record.id, handle: handle)
             throw NetworkRegistryError.conflict("cannot persist network \(name): \(error)")
         }
-        handles[name] = handle
+        handles[record.id] = handle
         record.runtimeState = "active"
         return record
+    }
+
+    private func vmProject(_ vmID: String) -> String? {
+        vmID.contains("/") ? String(vmID.split(separator: "/", maxSplits: 1)[0]) : nil
+    }
+
+    /// Call under the registry lock. Unqualified ambiguous names never choose an owner.
+    private func resolveNetwork(
+        name: String, project: String?, allowGlobal: Bool = false
+    ) throws -> NetworkRecord {
+        let all = try database.networks()
+        var candidates = all.filter { $0.id == name || $0.name == name }
+        if let project {
+            let scoped = candidates.filter { $0.project == project }
+            candidates = !scoped.isEmpty || !allowGlobal
+                ? scoped : candidates.filter { $0.project == nil }
+        }
+        guard candidates.count == 1, let network = candidates.first else {
+            if candidates.isEmpty {
+                throw NetworkRegistryError.notFound("network not found for requested project: \(name)")
+            }
+            throw NetworkRegistryError.conflict("ambiguous network \(name); specify project or qualified identity")
+        }
+        return network
     }
 
     private func requireRunning() throws {

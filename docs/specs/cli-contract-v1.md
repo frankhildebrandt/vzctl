@@ -9,13 +9,22 @@ Diese Spezifikation definiert den stabilen, maschinenlesbaren Vertrag der
 
 - stdout enthält ausschließlich angeforderte Daten.
 - Bei `--format json` ist stdout genau ein gültiges JSON-Dokument. Zusätzliche
-  Statuszeilen, Fortschritt und Hinweise sind dort nicht erlaubt.
+  Statuszeilen, Fortschritt und Hinweise sind dort nicht erlaubt. Dies gilt
+  auch für frühe Parse-, Validierungs- und Laufzeitfehler der JSON-fähigen
+  Commands, unabhängig von der Position des `--format json`-Paars.
 - stderr enthält Diagnostics für Menschen: Usage-Fehler, Warnungen,
   Fortschritt und Fehlerdetails. Consumers dürfen stderr nicht parsen.
 - Ein Fehler darf strukturierte Daten auf stdout liefern. Maßgeblich ist immer
   `exit_code`; Prozess-Exitcode und JSON-`exit_code` müssen identisch sein.
 - Human-Ausgabe bleibt der Default. Commands mit Maschinen-Consumer bieten
   `--format json`; Streaming-Commands dürfen stattdessen NDJSON spezifizieren.
+
+Bei einem unbekannten oder fehlenden Verb eines JSON-fähigen Namespace ist
+`command` der bekannte Namespace, z. B. `image`. Ein unbekannter Root-Command
+verwendet `command=unknown`, Exit `2`. Nach Auflösung einer Operation bleibt
+ihr kanonischer Commandname auch im Fehlerfall erhalten; frühe Parserfehler
+dürfen den bekannten Namespace verwenden. Human-Hilfe, `skill`, Schemaexport,
+Docker-Passthrough und die unten beschriebenen Streams haben eigene Verträge.
 
 ## JSON-Envelope
 
@@ -57,13 +66,21 @@ beschreibt die konfigurierte Root-Kapazität; die frühere zusätzliche
 ## Status und WARN/FAIL
 
 - `ok`: Operation erfolgreich, keine relevante Warnung.
-- `warn`: Operation erfolgreich, aber mit behebbaren Hinweisen. WARN führt
-  grundsätzlich zu Exit `0`.
+- `warn`: Operation erfolgreich, aber mit behebbaren Hinweisen, oder ein
+  erfolgreich abgefragter Zustand ist noch nicht bereit. WARN führt außerhalb
+  der folgenden Health-/Bereitschaftsprüfungen zu Exit `0`.
 - `fail`: Operation nicht erfolgreich oder eine dokumentierte harte
   Voraussetzung ist verletzt. Der Exitcode ist ungleich `0`.
-- Ein WARN darf nur dann hart fehlschlagen, wenn die commandspezifische
-  Dokumentation ihn ausdrücklich als Hard-Fail klassifiziert. Dann muss der
-  Envelope-Status `fail` lauten, nicht `warn`.
+- Ausführungsfehler und harte Voraussetzungen verwenden `fail`. Davon
+  unterschieden werden erfolgreich gelesene, aber nicht bereite Zustände:
+  `stack.status`/Alias `status` liefert `warn/1` bei degraded,
+  `kubernetes.status` liefert `warn/24` bei nicht bereiten Clustern,
+  `controller.status` und `controller.reconcile` liefern `warn/24` bei
+  Pending-/Failed-Claims oder Warnungen. Diese Nonzero-Codes sind beabsichtigt:
+  CI und Agenten dürfen den Zustand nicht als bereit behandeln.
+- `controller.watch --format json` ist NDJSON. Das `exit_code` jedes Records
+  bewertet den jeweiligen Zyklus; es ist nicht der finale Prozesscode des
+  laufenden Streams. Ctrl-C beendet den Stream mit `0`.
 
 Für `doctor` sind nur ein nicht gesunder erreichbarer Supervisor und eine nicht
 erfüllte macOS-26-Baseline Hard-Fails. Fehlende lokale Builds, Signaturen,
@@ -96,13 +113,14 @@ Resolver oder APFS-Empfehlungen bleiben WARN/Exit `0`, soweit
 | `23` | Image-Architektur unsupported | `image pull` ist ARM64-only |
 | `24` | Reconciler- oder VM-Lifecycle-Operation fehlgeschlagen | `up`, `apply`, `down`, `vm start|stop|delete` |
 | `25` | Host-Service-Lifecycle fehlgeschlagen | `services start|stop|restart` (Helper-Timeout, vz-net bootout, Socket nicht ready) |
+| `26` | Debug-Datenquelle oder Voraussetzung fehlgeschlagen | `debug doctor|postgres|mysql|nats` |
 
 Exitcodes werden innerhalb von v1 nicht wiederverwendet. Ein Command darf nur
 Codes aus dieser Tabelle oder aus seiner commandspezifischen Erweiterung
 liefern. `apply` verwendet `5` und `6` für Journal/Lease. Ungültige
 Reconciler-Flags liefern `2`, widersprüchliche `--resume --abort` liefern `3`.
 
-## Commands v1 (erster Slice)
+## Commands v1 und VM-Create v2
 
 ### `vzctl version --format json`
 
@@ -133,6 +151,13 @@ Actual-State aus Supervisor-SQLite. `up` erzeugt fehlende Ressourcen und
 startet gestoppte VMs, löscht aber nichts. `apply` korrigiert Drift; VM- und
 Netz-Recreates sowie Deletes sind `breaking` und benötigen interaktive
 Bestätigung oder `--force`. `down` stoppt in umgekehrter `dependsOn`-Reihenfolge.
+Rein additive deklarative Container sind ein nicht-brechendes VM-Update, wenn
+alle bestehenden Container, `composeFiles` und sämtliche übrigen VM-Felder
+unverändert bleiben. Erste Bindings für einen nachweislich neuen deklarativen
+Consumer werden als `create` geplant. Bindings an bestehende Consumer oder
+Consumer mit unbekanntem beziehungsweise Compose-basiertem Altbestand bleiben
+`recreate`/`breaking`; Änderungen oder Entfernungen bestehender Container sowie
+VM-/Netz-/Diskänderungen werden dadurch nicht freigegeben.
 `down --purge` hart-killt Helper (`SIGKILL`), löscht ausschließlich Ressourcen mit
 `managed-by=vzctl` und passender Project-/Stack-Zuordnung (kein graceful Shutdown).
 `adopt` ist report-only (kein Lease, kein
@@ -148,6 +173,13 @@ Exitcodes für `adopt`: `0`, `2`, `3`, `10`.
 Das JSON-Envelope enthält `stack_id`, optional `journal` und `actions[]` mit
 `action`, `kind`, `name`, `breaking` und `reason`. Ein unveränderter Plan bzw.
 ein wiederholtes erfolgreiches `apply` liefert `actions=[]`, Exit `0`.
+
+Plan-/Diff-Kategorien umfassen auch `port`, `volume`, `certs`, `ingress`, `oidc`,
+`resilience`, `observability` und `input` (Fingerprint einer referenzierten Datei).
+`input` speichert keine Dateiinhalte. Der Resume-Hash deckt das ganze normalisierte
+YAML-Dokument und bekannte Eingabedateien ab. Ein unabhängiger Heartbeat erhält die
+300s-Lease während langer Schritte; Erneuerungsverlust liefert Exit `6` spätestens
+an der nächsten Step-Grenze. Details und Snapshot-Grenzen: [ADR 0003](../adr/0003-apply-state.md).
 
 Ein incomplete Journal blockiert neue Operationen mit Exit `5`.
 `apply --resume` setzt beim gespeicherten Step und derselben Desired-Generation
@@ -227,6 +259,22 @@ gegen Peer-FQDNs (`{vm}.{net}.{project}.vz.test:22`) und deklarative
 `AGENT_DEGRADED`, `AGENT_EXEC_TIMEOUT`, `VM_NOT_RUNNING`, `AGENT_NOT_READY`,
 `ROUTE_STATUS_AMBIGUOUS`, `INGRESS_UNREACHABLE`, `MOUNT_MISSING`) und
 `summary.health` `ok`|`degraded`|`critical`. Exit `0`/`1`/`2`. Ziel < 10s.
+
+Ein sauber gestoppter Helper (einschließlich nach normalem Stop aus `vm.list`
+entfernter Einträge) ist kein Gesundheitsfehler. Agent-, Router-, Peer- und
+explizit auf diese VM zielende Probe-/Ingress-Prüfungen melden
+`status: skipped`, `reason: vm_stopped`; aktive VMs desselben Stacks werden
+weiter geprüft. `failed`, unbekannte Zustände und nicht erreichbare Agents
+laufender VMs bleiben Fehler. Fehlende, mehrdeutige oder ungültige
+`vm.list`-Antworten brechen die Erhebung ab, statt einen Stop zu behaupten.
+`summary.stopped_vms` zählt normale Stops; `summary.checks: skipped` bedeutet,
+dass alle VMs gestoppt sind und auch keine unabhängige Host-Prüfung aussteht.
+Die UI stellt diesen Fall neutral als „Gestoppt · nicht geprüft“ dar.
+Host-OIDC, aktive Ingress-Ziele und unabhängige deklarierte Host-Probes bleiben
+prüfpflichtig; ihre Fehler werden nicht durch einen VM-Stop verdeckt.
+Netzwerk-Egress-Diagnosen bleiben auf `spec.networks` mit aktiven Mitgliedern
+beschränkt; das globale Runtime-Default-Netz wird dadurch nicht neu bewertet.
+
 
 `stack.watch` korreliert periodische Status-Ticks mit `events.subscribe` und
 schreibt NDJSON auf stdout. `--filter` ist eine Komma-Liste von Globs
@@ -356,7 +404,16 @@ erreichbaren Supervisor bleiben Disk-Bundles sichtbar (`state=stopped`) und das
 Envelope liefert `status=warn`, Exit `0`.
 
 `vm.start` prüft das Bundle-Manifest und ruft `vm.start` mit `vm_id` und
-`bundle` auf. `vm.stop` ruft `vm.stop` auf und wartet standardmäßig bis der
+`bundle` auf. Der Supervisor wartet vor dem Spawn bis zu fünf Sekunden auf
+die tatsächliche Prozess-/Lockfreigabe des vorherigen Helpers und danach
+bis zu fünf Sekunden auf die Lockübernahme durch genau den neuen PID.
+CLI und Reconciler geben diesem Start-RPC 20 Sekunden Antwortzeit, damit
+beide begrenzten Phasen samt Transportreserve innerhalb der Clientfrist liegen.
+Timeout oder früher Prozessfehler liefern einen Fehler statt eines
+Start-Erfolgs; fremde Locks werden weder gelöscht noch zwangsweise übernommen.
+`starting` bleibt asynchron (kein Guest-Ready-Versprechen); bereits gemeldetes
+`running` wird übernommen, bereits gemeldetes `failed` als Fehler ausgegeben.
+`vm.stop` ruft `vm.stop` auf und wartet standardmäßig bis der
 Helper nicht mehr `starting`/`running` ist (`--wait false` überspringt das
 Warten). `vm.restart` ist `stop --wait` gefolgt von `start`. `vm.delete` stoppt, detacht Netz-Attachments der VM, und löscht nur
 Bundles mit `managed-by=vzctl`. Primär ruft es Supervisor-`vm.purge` auf
@@ -442,6 +499,13 @@ Mit `-f` danach Follow. JSON-Snapshot: `source` plus `lines[]` im iwatch-
 zum Helper-Guest-Agent; der CLI-Exitcode ist der Guest-`exit` (0–255).
 `transfer` kopiert Dateien host↔guest (`<id>:<guest-path>` vs. Host-Pfad) über
 `exec` + base64/`tee` und ist auf 256 KiB begrenzt (darüber Exit `12`).
+Bei systemd läuft der Guest-Agent mit `PrivateTmp=yes`: Dateien unter `/tmp`
+und `/var/tmp` sind nur in seinem Mount-Namespace sichtbar. Ein über
+`systemd-run` gestarteter Dienst sieht diese Dateien nicht automatisch.
+Für die Übergabe an solche Dienste ein eigenes Verzeichnis außerhalb dieser
+Pfade verwenden, mit Modus `0700` und Geheimnisdateien `0600`; temporäre
+Zugangsdaten anschließend entfernen. `sudo` innerhalb von `vm exec` bleibt
+im Namespace des Agents.
 `services` wraps guest systemd when the agent exposes capability `systemd`
 (`vm.agent.systemd.*`); older agents fall back to `systemctl` via `exec` for
 list/start/stop/restart only. JSON includes structured `units[]` or `unit` and
@@ -503,7 +567,15 @@ vzctl route status [--router <vm-id>] [--format human|json]
 
 `route apply` und `route plan` lesen `spec.policies` aus der angegebenen
 Environment-Datei beziehungsweise aus `./hypernetwork.config.yaml`.
-Sie validieren Router-Rolle, mindestens zwei Attachments, `.2` je Netz,
+`spec.project` begrenzt die Auswahl auf Router dieses Projekts. Ein kurzer
+`--router ops` wird dabei zu `<project>/ops`; ein expliziter Router eines anderen
+Projekts ist ein Fehler. Ohne Projekt in der Config ist `--router` Pflicht.
+Ein globales `plan`/`apply` ohne beide Angaben wird abgelehnt. Dasselbe gilt für
+die Supervisor-RPCs: `project` oder `router` ist Pflicht; ein gemeinsames
+`project`/`router` muss übereinstimmen. Stack-Apply sendet immer sein Projekt.
+`route status` bleibt ohne Filter global und ausschließlich lesend.
+
+Sie validieren Router-Rolle, mindestens zwei Attachments, gültige Routeradressen,
 `forward: deny-all`, Zielnetze, Protokolle und Ports. `plan` verändert den Gast
 nicht. `status` liest den aktiven nftables-Status über Helper und Guest-Agent.
 
@@ -643,3 +715,156 @@ ohne `help` bleiben Usage auf stderr, Exit `2`.
 Das Event-Envelope und `events subscribe` werden separat in
 [#19](https://github.com/frankhildebrandt/vzctl/issues/19) spezifiziert. Events
 verwenden NDJSON und sind nicht Teil des Ein-Dokument-Vertrags dieses Slices.
+
+
+### `vzctl port list`
+
+`port list [--project P] [--stack S] [--format human|json]` liefert die
+Host-Forwards unter `ports[]`, mit `summary.count`. Der Listener ist loopback-only.
+Exitcodes: `0`, `2`, `10` sowie ein vom Supervisor gemeldeter spezifischer Fehlercode. Änderungen erfolgen über deklarative Ports und Apply.
+
+### `vzctl certs ca init|upgrade|install`, `certs mint|fingerprint`
+
+`certs ca init [--force]`, `certs ca upgrade --output <new-private-directory>`,
+`certs ca install`, `certs mint <san> [--san alias...]`
+und `certs fingerprint` unterstützen `--format human|json`. Payload: `data`.
+Die Standardfelder `status`, `exit_code`, `summary` ergänzen additiv die älteren
+Felder `kind` und `ok`; diese und `data` bleiben für vorhandene UI-Consumer erhalten.
+Fehler liefern JSON auf stdout und eine Diagnostic auf stderr. Exitcodes: `0`,
+`2` (Usage), `3` (z. B. fehlender Fingerprint), `10` (CA-/Keychain-/Mint-Fehler).
+`ca init` erzeugt nur lokale CA-Dateien; `ca install` ändert Host-Trust.
+`ca upgrade` erzeugt ausschließlich einen privaten, vollständigen Kandidaten außerhalb
+von `VZCTL_STATE_DIR`. Es verändert weder aktive CA/Leafs noch Keychain, Guests oder
+Dienste. Ein vorhandenes Output-Verzeichnis oder `--force` wird abgelehnt.
+`command=certs.ca.upgrade`; `data` enthält `staged=true`, `promoted=false`,
+`manifest`, `manifest_sha256`, `certificates`, `old_fingerprint`, `new_fingerprint`
+und `next`. `certificates` zählt Root plus Leafs. Exit `2` bei fehlendem/ungültigem
+Output-Argument, Exit `10` bei Bestands-/Profil-/Dateifehlern. Details und Promotion-
+Voraussetzungen: [Local CA v1](certs-v1.md#explizites-profil-upgrade-f45).
+
+`certs rollout` und `certs verify` sind keine implementierten eigenständigen
+Operationen und liefern Exit `2`. Rollout erfolgt durch `apply`, Prüfung über Guest-Exec.
+
+### `vzctl oidc status|clients`
+
+Beide Commands akzeptieren `--project P` und `--format human|json`.
+`oidc status` liefert `data.running`, `data.pid`, `data.project`, `data.runtime`
+und `data.uplink`; ein nicht laufender optionaler IdP ist kein CLI-Ausführungsfehler.
+`oidc clients` benötigt ein Projekt und liefert `data.clients`.
+Standard-Envelope plus additive Legacy-Felder `kind`, `ok`, `data` wie bei `certs`.
+Exitcodes: `0`, `2` (Usage), `10` (Datei-/Config-Fehler). `oidc token` ist nur ein
+Hinweis auf Auth Code + PKCE und liefert Exit `2`.
+
+### `vzctl docker`
+
+`docker [--project P] [--format human|json] ps|inspect|start|stop|restart|run`
+verwendet den verwalteten SSH-Kontext. Strukturierte Verben liefern den
+Standard-Envelope mit kanonischem `command=docker.<verb>` und ihrem Payload.
+Exitcodes: `0`, `2` (Usage), `3` (Projekt nicht ermittelbar), `24` (Docker-/Kontextfehler). Startet Docker erfolgreich, wird dessen Prozess-Exitcode
+auch bei strukturierten Verben unverändert in Prozess und Envelope übernommen;
+der Payload dieser Verben liegt unter `summary`.
+Der ausdrücklich gewählte Passthrough `docker [--project P] -- <docker-args...>`
+übernimmt Ausgabe und Exitcode der Docker-CLI; dafür gilt kein vzctl-JSON-Envelope.
+
+### `vzctl debug`
+
+`sources list`, `doctor`, `postgres query`, `mysql query` und
+`nats streams|sub|kv get|kv watch` verwenden `-C <Stack>` und die Quellen unter
+`spec.observability.dataSources`. `--format json` liefert einen einzelnen
+Standard-Envelope; begrenzte Subscribe-/Watch-Ergebnisse werden darin gesammelt.
+SQL-Abfragen sind read-only und durch `--max-rows`/`--timeout` begrenzt;
+NATS-Subscribe durch `--count`/`--timeout`. Secrets werden über Dateien referenziert.
+Exitcodes: `0`, `2` (Usage), `3` (Config/Quelle/Abfrage ungültig), `10` (Supervisor),
+`26` (fehlende Guest-Tools, Datenquelle oder Ausführung fehlgeschlagen).
+
+### `vzctl events subscribe`
+
+Für den offenen NDJSON-Stream gilt [Event Stream v1](events-v1.md), kein einzelner
+JSON-Envelope. Eine ausbleibende Subscription-Bestätigung endet mit Exit `10`.
+Teilframes bleiben über Read-Timeouts erhalten; additive Event-Typen und Felder
+werden unverändert weitergegeben.
+
+
+### `vzctl diagnose`
+
+`diagnose [-C STACK] --output <neue-Datei.json> [--format human|json]` erstellt ein Diagnosebundle
+mit eigener Version `vzctl.dev/diagnose/v1`. Die CLI-Antwort bleibt im Standard-Envelope
+und enthält `path`, `summary.bytes` und `summary.warnings`. Exitcodes: `0` (auch bei
+unvollständigen Diagnosequellen, `status=warn`), `2` (Usage), `3` (Dateifehler).
+
+Die explizite Ausgabedatei wird ausschließlich neu mit Modus `0600` angelegt;
+bestehende Dateien oder Symlinks werden nicht überschrieben. Grenze: 64 KiB,
+64 VMs und 32 Journale (unvollständige zuerst, danach neueste), jeweils drei Sekunden Lesezeit pro Quelle.
+Enthalten sind Host-Kapazität, Dienst-Socket-Präsenz, ausgewählte Health-/VM-Felder
+und Journal-Metadaten. Keine Rohlogs, Config-Inhalte, Environment, Journal-Payloads,
+Fehlertexte oder Credentials; auffällige Metadaten werden redigiert. Das Bundle
+ist eine Momentaufnahme, kein vollständiges Systemabbild.
+
+Mit `-C STACK` ergänzen `controllers` und `kubernetes` Status, Registry-Generation,
+Claim-/Ressourcenidentitäten, Conditions und feste Fehlercodes. Je Quelle gelten
+3 Sekunden, 1 MiB interne Prozessausgabe und 16 KiB projizierter JSON-Inhalt;
+maximal 16 Claims, 8 Cluster mit je 8 Nodes/Manifesten und 16 Issues. Überläufe
+werden als `truncated`/`DiagnosticSectionLimit` gemeldet, fehlende Quellen mit
+`StatusCollectionUnavailable`. Keine Bindings oder freien Gastfehler im Bundle.
+Ohne `-C` sind diese Abschnitte `not-requested` und `stack_status_not_requested`
+ist ein Hinweis. Es werden keine registrierten Stack-Pfade automatisch abgefragt.
+
+
+### RAM-Budget bei Plan/Apply
+
+Der additive RAM-Report vergleicht den konfigurierten Stack mit dem physischen
+Host-RAM. VM-Default: 1024 MiB; Hostreserve: mindestens 2 GiB oder 20 Prozent.
+Überschreitung liefert eine konkrete Warnung, keine Sperre und keine automatische
+Ressourcenänderung. Andere Stacks/Apps und aktuell freier RAM werden nicht
+berechnet; der Report ist ein Kapazitätshinweis, keine Speicherreservierung.
+
+### `vzctl image rebake`
+
+`image rebake <alias> --tag <tag> [--format human|json]` führt Bake und Seal mit
+Force für denselben Alias/Tag aus. Der kanonische Command bleibt auch bei
+Parse-, Bake- oder Seal-Fehlern `image.rebake`. Erfolg liefert `image.alias`,
+`image.tag`, `image.path`, `image.agent_version`, `image.sealed=true` und
+`summary.change=rebaked`. Fehlercodes entsprechen dem fehlgeschlagenen
+Bake-/Seal-Schritt; Usage ist `2`, fehlende Eingabe `3`. Es gelten dieselben
+Backend-/Image-Invarianten wie bei getrenntem Bake und Seal.
+
+### `vzctl kubernetes status|kubeconfig`
+
+```bash
+vzctl kubernetes status [-C DIR] [--cluster NAME] [--format human|json]
+vzctl kubernetes kubeconfig --cluster NAME --output PATH [-C DIR] [--format human|json]
+```
+
+Kanonische Commands: `kubernetes.status`, `kubernetes.kubeconfig`.
+Status enthält `data.project`, `data.clusters[]` und `summary.clusters`.
+Alle abgefragten Cluster bereit: `ok/0`; mindestens ein Cluster nicht bereit:
+`warn/24`. Abfrage-/Ausführungsfehler: `fail/24`, ungültige Config/Clusterwahl:
+`fail/3`, Usage: `fail/2`.
+
+Kubeconfig-Export legt ausschließlich eine neue Datei mit `0600` an; vorhandene
+Dateien und Symlinks werden nicht überschrieben. Credentials erscheinen nicht
+auf stdout. Erfolg liefert `data.cluster`, `data.path`, `data.credentials=file-only`,
+`data.mode=0600` und `summary.path`, Exit `0`. Datei-/Guest-Fehler liefern `24`.
+
+### `vzctl controller status|reconcile|watch`
+
+```bash
+vzctl controller status [-C DIR] [--format human|json]
+vzctl controller reconcile [-C DIR] [--format human|json]
+vzctl controller watch [-C DIR] [--interval 5..3600] [--format human|json]
+```
+
+Kanonische Commands entsprechen `controller.<verb>`. Payload `data` enthält
+Projekt-/Claimstatus, Bedingungen, Kubernetes-Quellen und Warnungen;
+`summary.claims` zählt Claims. Status enthält keine Bindungs-Credentials.
+`status` liest den gespeicherten Zustand; `reconcile` gleicht deklarierte
+Claims ab. Alle Claims `Ready`/`Retained` und keine Warnung: `ok/0`.
+Andere Zustände oder Warnungen: `warn/24`. Parsefehler liefern `fail/2`;
+Config-/Storage-/Ausführungsfehler `fail/24`.
+
+Watch lädt die Config vor jedem Zyklus neu (Default 30 Sekunden). Im JSON-Modus
+schreibt es pro Zyklus genau ein kompaktes Envelope als NDJSON-Zeile.
+`exit_code` ist der Zykluscode; nach einem Zyklusfehler läuft Watch weiter.
+Ctrl-C beendet den Stream mit Prozess-Exit `0`. Der interne
+`reconcile --registered <generation>`-Aufruf ist ausschließlich für den
+Supervisor bestimmt und kein öffentlicher CLI-Workflow.

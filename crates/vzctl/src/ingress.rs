@@ -10,8 +10,8 @@ use std::path::Path;
 pub(crate) struct RenderedIngress {
     pub(crate) caddyfile: String,
     pub(crate) hosts: Vec<String>,
-    /// Guest-horizon A records for ingress hosts that bypass the bridge `.1` gateway
-    /// (non-gateway backend ports). Keyed by ingress host → attachment network → VM IP.
+    /// Empty for declared ingress: guest DNS must use the listener's host-service
+    /// `.1`, regardless of the backend port. VM overrides would bypass Caddy TLS.
     pub(crate) guest_dns: BTreeMap<String, BTreeMap<String, String>>,
     /// vmnet host-service `.1` addresses (+ loopback bind) for HostGatewayIngressProxy.
     /// Guest TCP to bridge `.0` is blackholed on macOS vmnet; `.1` is reachable.
@@ -50,7 +50,9 @@ fn docker_network_names(environment: &Environment, networks: &[Value]) -> BTreeS
         .map(|(name, _)| name.clone())
         .collect();
     for item in networks {
-        if item["backend"].as_str() == Some("docker") {
+        if item["backend"].as_str() == Some("docker")
+            && item["project"].as_str() == Some(environment.spec.project.as_str())
+        {
             if let Some(name) = item["name"].as_str() {
                 names.insert(name.to_string());
             }
@@ -99,7 +101,9 @@ pub(crate) fn render(
         };
         let network = item["network"].as_str().unwrap_or("");
         if docker_networks.contains(network) {
-            docker_ips.entry(vm.to_string()).or_insert_with(|| ip.to_string());
+            docker_ips
+                .entry(vm.to_string())
+                .or_insert_with(|| ip.to_string());
         } else {
             preferred_ips
                 .entry(vm.to_string())
@@ -188,12 +192,10 @@ pub(crate) fn render(
         "{{\n\tauto_https off\n\thttp_port {caddy_http_port}\n\thttps_port {caddy_https_port}\n\tdefault_bind {bind}\n}}\n\n"
     );
     let mut hosts = Vec::new();
-    let mut guest_dns = BTreeMap::new();
 
     for route in &ingress.routes {
         hosts.push(route.host.clone());
         let upstream = IngressUpstream::parse(&route.to)?;
-        let uses_gateway_alias = ingress_guest_uses_gateway_alias(&upstream, ingress);
         let backend = match &upstream {
             IngressUpstream::Vm { name, port } => {
                 let runtime = crate::runtime_vm_id(&environment.spec.project, name);
@@ -236,40 +238,12 @@ pub(crate) fn render(
             key.display(),
             backend
         ));
-
-        if uses_gateway_alias {
-            continue;
-        }
-        let IngressUpstream::Vm { name, .. } = upstream else {
-            continue;
-        };
-        let runtime = crate::runtime_vm_id(&environment.spec.project, &name);
-        let mut per_network = BTreeMap::new();
-        for item in attachments {
-            if item["project"] != environment.spec.project {
-                continue;
-            }
-            let vm = item["vm_id"].as_str();
-            if vm != Some(runtime.as_str()) && vm != Some(name.as_str()) {
-                continue;
-            }
-            let network = item["network"]
-                .as_str()
-                .or_else(|| item["network_name"].as_str());
-            let ip = item["ip"].as_str();
-            if let (Some(net), Some(ip)) = (network, ip) {
-                per_network.insert(net.to_string(), ip.to_string());
-            }
-        }
-        if !per_network.is_empty() {
-            guest_dns.insert(route.host.clone(), per_network);
-        }
     }
 
     Ok(RenderedIngress {
         caddyfile: blocks,
         hosts,
-        guest_dns,
+        guest_dns: BTreeMap::new(),
         gateways: gateways.into_keys().collect(),
         gateway_bindings: binding_sources
             .into_iter()
@@ -287,19 +261,6 @@ pub(crate) fn render(
 
 pub(crate) fn short_localhost(host: &str) -> Option<String> {
     host.split('.').next().map(|s| format!("{s}.localhost"))
-}
-
-/// Ingress routes fronted on the bridge `.1` alias use split-horizon gateway DNS in guests.
-fn ingress_guest_uses_gateway_alias(
-    upstream: &IngressUpstream,
-    ingress: &crate::config::IngressConfig,
-) -> bool {
-    match upstream {
-        IngressUpstream::Oidc { .. } => true,
-        IngressUpstream::Vm { port, .. } => {
-            *port == ingress.http_port || *port == ingress.https_port
-        }
-    }
 }
 
 #[cfg(test)]
@@ -352,11 +313,13 @@ spec:
             json!({"name":"containers","cidr":"10.95.0.0/24","project":"demo","backend":"docker","runtime_state":"active"}),
             json!({"name":"stale","cidr":"10.70.0.0/24","project":"demo","backend":"vmnet","runtime_state":"orphaned"}),
             json!({"name":"foreign","cidr":"10.60.0.0/24","project":"other","backend":"vmnet","runtime_state":"active"}),
+            json!({"id":"other/lan","name":"lan","cidr":"10.61.0.0/24","project":"other","backend":"docker","runtime_state":"active"}),
         ];
         let attachments = vec![json!({
             "vm_id":"demo/docker","network":"lan","ip":"10.90.0.10","project":"demo"
         })];
 
+        assert!(!docker_network_names(&environment, &networks).contains("lan"));
         let rendered =
             render(&environment, &networks, &attachments, &std::env::temp_dir()).unwrap();
 
@@ -374,15 +337,12 @@ spec:
                 },
             ]
         );
-        assert_eq!(
-            rendered.guest_dns.get("app.svc.demo.vz.test").and_then(|m| m.get("lan")),
-            Some(&"10.90.0.10".to_string())
-        );
+        assert!(rendered.guest_dns.is_empty());
     }
 
     #[test]
-    fn gateway_alias_ingress_hosts_skip_guest_vm_dns() {
-        let environment = crate::config::validate_source(
+    fn backend_ports_preserve_guest_tls_ingress_even_without_known_gateway() {
+        let mut environment = crate::config::validate_source(
             r#"
 apiVersion: hypernetwork/v1
 kind: Environment
@@ -404,7 +364,7 @@ spec:
   ingress:
     enabled: true
     routes:
-      - { host: web.svc.demo.vz.test, to: "web:80" }
+      - { host: web.svc.demo.vz.test, to: "web:18080" }
   vms:
     web:
       from: ubuntu-base
@@ -420,14 +380,40 @@ spec:
             "ip": "10.80.0.10",
             "project": "demo"
         })];
-        let rendered = render(
-            &environment,
-            &[],
-            &attachments,
-            &std::env::temp_dir(),
-        )
-        .unwrap();
+        let networks = [json!({
+            "name": "dmz", "cidr": "10.80.0.0/24", "project": "demo",
+            "backend": "vmnet", "runtime_state": "active"
+        })];
+        // Neti, IQ-Store, ordinary HTTP/HTTPS and projected Kubernetes NodePort.
+        for port in [18080, 5555, 8080, 8081, 9000, 9001, 80, 443, 31080] {
+            environment.spec.ingress.as_mut().unwrap().routes[0].to = format!("web:{port}");
+            for live_networks in [&networks[..], &[][..]] {
+                let rendered = render(
+                    &environment,
+                    live_networks,
+                    &attachments,
+                    &std::env::temp_dir(),
+                )
+                .unwrap();
+                assert!(rendered.guest_dns.is_empty(), "backend port {port}");
+                assert_eq!(
+                    rendered.gateways.contains(&"10.80.0.1".into()),
+                    !live_networks.is_empty()
+                );
+                // A missing gateway must not fall back to the VM's public TLS
+                // port or invent a guest loopback override. Edge owns horizon DNS.
+                assert!(rendered
+                    .caddyfile
+                    .contains(&format!("reverse_proxy 10.80.0.10:{port}")));
+                assert!(!rendered.caddyfile.contains("reverse_proxy web.svc."));
+                assert_eq!(rendered.https_port, 443);
+            }
+        }
+        environment.spec.ingress.as_mut().unwrap().routes[0].to = "oidc:5556".into();
+        let rendered =
+            render(&environment, &networks, &attachments, &std::env::temp_dir()).unwrap();
         assert!(rendered.guest_dns.is_empty());
+        assert!(rendered.caddyfile.contains("reverse_proxy 127.0.0.1:5556"));
     }
 
     #[test]
@@ -475,13 +461,8 @@ spec:
             json!({"vm_id":"iq-store/docker","network":"containers","ip":"10.93.0.2","project":"iq-store"}),
             json!({"vm_id":"iq-store/docker","network":"lan","ip":"10.92.0.2","project":"iq-store"}),
         ];
-        let rendered = render(
-            &environment,
-            &networks,
-            &attachments,
-            &std::env::temp_dir(),
-        )
-        .unwrap();
+        let rendered =
+            render(&environment, &networks, &attachments, &std::env::temp_dir()).unwrap();
         assert!(
             rendered.caddyfile.contains("reverse_proxy 10.92.0.2:8080"),
             "host-reachable vmnet IP must win, got:\n{}",
@@ -491,5 +472,7 @@ spec:
             !rendered.caddyfile.contains("reverse_proxy 10.93.0.2:8080"),
             "docker-backend IP is not reachable from the Mac"
         );
+        assert!(rendered.guest_dns.is_empty());
+        assert_eq!(rendered.gateways, ["10.92.0.1", "127.0.0.1"]);
     }
 }

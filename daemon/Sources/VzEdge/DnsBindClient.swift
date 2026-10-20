@@ -44,6 +44,8 @@ enum DnsBindClient {
                 on: client
             )
             let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: client)
+            var transferred = false
+            defer { if !transferred, let fileDescriptor { Darwin.close(fileDescriptor) } }
             let response = try decodeResponse(responseData)
             guard response.ok else {
                 throw Error.helper(response.error ?? "bind failed")
@@ -51,6 +53,7 @@ enum DnsBindClient {
             guard let fileDescriptor else {
                 throw Error.response("missing file descriptor")
             }
+            transferred = true
             return fileDescriptor
         }
     }
@@ -120,11 +123,9 @@ enum DnsBindClient {
                 if let fd { Darwin.close(fd) }
                 let response = try decodeResponse(responseData)
                 guard response.ok else {
-                    Darwin.close(client)
                     throw Error.helper(response.error ?? "bind failed")
                 }
                 guard response.event == "listening" else {
-                    Darwin.close(client)
                     throw Error.response("expected listening event, got \(response.event ?? "nil")")
                 }
                 var clear = timeval(tv_sec: 0, tv_usec: 0)
@@ -171,17 +172,19 @@ enum DnsBindClient {
             lock.unlock()
 
             let (responseData, fileDescriptor) = try UnixFDPassing.receive(on: socket)
+            var transferred = false
+            defer { if !transferred, let fileDescriptor { Darwin.close(fileDescriptor) } }
             let response = try decodeResponse(responseData)
             guard response.ok else {
                 throw Error.helper(response.error ?? "accept failed")
             }
             guard response.event == "accept" else {
-                if let fileDescriptor { Darwin.close(fileDescriptor) }
                 throw Error.response("expected accept event, got \(response.event ?? "nil")")
             }
             guard let fileDescriptor else {
                 throw Error.response("missing accepted file descriptor")
             }
+            transferred = true
             return fileDescriptor
         }
 

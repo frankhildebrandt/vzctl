@@ -32,6 +32,7 @@ impl Failure {
 
 pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
     let args = args.collect::<Vec<_>>();
+    let json = crate::json_requested(&args);
     let mut iter = args.into_iter().peekable();
     let Some(subcommand) = iter.next() else {
         eprintln!("usage: vzctl port list [--project P] [--stack S] [--format human|json]");
@@ -40,19 +41,18 @@ pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) ->
     match subcommand.as_str() {
         "list" => match parse_list_options(iter) {
             Ok((format, project, stack)) => list(format, project, stack, socket_path),
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::from(EXIT_USAGE)
-            }
+            Err(message) => crate::emit_command_failure(json, "port.list", EXIT_USAGE, &message),
         },
         "-h" | "--help" | "help" => {
             eprintln!("usage: vzctl port list [--project P] [--stack S] [--format human|json]");
             ExitCode::from(EXIT_USAGE)
         }
-        other => {
-            eprintln!("unknown port subcommand: {other}");
-            ExitCode::from(EXIT_USAGE)
-        }
+        other => crate::emit_command_failure(
+            json,
+            "port",
+            EXIT_USAGE,
+            &format!("unknown port subcommand: {other}"),
+        ),
     }
 }
 

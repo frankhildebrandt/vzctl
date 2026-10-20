@@ -1919,17 +1919,17 @@ pub(crate) fn doctor_host_listener_check(port: u16, port_in_use: bool) -> Doctor
 }
 
 fn probe_host_listener(server: &str) -> Result<(), String> {
-    let address = server.parse::<SocketAddr>().map_err(|_| {
-        format!("invalid DNS server {server}; expected IP:port")
-    })?;
+    let address = server
+        .parse::<SocketAddr>()
+        .map_err(|_| format!("invalid DNS server {server}; expected IP:port"))?;
     let transaction_id = transaction_id();
     let request = build_query(transaction_id, "vz.test", QueryType::A);
     let bind_address = match address.ip() {
         IpAddr::V4(_) => "0.0.0.0:0",
         IpAddr::V6(_) => "[::]:0",
     };
-    let socket = UdpSocket::bind(bind_address)
-        .map_err(|error| format!("create UDP socket: {error}"))?;
+    let socket =
+        UdpSocket::bind(bind_address).map_err(|error| format!("create UDP socket: {error}"))?;
     socket
         .set_read_timeout(Some(DNS_TIMEOUT))
         .map_err(|error| format!("set UDP timeout: {error}"))?;
@@ -2065,12 +2065,16 @@ mod tests {
     use std::thread;
 
     fn temp_dir(name: &str) -> PathBuf {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let fixture = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("vzctl-dns-{name}-{}-{unique}", std::process::id()));
+        let path = PathBuf::from("/private/tmp").join(format!(
+            "vzctl-dns-{name}-{fixture}-{}-{unique}",
+            std::process::id()
+        ));
         fs::create_dir(&path).unwrap();
         path
     }
@@ -2116,8 +2120,14 @@ mod tests {
             reverse_zones_for_cidr("192.168.64.0/30").unwrap(),
             vec!["64.168.192.in-addr.arpa"]
         );
-        assert_eq!(reverse_zones_for_cidr("10.0.80.1/24").unwrap_err().code, EXIT_INVALID);
-        assert_eq!(reverse_zones_for_cidr("nope").unwrap_err().code, EXIT_INVALID);
+        assert_eq!(
+            reverse_zones_for_cidr("10.0.80.1/24").unwrap_err().code,
+            EXIT_INVALID
+        );
+        assert_eq!(
+            reverse_zones_for_cidr("nope").unwrap_err().code,
+            EXIT_INVALID
+        );
     }
 
     #[test]

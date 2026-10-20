@@ -18,7 +18,7 @@ Model Context Protocol (stdio) für AI-Agents auf der lokalen vzctl Control-Plan
 |---|---|---|
 | `VZCTL_API_LISTEN` | `unix:$VZCTL_STATE_DIR/api.sock` | Supervisor REST (wie UI) |
 | `VZCTL_STATE_DIR` | `~/Library/Application Support/vzctl` | State-Verzeichnis |
-| `VZCTL_BIN` | `vzctl` | CLI-Pfad für Exec/Logs |
+| `VZCTL_BIN` | `vzctl` | CLI-Pfad für Exec/Logs, Diagnose, Controller- und Kubernetes-Status |
 
 ### Cursor / Claude Desktop
 
@@ -64,6 +64,7 @@ kein Breaking Change innerhalb v1.
 | `health` | REST | `GET /v1/health` |
 | `dns_status` | REST | `GET /v1/dns/status` |
 | `port_list` | REST | `GET /v1/ports` |
+| `diagnose` | CLI | Redigierter Host-/VM-/Journal-Report, maximal 64 KiB |
 
 ### VM Lifecycle
 
@@ -81,7 +82,9 @@ kein Breaking Change innerhalb v1.
 | Tool | Backend | Beschreibung |
 |---|---|---|
 | `stack_list` | REST | Registry |
-| `stack_status` | REST | Status-Bundle |
+| `stack_status` | REST | Status-Bundle einschließlich `sections.health`, OIDC und Ingress |
+| `controller_status` | CLI | Letzter Reconcile-Stand und Conditions für `stack_path` |
+| `kubernetes_status` | CLI | Node-/Manifest-Status für `stack_path`, optional `cluster` |
 | `stack_validate` | REST | YAML validate |
 | `stack_apply` | REST | Apply → `jobId` |
 | `job_status` | REST | Job poll + log |
@@ -108,6 +111,37 @@ kein Breaking Change innerhalb v1.
 - Tool-Antworten: pretty-printed JSON (Text-Content) außer `guest_service_request` (HTTP status + body).
 - Fehler: Tool-level `Err(String)` — Supervisor/CLI-Fehlertext für den Agent.
 - Interaktive Shell (`vm exec -it`): **nicht** im MCP v1 (nur One-Shot exec).
+
+### Begrenzte Betriebsdiagnose
+
+`controller_status`, `kubernetes_status`, `diagnose` und `stack_status` sind mit
+`readOnlyHint=true` beschrieben. Die neuen CLI-Tools verwenden feste Argumentlisten,
+höchstens 60 Sekunden Laufzeit und 1 MiB Prozessausgabe. Controller-Warnzustände
+(auch Exit 24) bleiben auswertbare Daten. Unstrukturierte Fehlerausgaben werden
+nicht zurückgegeben.
+
+Controller-Status enthält Claim-Zustände (auch Pending/Retained), Kubernetes-
+Quellidentität und Warncodes, sowie CP-Registrierung (`enabled`, `generation`, `lastAttemptAt`, sichere
+`lastStatus`-Felder). Öffentliche Bindings erlauben ausschließlich `host`, `port`,
+`database`, `user`, `bucket`, `region`, `clientID`, `scopes`, `caFile`, `url`,
+`issuer`, `endpoint`; keine Credential-Felder oder beliebigen Zusatzobjekte.
+URLs mit Userinfo, Query, Fragment oder Encodings werden vollständig redigiert.
+Freie Warntexte werden nicht übertragen. Kubernetes-Status
+enthält ausschließlich Ressourcenidentität, Zustand und ausgewählte Conditions;
+keine Secret-Daten, Kubeconfig, freien Condition-Meldungen oder Guest-Fehlertexte.
+`issues` enthält feste Codes und Operation/Ressourcenidentität einschließlich
+Namespace, etwa `NodeInventoryUnavailable`, `ResourceReadFailed`,
+`InvalidResourceInventory`, `OwnershipConflict` oder `ResourceDrift`.
+Pro Aufruf werden höchstens 256 Claims bzw. 64 Cluster mit jeweils 256 Nodes und
+Manifesten übertragen.
+
+`diagnose` erzeugt das CLI-Bundle in einem privaten temporären Verzeichnis und
+entfernt es vor Rückgabe. Es entsteht keine dauerhafte Ausgabedatei.
+Optionales `stack_path` ergänzt begrenzte Controller-/K3s-Zusammenfassungen über
+`diagnose -C`; ohne Parameter werden keine Stack-Pfade automatisch abgefragt. Der Report
+enthält ausgewählte Host-/Health-/VM-/Journal-Felder, keine Rohlogs, Konfiguration,
+Environment oder Credentials. `stack_status` bleibt das bestehende REST-Bundle;
+der Health-Bereich ist stackbezogen und wird nicht durch diese Projektion ersetzt.
 
 ## Geplante Erweiterungen
 

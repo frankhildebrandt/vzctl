@@ -17,6 +17,19 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_"],
   build: {
     target: "esnext",
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "graph-utils", test: /node_modules\/@antv\/x6\/es\/(common|geometry)\//, priority: 10 },
+            { name: "graph", test: /node_modules\/@antv\// },
+            { name: "react", test: /node_modules\/(react|react-dom|scheduler)\// },
+            { name: "routing", test: /node_modules\/@tanstack\// },
+            { name: "config", test: /node_modules\/(zod|yaml)\// },
+          ],
+        },
+      },
+    },
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_DEBUG,
   },

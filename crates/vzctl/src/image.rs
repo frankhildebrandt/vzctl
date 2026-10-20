@@ -1564,10 +1564,7 @@ pub fn resolve_alias(images_dir: &Path, alias: &str) -> Result<Option<PathBuf>, 
 }
 
 /// Prefer a tagged sealed image for VM create (`vm create --from <alias>`).
-pub fn resolve_alias_for_vm(
-    images_dir: &Path,
-    alias: &str,
-) -> Result<Option<PathBuf>, String> {
+pub fn resolve_alias_for_vm(images_dir: &Path, alias: &str) -> Result<Option<PathBuf>, String> {
     if tagged_seal_ready(images_dir, alias, DEFAULT_IMAGE_TAG)? {
         return resolve_alias_tag(images_dir, alias, DEFAULT_IMAGE_TAG);
     }
@@ -1646,44 +1643,6 @@ pub fn resolve_alias_tag(
         return Ok(Some(path));
     }
     Ok(None)
-}
-
-/// Recorded guest-toolkit version for a tagged artifact, when present.
-pub fn tagged_agent_version(
-    images_dir: &Path,
-    alias: &str,
-    tag: &str,
-) -> Result<Option<String>, String> {
-    if !valid_image_tag(tag) {
-        return Err(format!("invalid image tag {tag}"));
-    }
-    let Some(manifest) = read_alias_manifest(images_dir, alias)? else {
-        return Ok(None);
-    };
-    let Some(entry) = manifest.pointer(&format!("/tags/{tag}")) else {
-        return Ok(None);
-    };
-    Ok(entry
-        .pointer("/baked_image/agent_version")
-        .and_then(Value::as_str)
-        .or_else(|| entry.pointer("/sealed_image/agent_version").and_then(Value::as_str))
-        .map(str::to_string))
-}
-
-/// True when `alias`/`tag` is sealed and matches the current guest-toolkit version.
-pub fn tagged_seal_current(
-    images_dir: &Path,
-    alias: &str,
-    tag: &str,
-    agent_version: &str,
-) -> Result<bool, String> {
-    if !tagged_seal_ready(images_dir, alias, tag)? {
-        return Ok(false);
-    }
-    let Some(recorded) = tagged_agent_version(images_dir, alias, tag)? else {
-        return Ok(false);
-    };
-    Ok(recorded == agent_version)
 }
 
 /// True when `alias`/`tag` already has a sealed raw + seal marker (apply skip path).
@@ -1971,7 +1930,8 @@ pub fn mark_aliases_baked(
         let any_sealed = manifest["tags"]
             .as_object()
             .map(|tags| {
-                tags.values().any(|entry| entry.get("sealed") == Some(&Value::Bool(true)))
+                tags.values()
+                    .any(|entry| entry.get("sealed") == Some(&Value::Bool(true)))
             })
             .unwrap_or(false);
         manifest["sealed"] = Value::Bool(any_sealed);
@@ -2203,9 +2163,9 @@ fn safe_relative_image_path(
 
 fn is_safe_alias(alias: &str) -> bool {
     !alias.is_empty()
-        && alias
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        && alias.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 fn state_error(error: io::Error) -> PullFailure {
@@ -2245,8 +2205,10 @@ mod tests {
     }
 
     fn temporary_directory(name: &str) -> PathBuf {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let fixture = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "vzctl-image-{name}-{}-{}",
+            "vzctl-image-{name}-{fixture}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2645,11 +2607,18 @@ mod tests {
         assert!(already_baked(&directory, "test-latest", "v2", "9.9.9")
             .unwrap()
             .is_none());
-        assert!(tagged_seal_current(&directory, "test-latest", "v1", "9.9.9").unwrap());
-        assert!(!tagged_seal_current(&directory, "test-latest", "v1", "0.0.1").unwrap());
         assert!(already_baked(&directory, "test-latest", "v1", "0.0.1")
             .unwrap()
             .is_none());
+        // A loose raw file is not a registered artifact pin.
+        fs::write(directory.join("sealed/test-latest@v2.raw"), b"orphan").unwrap();
+        assert!(!tagged_seal_ready(&directory, "test-latest", "v2").unwrap());
+        // Missing seal prerequisites must not be mistaken for a reusable pin.
+        fs::remove_file(&marker).unwrap();
+        assert!(!tagged_seal_ready(&directory, "test-latest", "v1").unwrap());
+        fs::write(&marker, b"{}").unwrap();
+        fs::remove_file(&sealed).unwrap();
+        assert!(!tagged_seal_ready(&directory, "test-latest", "v1").unwrap());
         fs::remove_dir_all(directory).unwrap();
     }
 

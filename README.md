@@ -2,7 +2,7 @@
 
 macOS Virtualization.framework–based **devstack supervisor**: Git-native multi-VM environments, custom networks, Hypervisor-DNS, linked clones, Docker context.
 
-> Status: **P3 Alpha** (`hypernetwork/v1` Schema + Validate stehen). See [`docs/planing/`](docs/planing/).
+> Status: **Alpha**. Deklarative VM-/Docker-Stacks, Ingress/OIDC und die native UI sind verfügbar. K3s und gemeinsame Dienst-Controller befinden sich in der Live-Abnahme; der aktuelle Arbeitsstand ist noch kein veröffentlichtes Release. Fortschritt und offene Kriterien: [`docs/planing/`](docs/planing/).
 
 ## Quick start
 
@@ -15,7 +15,7 @@ cargo run -p vzctl -- doctor
 cargo run -p vzctl -- events subscribe --filter 'vm.*,apply.*'
 cargo run -p vzctl -- validate -C ./examples/edge-dmz
 
-# Daemon stubs (macOS 26+)
+# Daemons bauen (macOS 26+)
 cd daemon && swift build
 .build/debug/vz-supervisor doctor
 .build/debug/vz-helper version
@@ -28,7 +28,7 @@ Exitcodes und Abhilfen stehen in der
 standardmäßig unter `~/Library/Application Support/vzctl/`;
 `VZCTL_STATE_DIR` überschreibt den Pfad für Entwicklung und Tests.
 
-`make install` installiert `vzctl`, `vz-supervisor` und `vz-helper`
+`make install` installiert CLI, MCP-Server und die Host-Daemons
 benutzerlokal nach `~/.local/bin`. Der Supervisor wird als
 `~/Library/LaunchAgents/com.vzctl.supervisor.plist` registriert und sofort
 gestartet. Bei einer bestehenden Installation werden die geprüften Binaries
@@ -61,14 +61,28 @@ make validate        # examples/edge-dmz Schema
 make ui-install && make ui-dev
 ```
 
+## Tests
+
+`make ci` prüft Formatierung, Tests, Builds, Schema und UI-Verträge. Die
+Zertifikatstests benötigen OpenSSL 3 oder neuer für die strikte Prüfung der
+vollständigen Zertifikatskette. Auf macOS:
+
+```bash
+brew install openssl@3
+VZCTL_TEST_OPENSSL="$(brew --prefix openssl@3)/bin/openssl" make test-cli
+```
+
+Die CI stellt diese Abhängigkeit ausdrücklich bereit; die Prüfung wird bei
+fehlendem OpenSSL nicht übersprungen.
+
 ## Layout
 
 | Path | Role |
 |---|---|
 | `crates/vzctl` | Rust CLI (`doctor`, stacks, certs, oidc, …) |
-| `daemon/` | Swift `vz-supervisor` + `vz-helper` (ADR 0002) |
+| `daemon/` | Swift `vz-net`, `vz-edge`, `vz-supervisor` und `vz-helper` (ADR 0002) |
 | `daemon/Vendor/` | Gepinnte Caddy/Dex/qemu-img-Binaries (`make vendor`) |
-| `apps/vzctl-ui/` | Tauri 2 UI (CLI-Wrapper) |
+| `apps/vzctl-ui/` | Tauri 2 UI mit Supervisor-REST über lokale Unix-Sockets |
 | `guest-agent/` | vsock Guest-Agent |
 | `docs/adr/` | Accepted ADRs (macOS 26, process ownership, apply) |
 | `docs/spikes/g0-network.md` | G0 network/DNS/crash spike |
@@ -94,6 +108,8 @@ Aktueller Release: [Latest Release](https://github.com/frankhildebrandt/vzctl/re
 | [hypernetwork/v1](docs/specs/hypernetwork-v1.md) | Config-Schema, Validierung und JSON-Pfade |
 | [Event Stream v1](docs/specs/events-v1.md) | NDJSON-Envelope, Typen und Filter |
 | [Router und Policies](docs/routes.md) | nftables Forward-Policies, Plan und Status |
+| [Dienst-Controller und K3s](docs/specs/service-controllers-v1.md) | Deklarative Dienste, Kubernetes-Manifestreferenzen, Bindings und Agent-Verträge |
+| [Controller-Lab](docs/planing/07-controller-lab-acceptance.md) | Laufende Live-Abnahme und offene Releasekriterien |
 
 ## License
 

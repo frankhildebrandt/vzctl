@@ -53,24 +53,26 @@ struct Failure {
 pub(crate) fn command(args: impl Iterator<Item = String>, socket_path: &Path) -> ExitCode {
     let args = args.collect::<Vec<_>>();
     let requested_format = requested_format(&args);
+    let command = match args.first().map(String::as_str) {
+        Some("plan") => "route.plan",
+        Some("apply") => "route.apply",
+        Some("status") => "route.status",
+        _ => "route",
+    };
     let options = match parse(args.into_iter()) {
         Ok(options) => options,
         Err(failure) => {
-            emit_failure(requested_format, "route", &failure);
+            emit_failure(requested_format, command, &failure);
             return ExitCode::from(failure.code);
         }
     };
-    let policies = match policies_for(&options) {
-        Ok(policies) => policies,
+    let params = match request_params(&options) {
+        Ok(params) => params,
         Err(failure) => {
             emit_failure(options.format, options.action.command(), &failure);
             return ExitCode::from(failure.code);
         }
     };
-    let params = json!({
-        "router": options.router,
-        "policies": policies,
-    });
     match rpc(socket_path, options.action.command(), params) {
         Ok(result) => {
             let routers = result["routers"].as_array().cloned().unwrap_or_default();
@@ -168,15 +170,21 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, Failure> {
     })
 }
 
-fn policies_for(options: &Options) -> Result<Value, Failure> {
+fn request_params(options: &Options) -> Result<Value, Failure> {
     if options.action == Action::Status {
-        return Ok(json!([]));
+        return Ok(json!({"router":options.router,"policies":[]}));
     }
     let explicit = options.config.as_deref();
     let default = Path::new(DEFAULT_CONFIG);
     let path = explicit.or_else(|| default.is_file().then_some(default));
     let Some(path) = path else {
-        return Ok(json!([]));
+        if options.router.is_none() {
+            return Err(Failure::new(
+                EXIT_INVALID,
+                "route plan/apply requires a config with spec.project or explicit --router",
+            ));
+        }
+        return Ok(json!({"router":options.router,"policies":[]}));
     };
     let source = fs::read_to_string(path).map_err(|error| {
         Failure::new(
@@ -190,13 +198,51 @@ fn policies_for(options: &Options) -> Result<Value, Failure> {
             format!("parse policy config {}: {error}", path.display()),
         )
     })?;
+    let project = match root.pointer("/spec/project") {
+        None => None,
+        Some(Value::String(project))
+            if project
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                && project
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) =>
+        {
+            Some(project.as_str())
+        }
+        Some(_) => {
+            return Err(Failure::new(
+                EXIT_INVALID,
+                "invalid spec.project in route config",
+            ))
+        }
+    };
+    if project.is_none() && options.router.is_none() {
+        return Err(Failure::new(
+            EXIT_INVALID,
+            "route config without spec.project requires explicit --router",
+        ));
+    }
+    let router = match (project, options.router.as_deref()) {
+        (Some(project), Some(router)) if !router.contains('/') => {
+            Some(format!("{project}/{router}"))
+        }
+        (Some(project), Some(router)) if !router.starts_with(&format!("{project}/")) => {
+            return Err(Failure::new(
+                EXIT_INVALID,
+                format!("router {router} is outside project {project}"),
+            ))
+        }
+        (_, router) => router.map(str::to_owned),
+    };
     let policies = root
         .pointer("/spec/policies")
         .or_else(|| root.get("policies"))
         .cloned()
         .unwrap_or_else(|| json!([]));
     validate_policies(&policies)?;
-    Ok(policies)
+    Ok(json!({"project":project,"router":router,"policies":policies}))
 }
 
 fn validate_policies(policies: &Value) -> Result<(), Failure> {
@@ -395,23 +441,16 @@ fn success_envelope(command: &str, routers: Vec<Value>, changed: bool, rule_coun
 }
 
 fn emit_failure(format: Format, command: &str, failure: &Failure) {
-    match format {
-        Format::Human => eprintln!("{}", failure.message),
-        Format::Json => eprintln!(
-            "{}",
-            json!({
-                "apiVersion": API_VERSION,
-                "command": command,
-                "status": "error",
-                "exit_code": failure.code,
-                "error": { "message": failure.message },
-            })
-        ),
-    }
+    crate::emit_command_failure(
+        format == Format::Json,
+        command,
+        failure.code,
+        &failure.message,
+    );
 }
 
 fn usage() -> &'static str {
-    "usage: vzctl route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]\n       vzctl route status [--router <vm-id>] [--format human|json]"
+    "usage: vzctl route apply|plan [--config <path>] [--router <vm-id>] [--format human|json]\n       vzctl route status [--router <vm-id>] [--format human|json]\nplan/apply requires spec.project in config or explicit --router; status may read all projects"
 }
 
 impl Failure {
@@ -426,6 +465,36 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_project_scopes_route_requests_and_rejects_foreign_explicit_router() {
+        let path = std::env::temp_dir().join(format!("vz-route-scope-{}.yaml", std::process::id()));
+        fs::write(&path, "spec:\n  project: lab.dev\n  policies: []\n").unwrap();
+        let mut options = Options {
+            action: Action::Plan,
+            router: None,
+            config: Some(path.clone()),
+            format: Format::Json,
+        };
+        assert_eq!(request_params(&options).unwrap()["project"], "lab.dev");
+        options.router = Some("ops".into());
+        assert_eq!(request_params(&options).unwrap()["router"], "lab.dev/ops");
+        options.router = Some("lab.dev/ops".into());
+        assert_eq!(request_params(&options).unwrap()["router"], "lab.dev/ops");
+        options.router = Some("lab.dev-other/ops".into());
+        assert!(request_params(&options).is_err());
+        options.router = None;
+        fs::write(&path, "spec:\n  project: ../lab\n  policies: []\n").unwrap();
+        assert!(request_params(&options).is_err());
+        fs::write(&path, "policies: []\n").unwrap();
+        assert!(request_params(&options).is_err());
+        options.router = Some("manual-router".into());
+        assert_eq!(request_params(&options).unwrap()["router"], "manual-router");
+        options.action = Action::Status;
+        options.router = None;
+        assert!(request_params(&options).is_ok());
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn parses_policy_operations() {

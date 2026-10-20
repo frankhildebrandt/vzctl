@@ -1,4 +1,5 @@
 import { api, encodeId } from "@/lib/api";
+import { assertEnvelopeOk } from "@/lib/vzctl";
 
 export type DebugSourceTypeSummary = {
   default: string;
@@ -55,11 +56,15 @@ export function debugDoctorPath(stackId: string): string {
 }
 
 export async function fetchDebugSources(stackId: string) {
-  return api.get<DebugSourcesListResponse>(debugSourcesPath(stackId));
+  const response = await api.get<DebugSourcesListResponse>(debugSourcesPath(stackId));
+  assertEnvelopeOk(response, "debug sources failed");
+  return response;
 }
 
 export async function fetchDebugDoctor(stackId: string) {
-  return api.get<DebugDoctorResponse>(debugDoctorPath(stackId));
+  const response = await api.get<DebugDoctorResponse>(debugDoctorPath(stackId));
+  assertEnvelopeOk(response, "debug doctor failed");
+  return response;
 }
 
 export async function runPostgresQuery(

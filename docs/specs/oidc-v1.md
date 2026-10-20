@@ -104,8 +104,10 @@ Without `passwordFile`/`uplink`, Dex ships a default `admin` / `password`.
 ```bash
 vzctl oidc status
 vzctl oidc clients
-vzctl oidc token [--client ID]
 ```
+
+`oidc token` ist nur ein Hinweis-Command und liefert Exit `2`, kein Token.
+Für Tokenbezug Auth Code + PKCE im Browser gegen den Issuer verwenden.
 
 ## Acceptance
 

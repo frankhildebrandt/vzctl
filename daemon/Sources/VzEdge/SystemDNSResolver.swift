@@ -3,6 +3,7 @@ import Foundation
 import dnssd
 
 struct SystemDNSRecord: Equatable, Sendable {
+    var name: String
     var type: UInt16
     var dnsClass: UInt16
     var ttl: UInt32
@@ -21,13 +22,18 @@ enum SystemDNSResolver {
         defer { context.release() }
         var service: DNSServiceRef?
         let callback: DNSServiceQueryRecordReply = {
-            _, flags, _, errorCode, _, rrtype, rrclass, rdlen, rdata, ttl, rawContext in
+            _, flags, _, errorCode, fullname, rrtype, rrclass, rdlen, rdata, ttl, rawContext in
             guard let rawContext else { return }
             let target = Unmanaged<SystemDNSQueryBox>.fromOpaque(rawContext).takeUnretainedValue()
             switch Int(errorCode) {
             case kDNSServiceErr_NoError:
-                if flags & kDNSServiceFlagsAdd != 0, let rdata {
+                if flags & kDNSServiceFlagsAdd != 0 {
+                    guard let fullname, let rdata else {
+                        target.fail()
+                        return
+                    }
                     target.append(SystemDNSRecord(
+                        name: String(cString: fullname),
                         type: rrtype,
                         dnsClass: rrclass,
                         ttl: ttl,
@@ -79,26 +85,92 @@ enum SystemDNSResolver {
         question: DNSQuestion,
         records: [SystemDNSRecord]
     ) -> Data {
+        // DNS-SD may deliver CNAME intermediates and terminal addresses with
+        // different owners. Repointing every RR to the question corrupts the chain.
+        var owners: [Data] = []
+        for record in records {
+            guard let owner = encodeOwner(record.name), record.rdata.count <= Int(UInt16.max) else {
+                return failureResponse(request: request, question: question)
+            }
+            owners.append(owner)
+        }
+        guard records.count <= Int(UInt16.max) else {
+            return failureResponse(request: request, question: question)
+        }
         var response = Data()
         append16(read16(request, 0) ?? 0, to: &response)
         let requestFlags = read16(request, 2) ?? 0
         append16(0x8080 | (requestFlags & 0x0100), to: &response)
         append16(1, to: &response)
-        append16(UInt16(clamping: records.count), to: &response)
+        append16(UInt16(records.count), to: &response)
         append16(0, to: &response)
         append16(0, to: &response)
         if request.count >= question.endOffset {
             response.append(request[12 ..< question.endOffset])
         }
-        for record in records.prefix(Int(UInt16.max)) {
-            append16(0xC00C, to: &response)
+        for (record, owner) in zip(records, owners) {
+            response.append(owner)
             append16(record.type, to: &response)
             append16(record.dnsClass, to: &response)
             append32(record.ttl, to: &response)
-            append16(UInt16(clamping: record.rdata.count), to: &response)
-            response.append(record.rdata.prefix(Int(UInt16.max)))
+            append16(UInt16(record.rdata.count), to: &response)
+            response.append(record.rdata)
         }
         return response
+    }
+
+    private static func failureResponse(request: Data, question: DNSQuestion) -> Data {
+        var packet = response(request: request, question: question, records: [])
+        packet[3] |= 2 // SERVFAIL, never send a partially encoded answer.
+        return packet
+    }
+
+    /// DNSServiceQueryRecord supplies escaped UTF-8 presentation names: \ddd
+    /// encodes one decimal byte; any other escaped character is literal.
+    private static func encodeOwner(_ name: String) -> Data? {
+        if name == "." { return Data([0]) }
+        let bytes = Array(name.utf8)
+        guard !bytes.isEmpty else { return nil }
+        var wire = Data()
+        var label: [UInt8] = []
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 46 { // Unescaped label separator.
+                guard !label.isEmpty else { return nil }
+                wire.append(UInt8(label.count))
+                wire.append(contentsOf: label)
+                label.removeAll(keepingCapacity: true)
+            } else if byte == 92 {
+                index += 1
+                guard index < bytes.count else { return nil }
+                var escaped = bytes[index]
+                if index + 2 < bytes.count,
+                   (48...57).contains(bytes[index]),
+                   (48...57).contains(bytes[index + 1]),
+                   (48...57).contains(bytes[index + 2]) {
+                    let value = Int(bytes[index] - 48) * 100
+                        + Int(bytes[index + 1] - 48) * 10 + Int(bytes[index + 2] - 48)
+                    if value <= 255 {
+                        escaped = UInt8(value)
+                        index += 2
+                    }
+                }
+                label.append(escaped)
+            } else {
+                guard byte != 0 else { return nil }
+                label.append(byte)
+            }
+            guard label.count <= 63, wire.count + label.count <= 254 else { return nil }
+            index += 1
+        }
+        if !label.isEmpty {
+            wire.append(UInt8(label.count))
+            wire.append(contentsOf: label)
+        }
+        wire.append(0)
+        guard wire.count <= 255 else { return nil }
+        return wire
     }
 
     private static func read16(_ data: Data, _ offset: Int) -> UInt16? {

@@ -8,6 +8,13 @@ Read-only observability queries against Postgres, MySQL, and NATS declared in
 
 See [hypernetwork-v1.md](hypernetwork-v1.md) § Observability → dataSources.
 
+Source `host` accepts `.vz.test` names, private RFC1918 IPv4 addresses, and
+IPv4 loopback (`127.0.0.0/8`). Loopback refers to the selected **via VM**, not
+the macOS host. For a PostgreSQL listener bound to `127.0.0.1:5432` inside
+`main-node`, use `via: main-node`, `host: 127.0.0.1`, and `port: 5432`.
+A valid existing `via` VM remains mandatory; per-entry `via` overrides must
+also reference an existing VM. Public IP addresses remain rejected.
+
 ## CLI
 
 ```bash

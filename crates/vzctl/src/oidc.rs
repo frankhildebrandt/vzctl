@@ -4,6 +4,7 @@ use crate::config::OidcUplink;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
+#[cfg(test)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -65,6 +66,14 @@ pub(crate) fn command(
     _socket: &Path,
 ) -> ExitCode {
     let args = args.collect::<Vec<_>>();
+    let requested = if args
+        .windows(2)
+        .any(|pair| pair[0] == "--format" && pair[1] == "json")
+    {
+        Format::Json
+    } else {
+        Format::Human
+    };
     let mut iter = args.into_iter();
     let Some(subcommand) = iter.next() else {
         usage();
@@ -73,31 +82,28 @@ pub(crate) fn command(
     match subcommand.as_str() {
         "status" => match parse_format(iter) {
             Ok(format) => status(format, state_dir),
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::from(EXIT_USAGE)
-            }
+            Err(message) => emit_failure(requested, "oidc.status", EXIT_USAGE, message),
         },
         "clients" => match parse_format(iter) {
             Ok(format) => clients(format, state_dir),
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::from(EXIT_USAGE)
-            }
+            Err(message) => emit_failure(requested, "oidc.clients", EXIT_USAGE, message),
         },
-        "token" => {
-            eprintln!("vzctl oidc token: use Auth Code + PKCE via browser against the issuer");
-            ExitCode::from(EXIT_USAGE)
-        }
+        "token" => emit_failure(
+            requested,
+            "oidc.token",
+            EXIT_USAGE,
+            "vzctl oidc token: use Auth Code + PKCE via browser against the issuer".into(),
+        ),
         "-h" | "--help" | "help" => {
             usage();
             ExitCode::from(EXIT_USAGE)
         }
-        other => {
-            eprintln!("unknown oidc subcommand: {other}");
-            usage();
-            ExitCode::from(EXIT_USAGE)
-        }
+        other => emit_failure(
+            requested,
+            "oidc",
+            EXIT_USAGE,
+            format!("unknown oidc subcommand: {other}"),
+        ),
     }
 }
 
@@ -328,10 +334,7 @@ fn status(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCod
 
     let host = match load_host_uplink(state_dir) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(EXIT_FAILED);
-        }
+        Err(e) => return emit_failure(format, "oidc.status", EXIT_FAILED, e),
     };
 
     let project_for_uplink = resolved_project.as_deref().or(project.as_deref());
@@ -467,8 +470,12 @@ fn read_live_oidc_pid(runtime: &Path) -> Option<i32> {
 fn clients(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCode {
     let (format, project) = format_project;
     let Some(project) = project else {
-        eprintln!("oidc clients requires --project");
-        return ExitCode::from(EXIT_USAGE);
+        return emit_failure(
+            format,
+            "oidc.clients",
+            EXIT_USAGE,
+            "oidc clients requires --project".into(),
+        );
     };
     let path = clients_path(state_dir, &project);
     let data = if path.exists() {
@@ -476,13 +483,21 @@ fn clients(format_project: (Format, Option<String>), state_dir: &Path) -> ExitCo
             Ok(raw) => match serde_json::from_str::<Value>(&raw) {
                 Ok(value) => value,
                 Err(e) => {
-                    eprintln!("parse clients.json: {e}");
-                    return ExitCode::from(EXIT_FAILED);
+                    return emit_failure(
+                        format,
+                        "oidc.clients",
+                        EXIT_FAILED,
+                        format!("parse clients.json: {e}"),
+                    );
                 }
             },
             Err(e) => {
-                eprintln!("read clients.json: {e}");
-                return ExitCode::from(EXIT_FAILED);
+                return emit_failure(
+                    format,
+                    "oidc.clients",
+                    EXIT_FAILED,
+                    format!("read clients.json: {e}"),
+                );
             }
         }
     } else {
@@ -516,6 +531,9 @@ fn emit(format: Format, command: &str, data: Value) {
                     "kind": "Result",
                     "ok": true,
                     "command": command,
+                    "status": "ok",
+                    "exit_code": 0,
+                    "summary": {"message": format!("{command} completed")},
                     "data": data,
                 }))
                 .unwrap()
@@ -527,13 +545,91 @@ fn emit(format: Format, command: &str, data: Value) {
     }
 }
 
+fn emit_failure(format: Format, command: &str, code: u8, message: String) -> ExitCode {
+    eprintln!("{message}");
+    if format == Format::Json {
+        println!(
+            "{}",
+            json!({
+                "apiVersion": API_VERSION, "command": command, "status": "fail",
+                "exit_code": code, "summary": {"message": message},
+                "kind": "Error", "ok": false, "error": {"message": message, "code": code},
+            })
+        );
+    }
+    ExitCode::from(code)
+}
+
 /// Generate Dex static client entries for `clients: auto`.
 pub(crate) fn auto_clients(
+    state_dir: &Path,
     project: &str,
     domain: &str,
     vm_names: &[String],
     route_hosts: &[(String, Vec<String>)],
-) -> Value {
+    claims: &std::collections::BTreeMap<String, crate::controllers::ClaimConfig>,
+) -> Result<Value, String> {
+    use crate::controllers::storage::{FileSecretStore, PrivateDirectory};
+    use crate::controllers::ControllerError;
+    let invalid =
+        || ControllerError::new("InvalidOidcState", "existing OIDC client state is invalid");
+    let path = project_oidc_dir(state_dir, project);
+    let directory = PrivateDirectory::open(&path).map_err(|error| error.to_string())?;
+    directory.locked(|| {
+        let mut previous = std::collections::BTreeMap::<String, String>::new();
+        let mut owners = std::collections::BTreeMap::<String, String>::new();
+        if let Some(raw) = directory.read("clients.json")? {
+            let value: Value = serde_json::from_slice(&raw).map_err(|_| invalid())?;
+            if value["project"].as_str() != Some(project) { return Err(invalid()); }
+            for client in value["clients"].as_array().ok_or_else(invalid)? {
+                let id = client["id"].as_str().filter(|s| !s.is_empty()).ok_or_else(invalid)?;
+                let secret = client["secret"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(invalid)?;
+                if previous.insert(id.into(), secret.into()).is_some() { return Err(invalid()); }
+                if let Some(owner) = client.get("vzctlOwner") {
+                    owners.insert(id.into(), owner.as_str().filter(|s| !s.is_empty()).ok_or_else(invalid)?.into());
+                }
+            }
+        }
+        let secrets = FileSecretStore::new(path.join("client-secrets"))?;
+        let conflict = || ControllerError::new("OwnershipConflict", "OIDC client ID already belongs to another owner or an automatic client");
+        let mut secret_for = |name: &str| {
+            if owners.contains_key(name) { return Err(conflict()); }
+            secrets.get_or_import(name, previous.get(name).map(String::as_str))
+        };
+        let mut data = build_auto_clients(project, domain, vm_names, route_hosts, &mut secret_for)?;
+        let clients = data["clients"].as_array_mut().ok_or_else(invalid)?;
+        for (claim_name, claim) in claims.iter().filter(|(_, c)| c.kind == crate::controllers::ServiceKind::Oidc) {
+            let id = claim.client_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(invalid)?;
+            let owner = format!("{project}/{claim_name}");
+            if clients.iter().any(|client| client["id"] == id)
+                || (previous.contains_key(id) && owners.get(id) != Some(&owner)) {
+                return Err(conflict());
+            }
+            let scopes = claim.scopes.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+            if !scopes.is_empty() && scopes != DEFAULT_SCOPES.iter().copied().collect() {
+                return Err(ControllerError::new("UnsupportedOidcScopes",
+                    "OIDC supports the fixed openid/profile/email scopes; per-client scope restrictions are unsupported"));
+            }
+            if claim.redirect_uris.is_empty() {
+                return Err(ControllerError::new("InvalidOidcClient", "OIDC client requires redirectURIs"));
+            }
+            let secret = secrets.get_or_import(&format!("claim:{owner}:{id}"), previous.get(id).map(String::as_str))?;
+            clients.push(json!({"id":id,"name":claim_name,"secret":secret,
+                "redirectURIs":claim.redirect_uris,"public":false,"vzctlOwner":owner}));
+        }
+        let bytes = serde_json::to_vec_pretty(&data).map_err(|_| invalid())?;
+        directory.write("clients.json", &bytes)?;
+        Ok(data)
+    }).map_err(|error| error.to_string())
+}
+
+fn build_auto_clients(
+    project: &str,
+    domain: &str,
+    vm_names: &[String],
+    route_hosts: &[(String, Vec<String>)],
+    secret_for: &mut impl FnMut(&str) -> crate::controllers::ControllerResult<String>,
+) -> crate::controllers::ControllerResult<Value> {
     let mut clients = Vec::new();
     for name in vm_names {
         let host = route_hosts
@@ -541,7 +637,7 @@ pub(crate) fn auto_clients(
             .find(|(h, reqs)| reqs.iter().any(|r| r == "oidc") && h.contains(name.as_str()))
             .map(|(h, _)| h.clone())
             .unwrap_or_else(|| format!("{name}.svc.{domain}"));
-        let secret = generate_secret(name);
+        let secret = secret_for(name)?;
         clients.push(json!({
             "id": name,
             "secret": secret,
@@ -558,7 +654,7 @@ pub(crate) fn auto_clients(
         if clients.iter().any(|c| c["id"] == short) {
             continue;
         }
-        let secret = generate_secret(short);
+        let secret = secret_for(short)?;
         clients.push(json!({
             "id": short,
             "secret": secret,
@@ -567,41 +663,11 @@ pub(crate) fn auto_clients(
             "public": false,
         }));
     }
-    json!({
+    Ok(json!({
         "project": project,
         "issuer": format!("https://auth.svc.{domain}"),
         "clients": clients,
-    })
-}
-
-fn generate_secret(seed: &str) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(b"vzctl-oidc-v1:");
-    hasher.update(seed.as_bytes());
-    hasher.update(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_string())
-            .unwrap_or_default()
-            .as_bytes(),
-    );
-    format!("{:x}", hasher.finalize())
-}
-
-/// Persist clients JSON (secrets) under Application Support.
-pub(crate) fn write_clients(
-    state_dir: &Path,
-    project: &str,
-    data: &Value,
-) -> Result<PathBuf, String> {
-    let dir = project_oidc_dir(state_dir, project);
-    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = clients_path(state_dir, project);
-    let raw = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
-    fs::write(&path, raw).map_err(|e| format!("write {}: {e}", path.display()))?;
-    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    Ok(path)
+    }))
 }
 
 /// Persist host uplink YAML (no secret inline) under Application Support.
@@ -902,12 +968,16 @@ mod tests {
     use crate::config::{OidcUplink, OidcUplinkType};
 
     fn test_dir(name: &str) -> PathBuf {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let fixture = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir =
-            std::env::temp_dir().join(format!("vzctl-oidc-{name}-{}-{unique}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "vzctl-oidc-{name}-{fixture}-{}-{unique}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -922,6 +992,202 @@ mod tests {
                 "redirectURIs": ["https://web.svc.example.vz.test/oauth2/callback"]
             }]
         })
+    }
+
+    #[test]
+    fn auto_clients_keep_secrets_across_apply_and_config_changes() {
+        let state = test_dir("stable-auto");
+        let first = auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        let repeated = auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(first, repeated);
+        let changed = auto_clients(
+            &state,
+            "demo",
+            "new.vz.test",
+            &["web".into(), "api".into()],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            first["clients"][0]["secret"],
+            changed["clients"][0]["secret"]
+        );
+        assert_ne!(
+            first["clients"][0]["redirectURIs"],
+            changed["clients"][0]["redirectURIs"]
+        );
+        assert_ne!(
+            changed["clients"][0]["secret"],
+            changed["clients"][1]["secret"]
+        );
+        assert_eq!(
+            fs::metadata(clients_path(&state, "demo"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        // Removal and later re-addition also keeps the durable credential.
+        auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &[],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        let restored = auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(first, restored);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn oidc_claim_updates_preserve_secret_and_enforce_ownership_and_scope_limit() {
+        let state = test_dir("claim-clients");
+        let mut claims: std::collections::BTreeMap<String, crate::controllers::ClaimConfig> =
+            serde_json::from_value(json!({"login":{"kind":"oidc","clientId":"web",
+                "redirectUris":["https://first.test/callback"]}}))
+            .unwrap();
+        let first = auto_clients(&state, "demo", "demo.vz.test", &[], &[], &claims).unwrap();
+        assert_eq!(first["clients"][0]["vzctlOwner"], "demo/login");
+        claims.get_mut("login").unwrap().redirect_uris =
+            vec!["https://second.test/callback".into()];
+        let changed = auto_clients(&state, "demo", "demo.vz.test", &[], &[], &claims).unwrap();
+        assert_eq!(
+            first["clients"][0]["secret"],
+            changed["clients"][0]["secret"]
+        );
+        assert_ne!(
+            first["clients"][0]["redirectURIs"],
+            changed["clients"][0]["redirectURIs"]
+        );
+        let claim = claims.remove("login").unwrap();
+        claims.insert("other-owner".into(), claim);
+        assert!(
+            auto_clients(&state, "demo", "demo.vz.test", &[], &[], &claims)
+                .unwrap_err()
+                .contains("OwnershipConflict")
+        );
+        assert!(auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default()
+        )
+        .unwrap_err()
+        .contains("OwnershipConflict"));
+        let mut claim = claims.remove("other-owner").unwrap();
+        claim.scopes = vec!["openid".into()];
+        claims.insert("login".into(), claim);
+        assert!(
+            auto_clients(&state, "demo", "demo.vz.test", &[], &[], &claims)
+                .unwrap_err()
+                .contains("UnsupportedOidcScopes")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(clients_path(&state, "demo")).unwrap())
+                .unwrap(),
+            changed
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn auto_clients_import_valid_existing_secrets_and_reject_corrupt_or_unsafe_state() {
+        let state = test_dir("import-auto");
+        let dir = project_oidc_dir(&state, "demo");
+        fs::create_dir_all(&dir).unwrap();
+        let path = clients_path(&state, "demo");
+        fs::write(
+            &path,
+            r#"{"project":"demo","clients":[{"id":"web","secret":"existing-secret"}]}"#,
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let result = auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(result["clients"][0]["secret"], "existing-secret");
+        let claims = serde_json::from_value(json!({"login":{"kind":"oidc","clientID":"web",
+            "redirectURIs":["https://web.test/callback"]}}))
+        .unwrap();
+        assert!(
+            auto_clients(&state, "demo", "demo.vz.test", &[], &[], &claims)
+                .unwrap_err()
+                .contains("OwnershipConflict")
+        );
+        fs::write(&path, b"broken json").unwrap();
+        assert!(auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default()
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"broken json");
+        fs::write(&path, serde_json::to_vec(&result).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default()
+        )
+        .is_err());
+        fs::remove_file(&path).unwrap();
+        let target = state.join("untouched");
+        fs::write(&target, b"private").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(auto_clients(
+            &state,
+            "demo",
+            "demo.vz.test",
+            &["web".into()],
+            &[],
+            &Default::default()
+        )
+        .is_err());
+        assert_eq!(fs::read(target).unwrap(), b"private");
+        fs::remove_dir_all(state).unwrap();
     }
 
     #[test]

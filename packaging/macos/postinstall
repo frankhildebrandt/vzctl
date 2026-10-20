@@ -1,155 +1,74 @@
 #!/bin/sh
-# Install LaunchAgents for the console user after the pkg payload lands
-# under /usr/local/bin and /Applications/vzctl.app.
+# Payload replacement follows successful preinstall. Configure and start only.
 set -eu
-
-label_net=com.vzctl.net
-label_edge=com.vzctl.edge
-label_supervisor=com.vzctl.supervisor
-
-console_user=$(stat -f%Su /dev/console)
-if [ -z "$console_user" ] || [ "$console_user" = root ]; then
-  console_user=${USER:-}
-fi
-if [ -z "$console_user" ] || [ "$console_user" = root ]; then
-  echo "postinstall: no console user; skip LaunchAgent setup" >&2
-  exit 0
-fi
-
-console_home=$(dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
-if [ -z "$console_home" ] || [ ! -d "$console_home" ]; then
-  echo "postinstall: cannot resolve home for $console_user" >&2
-  exit 0
-fi
-
-uid=$(id -u "$console_user")
-domain="gui/$uid"
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-stop_helpers="$script_dir/stop-vz-helpers.sh"
+. "$script_dir/installer-common.sh"
+[ "${3:-/}" = / ] || fail "installation is supported only on the current startup volume"
+resolve_console_user
+if [ -z "$console_user" ]; then
+  echo "postinstall: no console user; payload installed, LaunchAgents require a logged-in user" >&2
+  exit 0
+fi
+
+bindir=/usr/local/bin
+libexec=/usr/local/libexec/vzctl
 launch_agents_dir="$console_home/Library/LaunchAgents"
 log_dir="$console_home/Library/Logs/vzctl"
 user_apps="$console_home/Applications"
-bindir=/usr/local/bin
+state_dir="$console_home/Library/Application Support/vzctl"
 agent_path="${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# User-controlled runtime paths must never turn symlinks into privileged writes.
+# The package payload is installed by Installer; per-user files use the user's UID.
+user_run() { sudo -u "$console_user" -- "$@"; }
 
-mkdir -p "$launch_agents_dir" "$log_dir" "$user_apps"
-chmod 700 "$log_dir"
-chown "$console_user" "$log_dir" "$user_apps" 2>/dev/null || true
+for binary in vzctl vzctl-mcp vzctl-oidc-simple vz-net vz-edge vz-supervisor vz-helper vz-dns-bind; do
+  [ -x "$bindir/$binary" ] || fail "missing installed executable $binary"
+done
+for binary in caddy dex qemu-img; do
+  [ -x "$libexec/$binary/$binary" ] || fail "missing installed runtime dependency $binary"
+done
+user_run mkdir -p "$launch_agents_dir" "$log_dir" "$user_apps" "$state_dir/bin" "$state_dir/libexec"
+user_run chmod 700 "$log_dir" "$state_dir"
 
-# Prefer /Applications; also mirror into ~/Applications for parity with make install.
-if [ -d /Applications/vzctl.app ]; then
-  ditto /Applications/vzctl.app "$user_apps/vzctl.app"
-  chown -R "$console_user" "$user_apps/vzctl.app" 2>/dev/null || true
-fi
+user_run ditto /Applications/vzctl.app "$user_apps/vzctl.app"
+user_run install -m 0755 "$libexec/caddy/caddy" "$state_dir/bin/caddy"
+user_run install -m 0755 "$libexec/dex/dex" "$state_dir/bin/dex"
+user_run install -m 0755 "$bindir/vzctl-oidc-simple" "$state_dir/bin/vzctl-oidc-simple"
+user_run ditto "$libexec/qemu-img" "$state_dir/libexec/qemu-img"
 
 write_agent_plist() {
-  plist=$1
-  label=$2
-  binary=$3
-  command=$4
-  log_name=$5
-  plutil -create xml1 "$plist"
-  plutil -insert Label -string "$label" "$plist"
-  plutil -insert ProgramArguments -array "$plist"
-  plutil -insert ProgramArguments.0 -string "$binary" "$plist"
-  plutil -insert ProgramArguments.1 -string "$command" "$plist"
-  plutil -insert RunAtLoad -bool true "$plist"
-  plutil -insert KeepAlive -bool true "$plist"
-  plutil -insert ProcessType -string Background "$plist"
-  plutil -insert EnvironmentVariables -dictionary "$plist"
-  plutil -insert EnvironmentVariables.PATH -string "$agent_path" "$plist"
-  plutil -insert StandardOutPath -string "$log_dir/${log_name}.log" "$plist"
-  plutil -insert StandardErrorPath -string "$log_dir/${log_name}.error.log" "$plist"
-  plutil -lint "$plist"
-  chmod 0644 "$plist"
-  chown "$console_user" "$plist"
+  service=$1
+  plist="$launch_agents_dir/com.vzctl.$service.plist"
+  staged_plist=$(user_run mktemp "$launch_agents_dir/.vzctl-$service.XXXXXX")
+  user_run plutil -create xml1 "$staged_plist"
+  user_run plutil -insert Label -string "com.vzctl.$service" "$staged_plist"
+  user_run plutil -insert ProgramArguments -array "$staged_plist"
+  user_run plutil -insert ProgramArguments.0 -string "$bindir/vz-$service" "$staged_plist"
+  user_run plutil -insert ProgramArguments.1 -string serve "$staged_plist"
+  user_run plutil -insert RunAtLoad -bool true "$staged_plist"
+  user_run plutil -insert KeepAlive -bool true "$staged_plist"
+  user_run plutil -insert ProcessType -string Background "$staged_plist"
+  user_run plutil -insert EnvironmentVariables -dictionary "$staged_plist"
+  user_run plutil -insert EnvironmentVariables.PATH -string "$agent_path" "$staged_plist"
+  user_run plutil -insert StandardOutPath -string "$log_dir/$service.log" "$staged_plist"
+  user_run plutil -insert StandardErrorPath -string "$log_dir/$service.error.log" "$staged_plist"
+  user_run plutil -lint "$staged_plist"
+  user_run chmod 0644 "$staged_plist"
+  user_run mv -f "$staged_plist" "$plist"
 }
+for service in net edge supervisor; do write_agent_plist "$service"; done
 
-agent_loaded() {
-  launchctl print "$domain/$1" >/dev/null 2>&1
-}
-
-wait_agent_gone() {
-  label=$1
-  timeout_tenths=$2
-  i=0
-  while [ "$i" -lt "$timeout_tenths" ]; do
-    if ! agent_loaded "$label"; then
-      return 0
-    fi
-    i=$((i + 1))
-    sleep 0.1
-  done
-  return 1
-}
-
-wait_sock() {
-  path=$1
-  timeout_tenths=$2
-  i=0
-  while [ "$i" -lt "$timeout_tenths" ]; do
-    if [ -S "$path" ]; then
-      return 0
-    fi
-    i=$((i + 1))
-    sleep 0.1
-  done
-  return 1
-}
-
-# Recreating vz-net disconnects helper-side serialized refs. Stop VMs first;
-# never continue to vz-net while a helper refuses graceful shutdown.
-if [ ! -x "$stop_helpers" ]; then
-  echo "postinstall: missing executable: $stop_helpers" >&2
-  exit 3
-fi
-"$stop_helpers" "$uid"
-
-# Stop existing agents before rewriting plists (vz-net graceful only).
-if agent_loaded "$label_supervisor"; then
-  launchctl bootout "$domain/$label_supervisor" >/dev/null 2>&1 || true
-  wait_agent_gone "$label_supervisor" 100 || true
-fi
-if agent_loaded "$label_edge"; then
-  launchctl bootout "$domain/$label_edge" >/dev/null 2>&1 || true
-  wait_agent_gone "$label_edge" 100 || true
-fi
-if agent_loaded "$label_net"; then
-  launchctl bootout "$domain/$label_net" >/dev/null 2>&1 || true
-  wait_agent_gone "$label_net" 600 || true
-fi
-
-net_plist="$launch_agents_dir/$label_net.plist"
-edge_plist="$launch_agents_dir/$label_edge.plist"
-supervisor_plist="$launch_agents_dir/$label_supervisor.plist"
-
-write_agent_plist "$net_plist" "$label_net" "$bindir/vz-net" serve net
-write_agent_plist "$edge_plist" "$label_edge" "$bindir/vz-edge" serve edge
-write_agent_plist "$supervisor_plist" "$label_supervisor" "$bindir/vz-supervisor" serve supervisor
-
-state_dir="$console_home/Library/Application Support/vzctl"
-net_sock="$state_dir/net.sock"
-edge_sock="$state_dir/edge.sock"
-mkdir -p "$state_dir"
-chown "$console_user" "$state_dir" 2>/dev/null || true
-if [ -d /usr/local/libexec/vzctl/qemu-img ]; then
-  mkdir -p "$state_dir/libexec"
-  ditto /usr/local/libexec/vzctl/qemu-img "$state_dir/libexec/qemu-img"
-  chown -R "$console_user" "$state_dir/libexec" 2>/dev/null || true
-fi
-
-launchctl bootstrap "$domain" "$net_plist" 2>/dev/null || launchctl enable "$domain/$label_net" 2>/dev/null || true
-launchctl kickstart "$domain/$label_net" 2>/dev/null || true
-wait_sock "$net_sock" 100 || true
-
-launchctl bootstrap "$domain" "$edge_plist" 2>/dev/null || true
-launchctl kickstart -k "$domain/$label_edge" 2>/dev/null || true
-wait_sock "$edge_sock" 100 || true
-
-launchctl bootstrap "$domain" "$supervisor_plist" 2>/dev/null || true
-launchctl kickstart -k "$domain/$label_supervisor" 2>/dev/null || true
-
-echo "postinstall: LaunchAgents for $console_user under $launch_agents_dir"
-echo "postinstall: app at /Applications/vzctl.app (and $user_apps/vzctl.app)"
+# Preinstall proved all old owners stopped; remove only leftover socket entries.
+for socket in net.sock edge.sock vz.sock api.sock; do
+  if [ -S "$state_dir/$socket" ]; then user_run rm -f "$state_dir/$socket"; fi
+done
+for service in net edge supervisor; do
+  label="com.vzctl.$service"
+  launchctl bootstrap "$domain" "$launch_agents_dir/$label.plist"
+  launchctl kickstart "$domain/$label"
+  launchctl print "$domain/$label" >/dev/null
+  case "$service" in supervisor) wait_sock "$state_dir/vz.sock" ;; *) wait_sock "$state_dir/$service.sock" ;; esac
+done
+wait_sock "$state_dir/api.sock"
+echo "postinstall: started net → edge → supervisor for $console_user"
 echo "postinstall: guest DNS :53 → sudo vzctl dns install-bind-helper"
-exit 0

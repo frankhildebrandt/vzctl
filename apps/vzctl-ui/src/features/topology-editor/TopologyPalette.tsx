@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "@/store/editorStore";
 import {
   PaletteKindIcon,
@@ -52,6 +52,8 @@ export function TopologyPalette({ onClickCreate, onDragStart }: Props) {
   const setFilter = useEditorStore((s) => s.setPaletteFilter);
   const [dragging, setDragging] = useState<string | null>(null);
   const draggedRef = useRef(false);
+  const cleanupDragRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanupDragRef.current?.(), []);
 
   const items = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -86,20 +88,29 @@ export function TopologyPalette({ onClickCreate, onDragStart }: Props) {
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
                 draggedRef.current = false;
-                setDragging(item.id);
-                const mark = () => {
-                  draggedRef.current = true;
+                cleanupDragRef.current?.();
+                const start = { x: e.clientX, y: e.clientY };
+                const cleanup = () => {
+                  window.removeEventListener("mousemove", move);
+                  window.removeEventListener("mouseup", up);
+                  cleanupDragRef.current = null;
                 };
-                window.addEventListener("mousemove", mark, { once: true });
-                window.addEventListener(
-                  "mouseup",
-                  () => {
-                    setDragging(null);
-                    window.removeEventListener("mousemove", mark);
-                  },
-                  { once: true },
-                );
-                onDragStart(item.kind, e);
+                const move = (event: MouseEvent) => {
+                  if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return;
+                  window.removeEventListener("mousemove", move);
+                  draggedRef.current = true;
+                  setDragging(item.id);
+                  // Starting X6 on mousedown installs an overlay that swallows
+                  // an ordinary click. Start only once this is actually a drag.
+                  onDragStart(item.kind, event);
+                };
+                const up = () => {
+                  setDragging(null);
+                  cleanup();
+                };
+                cleanupDragRef.current = cleanup;
+                window.addEventListener("mousemove", move);
+                window.addEventListener("mouseup", up, { once: true });
               }}
               onClick={() => {
                 if (draggedRef.current) {

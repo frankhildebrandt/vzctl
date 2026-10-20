@@ -36,13 +36,16 @@ pub const APPLY_STEPS: &[&str] = &[
     "ensure_ca_rollout",
     "ensure_oidc_inject",
     "ensure_docker_context",
+    "apply_routes_policies",
+    "ensure_kubernetes",
+    "ensure_service_claims",
     "ensure_containers",
     "ensure_ports",
-    "apply_routes_policies",
     "release_lease",
 ];
 
 pub const DOWN_STEPS: &[&str] = &[
+    "disable_service_controllers",
     "purge_ingress",
     "purge_dns_records",
     "purge_oidc",
@@ -1325,6 +1328,9 @@ fn step_label(step: &str) -> &'static str {
         "ensure_oidc_inject" => "OIDC-Konfiguration injizieren",
         "ensure_docker_context" => "Docker-Kontext bereitstellen",
         "ensure_containers" => "Container bereitstellen",
+        "disable_service_controllers" => "Service-Controller deaktivieren",
+        "ensure_service_claims" => "Service-Claims und private Bindings bereitstellen",
+        "ensure_kubernetes" => "Kubernetes-Cluster und Manifeste bereitstellen",
         "ensure_ports" => "Port-Forwards bereitstellen",
         "apply_routes_policies" => "Routen und Policies anwenden",
         "release_lease" => "Apply abschließen",

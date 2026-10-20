@@ -11,11 +11,8 @@ if [ -z "$tag" ]; then
     tag=dev
   fi
 fi
-version=${tag#v}
-# pkgbuild wants a dotted numeric version; fall back for local/dev tags.
-case "$version" in
-  [0-9]*) ;;
-  *) version=0.0.0 ;;
+case "$tag" in
+  ''|*[!A-Za-z0-9._+-]*) echo "package-macos: invalid release tag" >&2; exit 1 ;;
 esac
 
 arch=$(uname -m)
@@ -33,6 +30,7 @@ dmg_stage="$dist/dmg-${name}"
 scripts_dir="$dist/pkgscripts-${name}"
 
 cli="$root/target/release/vzctl"
+mcp="$root/target/release/vzctl-mcp"
 helper="$root/daemon/.build/release/vz-helper"
 supervisor="$root/daemon/.build/release/vz-supervisor"
 net="$root/daemon/.build/release/vz-net"
@@ -41,6 +39,8 @@ dns_bind="$root/daemon/.build/release/vz-dns-bind"
 oidc_simple="$root/target/release/vzctl-oidc-simple"
 tauri_app="$root/apps/vzctl-ui/src-tauri/target/release/bundle/macos/vzctl.app"
 postinstall_src="$root/packaging/macos/postinstall"
+preinstall_src="$root/packaging/macos/preinstall"
+common_src="$root/packaging/macos/installer-common.sh"
 stop_helpers_src="$root/daemon/scripts/stop-vz-helpers.sh"
 
 die() {
@@ -57,6 +57,8 @@ need_dir() {
 }
 
 need_file "$cli"
+need_file "$mcp"
+need_file "$oidc_simple"
 need_file "$helper"
 need_file "$supervisor"
 need_file "$net"
@@ -64,50 +66,80 @@ need_file "$edge"
 need_file "$dns_bind"
 need_dir "$tauri_app"
 [ -f "$postinstall_src" ] || die "missing $postinstall_src"
+[ -f "$preinstall_src" ] || die "missing $preinstall_src"
+[ -f "$common_src" ] || die "missing $common_src"
 [ -f "$stop_helpers_src" ] || die "missing $stop_helpers_src"
+for binary in "$cli" "$mcp" "$oidc_simple" "$helper" "$supervisor" "$net" "$edge" "$dns_bind"; do
+  [ -x "$binary" ] || die "not executable: $binary"
+done
+for vendor in caddy dex qemu-img; do
+  directory="$root/daemon/Vendor/$vendor"
+  [ -x "$directory/$vendor" ] || die "missing executable $directory/$vendor (run make vendor)"
+  need_file "$directory/VERSION"
+  need_file "$directory/LICENSE"
+done
+need_file "$root/LICENSE"
+metadata=$(mktemp "${TMPDIR:-/tmp}/vzctl-package-metadata.XXXXXX")
+trap 'rm -f "$metadata"' EXIT INT TERM
+python3 "$root/scripts/package-metadata.py" "$root" "$tag" > "$metadata"
+version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pkg_version"])' "$metadata")
 
 rm -rf "$tar_dir" "$pkg_root" "$dmg_stage" "$scripts_dir"
 mkdir -p "$dist" "$tar_dir" "$pkg_root/usr/local/bin" "$pkg_root/Applications" \
-  "$dmg_stage" "$scripts_dir"
+  "$dmg_stage" "$scripts_dir" "$pkg_root/usr/local/libexec/vzctl" "$pkg_root/usr/local/share/vzctl"
 
 # --- tar.gz (CLI + daemons) -------------------------------------------------
-cp "$cli" "$helper" "$supervisor" "$net" "$edge" "$dns_bind" "$tar_dir/"
-if [ -x "$oidc_simple" ]; then
-  cp "$oidc_simple" "$tar_dir/"
-fi
-if [ -x "$root/daemon/Vendor/qemu-img/qemu-img" ]; then
-  mkdir -p "$tar_dir/libexec/qemu-img"
-  ditto "$root/daemon/Vendor/qemu-img" "$tar_dir/libexec/qemu-img"
-else
-  echo "package-macos: warning: missing vendored qemu-img (run make vendor-qemu-img)" >&2
-fi
+cp "$cli" "$mcp" "$oidc_simple" "$helper" "$supervisor" "$net" "$edge" "$dns_bind" "$tar_dir/"
+for vendor in caddy dex qemu-img; do
+  mkdir -p "$tar_dir/libexec/$vendor"
+  ditto "$root/daemon/Vendor/$vendor" "$tar_dir/libexec/$vendor"
+done
 cp "$root/README.md" "$tar_dir/"
+cp "$root/LICENSE" "$tar_dir/LICENSE"
+cp "$metadata" "$tar_dir/VERSION.json"
 tar -C "$dist" -czf "$dist/${name}.tar.gz" "$name"
 rm -rf "$tar_dir"
 shasum -a 256 "$dist/${name}.tar.gz" >"$dist/${name}.tar.gz.sha256"
 
 # --- .pkg (app + binaries + LaunchAgents via postinstall) -------------------
 install -m 0755 "$cli" "$pkg_root/usr/local/bin/vzctl"
+install -m 0755 "$mcp" "$pkg_root/usr/local/bin/vzctl-mcp"
+install -m 0755 "$oidc_simple" "$pkg_root/usr/local/bin/vzctl-oidc-simple"
 install -m 0755 "$net" "$pkg_root/usr/local/bin/vz-net"
 install -m 0755 "$edge" "$pkg_root/usr/local/bin/vz-edge"
 install -m 0755 "$supervisor" "$pkg_root/usr/local/bin/vz-supervisor"
 install -m 0755 "$helper" "$pkg_root/usr/local/bin/vz-helper"
 install -m 0755 "$dns_bind" "$pkg_root/usr/local/bin/vz-dns-bind"
-if [ -x "$oidc_simple" ]; then
-  install -m 0755 "$oidc_simple" "$pkg_root/usr/local/bin/vzctl-oidc-simple"
-fi
-if [ -x "$root/daemon/Vendor/qemu-img/qemu-img" ]; then
-  mkdir -p "$pkg_root/usr/local/libexec/vzctl/qemu-img"
-  ditto "$root/daemon/Vendor/qemu-img" "$pkg_root/usr/local/libexec/vzctl/qemu-img"
-fi
+for vendor in caddy dex qemu-img; do
+  ditto "$root/daemon/Vendor/$vendor" "$pkg_root/usr/local/libexec/vzctl/$vendor"
+done
+cp "$root/LICENSE" "$pkg_root/usr/local/share/vzctl/LICENSE"
+cp "$metadata" "$pkg_root/usr/local/share/vzctl/VERSION.json"
 ditto "$tauri_app" "$pkg_root/Applications/vzctl.app"
 
 install -m 0755 "$postinstall_src" "$scripts_dir/postinstall"
+install -m 0755 "$preinstall_src" "$scripts_dir/preinstall"
+install -m 0755 "$common_src" "$scripts_dir/installer-common.sh"
 install -m 0755 "$stop_helpers_src" "$scripts_dir/stop-vz-helpers.sh"
 
+# Do not let Installer redirect the app into an existing build/runtime mirror.
+components="$dist/components-${name}.plist"
+python3 - "$components" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], "wb") as output:
+    plistlib.dump([{
+        "RootRelativeBundlePath": "Applications/vzctl.app",
+        "BundleIsRelocatable": False,
+        "BundleHasStrictIdentifier": True,
+        "BundleIsVersionChecked": True,
+        "BundleOverwriteAction": "upgrade",
+    }], output)
+PY
 pkgbuild \
   --root "$pkg_root" \
   --scripts "$scripts_dir" \
+  --component-plist "$components" \
   --identifier dev.vzctl.installer \
   --version "$version" \
   --install-location / \
@@ -115,6 +147,7 @@ pkgbuild \
 
 shasum -a 256 "$dist/${name}.pkg" >"$dist/${name}.pkg.sha256"
 rm -rf "$pkg_root" "$scripts_dir"
+rm -f "$components"
 
 # --- .dmg (app + Applications link + pkg) -----------------------------------
 ditto "$tauri_app" "$dmg_stage/vzctl.app"

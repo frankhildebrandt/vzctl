@@ -38,9 +38,11 @@ enum Operation {
     Detach {
         vm_id: String,
         network: String,
+        project: Option<String>,
     },
     Delete {
         name: String,
+        project: Option<String>,
     },
     DefaultShow,
     DefaultSet {
@@ -71,6 +73,7 @@ pub(crate) struct Failure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct VmNetworkSelection {
     pub(crate) network: String,
+    pub(crate) network_id: String,
     pub(crate) cidr: String,
     pub(crate) ip: String,
     pub(crate) gateway: String,
@@ -157,16 +160,30 @@ impl Options {
                 metadata.params(json!({ "vm_id": vm_id, "network": network, "ip": ip })),
             ),
             Operation::List => ("net.list", json!({})),
-            Operation::Detach { vm_id, network } => {
-                ("net.detach", json!({ "vm_id": vm_id, "network": network }))
+            Operation::Detach {
+                vm_id,
+                network,
+                project,
+            } => (
+                "net.detach",
+                with_project(json!({ "vm_id": vm_id, "network": network }), project),
+            ),
+            Operation::Delete { name, project } => {
+                ("net.delete", with_project(json!({ "name": name }), project))
             }
-            Operation::Delete { name } => ("net.delete", json!({ "name": name })),
             Operation::DefaultShow => ("net.default.show", json!({})),
             Operation::DefaultSet { name, cidr } => {
                 ("net.default.set", json!({ "name": name, "cidr": cidr }))
             }
         }
     }
+}
+
+fn with_project(mut params: Value, project: &Option<String>) -> Value {
+    if let Some(project) = project {
+        params["project"] = json!(project);
+    }
+    params
 }
 
 impl Metadata {
@@ -314,13 +331,16 @@ fn validate_cidr(value: &str) -> Result<(), Failure> {
 fn parse_detach(args: Vec<String>) -> Result<Options, Failure> {
     let vm_id = positional(&args, "net detach requires a VM id")?;
     let (format, values, metadata) = parse_flags(args[1..].to_vec(), &["--network"])?;
-    if metadata != Metadata::default() {
-        return Err(usage("net detach does not accept metadata"));
+    if !metadata.labels.is_empty() || metadata.stack.is_some() {
+        return Err(usage(
+            "net detach accepts --project but no labels or stack metadata",
+        ));
     }
     Ok(Options {
         operation: Operation::Detach {
             vm_id,
             network: required(&values, "--network")?,
+            project: metadata.project,
         },
         format,
     })
@@ -329,11 +349,16 @@ fn parse_detach(args: Vec<String>) -> Result<Options, Failure> {
 fn parse_delete(args: Vec<String>) -> Result<Options, Failure> {
     let name = positional(&args, "net delete requires a network name")?;
     let (format, values, metadata) = parse_flags(args[1..].to_vec(), &[])?;
-    if !values.is_empty() || metadata != Metadata::default() {
-        return Err(usage("net delete accepts only --format human|json"));
+    if !values.is_empty() || !metadata.labels.is_empty() || metadata.stack.is_some() {
+        return Err(usage(
+            "net delete accepts --project and --format human|json",
+        ));
     }
     Ok(Options {
-        operation: Operation::Delete { name },
+        operation: Operation::Delete {
+            name,
+            project: metadata.project,
+        },
         format,
     })
 }
@@ -483,18 +508,30 @@ pub(crate) fn list_vm_attachments(
     vm_id: &str,
 ) -> Result<Vec<VmNetworkSelection>, Failure> {
     let result = rpc(socket_path, "net.list", json!({}))?;
+    vm_attachments_from_snapshot(&result, vm_id)
+}
+
+fn vm_attachments_from_snapshot(
+    result: &Value,
+    vm_id: &str,
+) -> Result<Vec<VmNetworkSelection>, Failure> {
     let networks = result
         .get("networks")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let network_by_name = networks
-        .iter()
-        .filter_map(|item| {
-            let name = item.get("name")?.as_str()?;
-            Some((name.to_string(), item.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut network_by_id = BTreeMap::new();
+    for item in &networks {
+        let id = item
+            .get("id")
+            .or_else(|| item.get("name"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| invalid("network inventory missing identity"))?;
+        if network_by_id.insert(id, item).is_some() {
+            return Err(invalid(format!("duplicate network identity {id}")));
+        }
+    }
     let mut selections = Vec::new();
     for attachment in result
         .get("attachments")
@@ -509,11 +546,35 @@ pub(crate) fn list_vm_attachments(
             .get("network")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("attachment missing network"))?;
-        let network = network_by_name.get(network_name).ok_or_else(|| {
+        if attachment.get("network_id").is_none()
+            && networks
+                .iter()
+                .filter(|item| item["name"] == network_name)
+                .count()
+                != 1
+        {
+            return Err(invalid(format!("ambiguous legacy network {network_name}")));
+        }
+        let network_id = match attachment.get("network_id") {
+            Some(value) => value
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| invalid("attachment has invalid network identity"))?,
+            None => networks
+                .iter()
+                .find(|item| item["name"] == network_name)
+                .and_then(|item| item.get("id").or_else(|| item.get("name")))
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("legacy attachment references unknown network"))?,
+        };
+        let network = network_by_id.get(network_id).ok_or_else(|| {
             invalid(format!(
-                "attachment references unknown network {network_name}"
+                "attachment references unknown network {network_id}"
             ))
         })?;
+        if network.get("name").and_then(Value::as_str) != Some(network_name) {
+            return Err(invalid("attachment network identity/name mismatch"));
+        }
         let wrapped = json!({
             "network": network,
             "attachment": attachment,
@@ -554,6 +615,11 @@ fn vm_network_selection(result: &Value) -> Result<VmNetworkSelection, Failure> {
     };
     Ok(VmNetworkSelection {
         network: string(network, "name")?,
+        network_id: network
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or(string(network, "name")?),
         cidr: string(network, "cidr")?,
         gateway: string(network, "gateway")?,
         dns: string(network, "dns")?,
@@ -589,7 +655,7 @@ pub(crate) fn rollback_vm_network(socket_path: &Path, selection: &VmNetworkSelec
         let _ = rpc(
             socket_path,
             "net.detach",
-            json!({ "vm_id": vm_id, "network": selection.network }),
+            json!({ "vm_id": vm_id, "network": selection.network_id }),
         );
     }
 }
@@ -755,6 +821,107 @@ fn invalid(message: impl Into<String>) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_mutations_send_optional_project_without_changing_legacy_requests() {
+        for (args, method, expected) in [
+            (
+                vec!["delete", "lan", "--project", "a"],
+                "net.delete",
+                json!({"name":"lan", "project":"a"}),
+            ),
+            (
+                vec!["detach", "a/web", "--network", "a/lan", "--project", "a"],
+                "net.detach",
+                json!({"vm_id":"a/web", "network":"a/lan", "project":"a"}),
+            ),
+            (vec!["delete", "lan"], "net.delete", json!({"name":"lan"})),
+            (
+                vec!["detach", "web", "--network", "lan"],
+                "net.detach",
+                json!({"vm_id":"web", "network":"lan"}),
+            ),
+        ] {
+            let options = parse(args.into_iter().map(str::to_owned)).unwrap();
+            assert_eq!(options.request(), (method, expected));
+        }
+        assert!(parse(
+            ["delete", "lan", "--stack", "other"]
+                .into_iter()
+                .map(str::to_owned)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn vm_attachment_lookup_uses_identity_instead_of_shared_short_name() {
+        let snapshot = json!({
+            "networks": [
+                {"id":"a/lan", "name":"lan", "project":"a", "cidr":"10.80.0.0/24",
+                 "gateway":"10.80.0.0", "dns":"10.80.0.0"},
+                {"id":"b/lan", "name":"lan", "project":"b", "cidr":"10.90.0.0/24",
+                 "gateway":"10.90.0.0", "dns":"10.90.0.0"}
+            ],
+            "attachments": [
+                {"vm_id":"a/web", "network":"lan", "network_id":"a/lan",
+                 "project":"a", "ip":"10.80.0.10"},
+                {"vm_id":"b/web", "network":"lan", "network_id":"b/lan",
+                 "project":"b", "ip":"10.90.0.10"}
+            ]
+        });
+        let selected = vm_attachments_from_snapshot(&snapshot, "a/web").unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].network_id, "a/lan");
+        assert_eq!(selected[0].network, "lan");
+        assert_eq!(selected[0].dns, "10.80.0.0");
+        assert_eq!(selected[0].cidr, "10.80.0.0/24");
+
+        let mut legacy_ambiguous = snapshot.clone();
+        legacy_ambiguous["attachments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("network_id");
+        assert!(vm_attachments_from_snapshot(&legacy_ambiguous, "a/web").is_err());
+        legacy_ambiguous["networks"][0]["id"] = json!("lan");
+        assert!(vm_attachments_from_snapshot(&legacy_ambiguous, "a/web").is_err());
+        legacy_ambiguous["attachments"][0]["network_id"] = Value::Null;
+        assert!(vm_attachments_from_snapshot(&legacy_ambiguous, "a/web").is_err());
+        let mut unique_legacy = snapshot.clone();
+        unique_legacy["networks"].as_array_mut().unwrap().pop();
+        unique_legacy["attachments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("network_id");
+        assert_eq!(
+            vm_attachments_from_snapshot(&unique_legacy, "a/web").unwrap()[0].network_id,
+            "a/lan"
+        );
+        let mut duplicate = snapshot.clone();
+        duplicate["networks"][1]["id"] = json!("a/lan");
+        assert!(vm_attachments_from_snapshot(&duplicate, "a/web").is_err());
+        let mut mismatched = snapshot;
+        mismatched["attachments"][0]["network"] = json!("other");
+        assert!(vm_attachments_from_snapshot(&mismatched, "a/web").is_err());
+    }
+
+    #[test]
+    fn legacy_vm_attachment_identity_and_search_domain_remain_compatible() {
+        let selected = vm_attachments_from_snapshot(
+            &json!({
+                "networks": [{
+                    "name":"lan", "project":"network-owner", "cidr":"10.80.0.0/24",
+                    "gateway":"10.80.0.0", "dns":"10.80.0.0"
+                }],
+                "attachments": [{
+                    "vm_id":"app/web", "network":"lan", "project":"app", "ip":"10.80.0.10"
+                }]
+            }),
+            "app/web",
+        )
+        .unwrap();
+        assert_eq!(selected[0].network_id, "lan");
+        assert_eq!(selected[0].project.as_deref(), Some("app"));
+    }
 
     #[test]
     fn vm_network_selection_prefers_attachment_project_for_guest_search_domain() {

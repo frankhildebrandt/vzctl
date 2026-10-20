@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a pinned Dex binary into daemon/Vendor/dex/ (+ Application Support bin/).
+# Build a pinned Dex binary into daemon/Vendor/dex/; never change a running installation.
 #
 # Dex tags as v2.x but go.mod still says `module github.com/dexidp/dex` (no /v2),
 # so `go install …@v2.x` fails. We clone the tag and `go build` locally instead.
@@ -34,9 +34,6 @@ if [ ! -x "$DEST_DIR/dex" ]; then
   exit 1
 fi
 echo "$VERSION" > "$DEST_DIR/VERSION"
-RUNTIME_BIN="${HOME}/Library/Application Support/vzctl/bin"
-mkdir -p "$RUNTIME_BIN"
-install -m 755 "$DEST_DIR/dex" "$RUNTIME_BIN/dex"
+cp "$TMP/dex/LICENSE" "$DEST_DIR/LICENSE"
 echo "installed $DEST_DIR/dex ($VERSION)"
-echo "copied to $RUNTIME_BIN/dex"
 "$DEST_DIR/dex" version 2>/dev/null || true

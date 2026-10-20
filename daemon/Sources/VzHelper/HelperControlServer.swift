@@ -391,7 +391,7 @@ enum RouterGuestConfigurator {
 
     private static func currentConfiguration(client: GuestAgentClient) throws -> JSONValue? {
         let result = try client.exec(
-            argv: ["/bin/sh", "-ceu", routerStatusScript],
+            argv: ["/usr/bin/sudo", "-n", "/bin/sh", "-ceu", routerStatusScript],
             timeoutMilliseconds: 5_000
         )
         if result.exit == 3 { return nil }

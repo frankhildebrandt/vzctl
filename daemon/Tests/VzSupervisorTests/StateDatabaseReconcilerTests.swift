@@ -156,3 +156,62 @@ private func temporaryDatabase() throws -> StateDatabase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return try StateDatabase(path: directory.appendingPathComponent("state.sqlite").path)
 }
+
+@Test func heartbeatKeepsLongStepOwnedWithoutMovingCheckpoint() throws {
+    var now = Date(timeIntervalSince1970: 1_000)
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let database = try StateDatabase(path: path, leaseDuration: 10, leaseNow: { now })
+    let holder = "test:\(ProcessInfo.processInfo.processIdentifier)"
+    let journal = try database.beginApply(stackID: "p:s", holder: holder, desiredHash: "a",
+                                          payload: #"{"desired_hash":"a"}"#, resume: false)
+    for _ in 0..<20 {
+        now.addTimeInterval(5)
+        try database.heartbeatApply(id: journal.id, stackID: "p:s", holder: holder)
+    }
+    let state = try database.stackState(stackID: "p:s")
+    #expect(state.journal?.step == "validate")
+    #expect(state.lease!.expiresAt > now)
+    #expect(throws: ReconcileDatabaseError.self) {
+        try database.heartbeatApply(id: journal.id, stackID: "p:s", holder: "foreign:1")
+    }
+    #expect(throws: ReconcileDatabaseError.self) {
+        try database.heartbeatApply(id: "old-journal", stackID: "p:s", holder: holder)
+    }
+    #expect(throws: ReconcileDatabaseError.self) {
+        _ = try database.beginApply(stackID: "p:s", holder: "other:\(ProcessInfo.processInfo.processIdentifier)",
+                                    desiredHash: "a", payload: #"{"desired_hash":"a"}"#, resume: true)
+    }
+}
+
+@Test func expiredLeaseCannotRenewAdvanceOrFinishAndOldOwnerCannotRegainIt() throws {
+    var now = Date(timeIntervalSince1970: 1_000)
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let database = try StateDatabase(path: path, leaseDuration: 10, leaseNow: { now })
+    let owner = "test:\(ProcessInfo.processInfo.processIdentifier)"
+    let journal = try database.beginApply(stackID: "p:s", holder: owner, desiredHash: "a",
+                                          payload: #"{"desired_hash":"a"}"#, resume: false)
+    now.addTimeInterval(11)
+    #expect(throws: ReconcileDatabaseError.self) {
+        try database.heartbeatApply(id: journal.id, stackID: "p:s", holder: owner)
+    }
+    #expect(throws: ReconcileDatabaseError.self) {
+        _ = try database.advanceApply(id: journal.id, stackID: "p:s", holder: owner,
+                                      step: "ensure_images", status: "running", error: nil)
+    }
+    #expect(throws: ReconcileDatabaseError.self) {
+        try database.finishApply(id: journal.id, stackID: "p:s", holder: owner, resourcesJSON: "[]")
+    }
+    #expect(throws: ReconcileDatabaseError.self) {
+        _ = try database.beginApply(stackID: "p:s", holder: "new:1", desiredHash: "changed",
+                                    payload: #"{"desired_hash":"changed"}"#, resume: true)
+    }
+    let resumed = try database.beginApply(stackID: "p:s", holder: "new:1", desiredHash: "a",
+                                          payload: #"{"desired_hash":"a"}"#, resume: true)
+    #expect(resumed.id == journal.id)
+    #expect(throws: ReconcileDatabaseError.self) {
+        try database.heartbeatApply(id: journal.id, stackID: "p:s", holder: owner)
+    }
+    try database.finishApply(id: resumed.id, stackID: "p:s", holder: "new:1", resourcesJSON: "[]")
+}

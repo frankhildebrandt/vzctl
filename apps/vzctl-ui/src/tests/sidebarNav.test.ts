@@ -87,7 +87,7 @@ describe("resolveSidebarNav", () => {
     );
     expect(nav.context).toBe("stack");
     expect(nav.title).toBe("edge-dmz");
-    expect(nav.items.map((i) => i.id)).toEqual(["ops", "topology", "config"]);
+    expect(nav.items.map((i) => i.id)).toEqual(["ops", "topology", "config", "debug"]);
     expect(nav.groups?.[0]?.items.find((i) => i.id === "log:edge/web:app")?.active).toBe(
       true,
     );

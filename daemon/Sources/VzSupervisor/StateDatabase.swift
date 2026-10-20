@@ -6,8 +6,12 @@ import VzDaemonKit
 final class StateDatabase {
     private var handle: OpaquePointer?
     private let reconcileLock = NSLock()
+    private let leaseDuration: TimeInterval
+    private let leaseNow: () -> Date
 
-    init(path: String) throws {
+    init(path: String, leaseDuration: TimeInterval = 300, leaseNow: @escaping () -> Date = Date.init) throws {
+        self.leaseDuration = leaseDuration
+        self.leaseNow = leaseNow
         guard sqlite3_open_v2(
             path,
             &handle,
@@ -138,6 +142,7 @@ final class StateDatabase {
             _ = try? execute(
                 "ALTER TABLE edge_projects ADD COLUMN dns_records_json TEXT NOT NULL DEFAULT '[]';"
             )
+            try migrateNetworkIdentity()
             try quickCheck()
         } catch {
             sqlite3_close(handle)
@@ -148,6 +153,30 @@ final class StateDatabase {
 
     deinit {
         sqlite3_close(handle)
+    }
+
+    /// Preserve physical keys/FKs and live vz-net handles while adding scoped names.
+    private func migrateNetworkIdentity() throws {
+        try execute("BEGIN IMMEDIATE;")
+        do {
+            let columns: [String] = try withStatement("PRAGMA table_info(networks);") { statement in
+                var names: [String] = []
+                while sqlite3_step(statement) == SQLITE_ROW { names.append(text(statement, 1)) }
+                return names
+            }
+            if !columns.contains("logical_name") {
+                try execute("ALTER TABLE networks ADD COLUMN logical_name TEXT;")
+            }
+            try execute("UPDATE networks SET logical_name = name WHERE logical_name IS NULL;")
+            try execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS networks_project_name
+                ON networks(COALESCE(project, ''), logical_name);
+                """)
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
     }
 
     private func execute(_ sql: String) throws {
@@ -178,11 +207,11 @@ final class StateDatabase {
         try withStatement(
             """
             INSERT INTO networks
-                (name, cidr, mode, nat_egress, backend, labels_json, project, stack, runtime_state, last_error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (name, cidr, mode, nat_egress, backend, labels_json, project, stack, runtime_state, last_error, updated_at, logical_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
         ) { statement in
-            try bind(record.name, at: 1, to: statement)
+            try bind(record.id, at: 1, to: statement)
             try bind(record.cidr, at: 2, to: statement)
             try bind(record.mode, at: 3, to: statement)
             try bind(Int64(record.natEgress ? 1 : 0), at: 4, to: statement)
@@ -193,6 +222,7 @@ final class StateDatabase {
             try bind(record.runtimeState, at: 9, to: statement)
             try bind(record.lastError, at: 10, to: statement)
             try bind(record.updatedAt, at: 11, to: statement)
+            try bind(record.name, at: 12, to: statement)
             try stepDone(statement)
         }
     }
@@ -223,7 +253,7 @@ final class StateDatabase {
         try withStatement(
             """
             SELECT name, cidr, mode, nat_egress, backend, labels_json, project, stack,
-                   runtime_state, last_error, updated_at
+                   runtime_state, last_error, updated_at, logical_name
             FROM networks ORDER BY name;
             """
         ) { statement in
@@ -231,7 +261,8 @@ final class StateDatabase {
             while sqlite3_step(statement) == SQLITE_ROW {
                 records.append(
                     NetworkRecord(
-                        name: text(statement, 0),
+                        name: text(statement, 11),
+                        id: text(statement, 0),
                         cidr: text(statement, 1),
                         mode: text(statement, 2),
                         natEgress: sqlite3_column_int(statement, 3) != 0,
@@ -261,7 +292,7 @@ final class StateDatabase {
             """
         ) { statement in
             try bind(record.vmID, at: 1, to: statement)
-            try bind(record.networkName, at: 2, to: statement)
+            try bind(record.networkID, at: 2, to: statement)
             try bind(record.ip, at: 3, to: statement)
             try bind(try labelsJSON(record.labels), at: 4, to: statement)
             try bind(record.project, at: 5, to: statement)
@@ -285,7 +316,7 @@ final class StateDatabase {
             try bind(record.stack, at: 4, to: statement)
             try bind(record.updatedAt, at: 5, to: statement)
             try bind(record.vmID, at: 6, to: statement)
-            try bind(record.networkName, at: 7, to: statement)
+            try bind(record.networkID, at: 7, to: statement)
             try stepDone(statement)
             guard sqlite3_changes(handle) == 1 else {
                 throw SupervisorError.database(
@@ -323,8 +354,9 @@ final class StateDatabase {
     func attachments() throws -> [NetworkAttachmentRecord] {
         try withStatement(
             """
-            SELECT vm_id, network_name, ip, labels_json, project, stack, updated_at
-            FROM network_attachments ORDER BY network_name, vm_id;
+            SELECT a.vm_id, a.network_name, a.ip, a.labels_json, a.project, a.stack, a.updated_at, n.logical_name
+            FROM network_attachments a JOIN networks n ON n.name = a.network_name
+            ORDER BY a.network_name, a.vm_id;
             """
         ) { statement in
             var records: [NetworkAttachmentRecord] = []
@@ -332,7 +364,8 @@ final class StateDatabase {
                 records.append(
                     NetworkAttachmentRecord(
                         vmID: text(statement, 0),
-                        networkName: text(statement, 1),
+                        networkName: text(statement, 7),
+                        networkID: text(statement, 1),
                         ip: text(statement, 2),
                         labels: try labels(from: text(statement, 3)),
                         project: optionalText(statement, 4),
@@ -726,6 +759,27 @@ final class StateDatabase {
         }
     }
 
+    /// Renew only the current journal owner's unexpired lease; never revive a lost lease.
+    /// This does not change the checkpoint or emit a new apply.step event.
+    func heartbeatApply(id: String, stackID: String, holder: String) throws {
+        try reconcileLock.withLock {
+            try requireApplyLease(id: id, stackID: stackID, holder: holder)
+            try upsertLease(stackID: stackID, holder: holder)
+        }
+    }
+
+    private func requireApplyLease(id: String, stackID: String, holder: String) throws {
+        guard let current = try incompleteJournal(stackID: stackID), current.id == id else {
+            throw ReconcileDatabaseError.noIncomplete
+        }
+        guard let currentLease = try lease(stackID: stackID),
+              currentLease.holder == holder,
+              currentLease.expiresAt > leaseNow()
+        else {
+            throw ReconcileDatabaseError.leaseLost
+        }
+    }
+
     func advanceApply(
         id: String,
         stackID: String,
@@ -735,15 +789,7 @@ final class StateDatabase {
         error: String?
     ) throws -> JournalRecord {
         try reconcileLock.withLock {
-            guard let current = try incompleteJournal(stackID: stackID), current.id == id else {
-                throw ReconcileDatabaseError.noIncomplete
-            }
-            guard let currentLease = try lease(stackID: stackID),
-                  currentLease.holder == holder,
-                  currentLease.expiresAt > Date()
-            else {
-                throw ReconcileDatabaseError.leaseLost
-            }
+            try requireApplyLease(id: id, stackID: stackID, holder: holder)
             try upsertLease(stackID: stackID, holder: holder)
             try updateJournal(id: id, step: step, status: status, error: error)
             return try journal(id: id)!
@@ -759,14 +805,7 @@ final class StateDatabase {
         try reconcileLock.withLock {
             try execute("BEGIN IMMEDIATE;")
             do {
-                guard let current = try incompleteJournal(stackID: stackID), current.id == id else {
-                    throw ReconcileDatabaseError.noIncomplete
-                }
-                guard let currentLease = try lease(stackID: stackID),
-                      currentLease.holder == holder
-                else {
-                    throw ReconcileDatabaseError.leaseLost
-                }
+                try requireApplyLease(id: id, stackID: stackID, holder: holder)
                 let resources = try JSONDecoder().decode(
                     [StackResourceRecord].self,
                     from: Data(resourcesJSON.utf8)
@@ -904,8 +943,8 @@ final class StateDatabase {
     }
 
     private func upsertLease(stackID: String, holder: String) throws {
-        // Long steps (image pull/bake) can exceed a short TTL without checkpoints.
-        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(300))
+        // The owner renews this lease independently of long image/guest operations.
+        let expires = ISO8601DateFormatter().string(from: leaseNow().addingTimeInterval(leaseDuration))
         try withStatement(
             """
             INSERT INTO locks (stack_id, holder, expires_at) VALUES (?, ?, ?)
@@ -923,7 +962,7 @@ final class StateDatabase {
     /// Expired leases are stealable even if a hung process is still around (ADR 0003).
     private func leaseBlocks(_ lease: LeaseRecord, for holder: String) -> Bool {
         guard lease.holder != holder else { return false }
-        guard lease.expiresAt > Date() else { return false }
+        guard lease.expiresAt > leaseNow() else { return false }
         return holderIsAlive(lease.holder)
     }
 

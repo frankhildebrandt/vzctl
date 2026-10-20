@@ -23,15 +23,26 @@ struct RestJob: Sendable {
 
 final class RestJobRunner: @unchecked Sendable {
     static let maxLogLines = 500
+    static let maxLineBytes = 4096
+    struct Limits: Sendable {
+        var retainedJobs = 32
+        var activeJobs = 4
+        var syncTimeout: TimeInterval = 60
+        var jobTimeout: TimeInterval = 7200
+    }
 
     private let lock = NSLock()
     private var jobs: [String: RestJob] = [:]
+    private var order: [String] = []
+    private var cancelledJobs = Set<String>()
     private let stateDirectory: URL
     private var vzctlPathOverride: String?
+    private let limits: Limits
 
-    init(stateDirectory: URL, vzctlPath: String? = nil) {
+    init(stateDirectory: URL, vzctlPath: String? = nil, limits: Limits = Limits()) {
         self.stateDirectory = stateDirectory
         self.vzctlPathOverride = vzctlPath
+        self.limits = limits
     }
 
     func get(_ id: String) -> RestJob? {
@@ -43,7 +54,7 @@ final class RestJobRunner: @unchecked Sendable {
     }
 
     @discardableResult
-    func start(kind: String, arguments: [String], environment: [String: String] = [:]) -> String {
+    func start(kind: String, arguments: [String], environment: [String: String] = [:]) throws -> String {
         let id = UUID().uuidString.lowercased()
         let now = isoNow()
         let job = RestJob(
@@ -58,7 +69,15 @@ final class RestJobRunner: @unchecked Sendable {
             progressPercent: nil,
             progressLabel: nil
         )
-        lock.withLock { jobs[id] = job }
+        try lock.withLock {
+            let active = jobs.values.filter { $0.status == .queued || $0.status == .running }.count
+            guard active < max(1, min(limits.activeJobs, limits.retainedJobs)) else {
+                throw RestRouteError(429, .conflict, "too many active jobs; retry after a running job finishes")
+            }
+            jobs[id] = job
+            order.append(id)
+            pruneLocked()
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.run(jobId: id, arguments: arguments, environment: environment)
@@ -67,24 +86,21 @@ final class RestJobRunner: @unchecked Sendable {
     }
 
     func runSync(arguments: [String], environment: [String: String] = [:]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
-        let vzctl = try resolveVzctl()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: vzctl)
-        process.arguments = arguments
-        process.environment = Self.jobEnvironment(
-            stateDirectory: stateDirectory,
-            overrides: environment
+        try JobProcessRunner.run(
+            executable: resolveVzctl(), arguments: arguments,
+            environment: Self.jobEnvironment(stateDirectory: stateDirectory, overrides: environment),
+            timeout: limits.syncTimeout
         )
+    }
 
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        try process.run()
-        process.waitUntilExit()
-        let stdout = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (process.terminationStatus, stdout, stderr)
+    /// Cancellation stops the CLI process, not already applied stack resources.
+    @discardableResult
+    func cancel(_ id: String) -> Bool {
+        lock.withLock {
+            guard let job = jobs[id], job.status == .queued || job.status == .running else { return false }
+            cancelledJobs.insert(id)
+            return true
+        }
     }
 
     /// LaunchAgents inherit a minimal PATH (`/usr/bin:/bin:…`). Homebrew tools
@@ -144,7 +160,10 @@ final class RestJobRunner: @unchecked Sendable {
             let parsed = parseJSONValue(result.stdout)
             update(jobId) { job in
                 job.updatedAt = isoNow()
-                if result.exitCode == 0 {
+                if cancelledJobs.contains(jobId) {
+                    job.status = .failed
+                    job.error = JobProcessError.cancelled.description
+                } else if result.exitCode == 0 {
                     job.status = .succeeded
                     job.result = parsed ?? .object([
                         "stdout": .string(result.stdout),
@@ -175,52 +194,17 @@ final class RestJobRunner: @unchecked Sendable {
         arguments: [String],
         environment: [String: String]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
-        let vzctl = try resolveVzctl()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: vzctl)
-        process.arguments = arguments
-        process.environment = Self.jobEnvironment(
-            stateDirectory: stateDirectory,
-            overrides: environment
-        )
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        let stderrBox = StringBox()
         let accumulator = LineAccumulator { [weak self] line in
-            stderrBox.append(line)
             self?.appendLog(jobId, lines: [line])
         }
-
-        let stderrDone = DispatchSemaphore(value: 0)
-        errPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                accumulator.flush()
-                stderrDone.signal()
-                return
-            }
-            accumulator.append(data)
-        }
-
-        try process.run()
-        process.waitUntilExit()
-
-        // EOF on the pipe closes the read end after the process exits; wait for drain.
-        let waitResult = stderrDone.wait(timeout: .now() + 5)
-        if waitResult == .timedOut {
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            accumulator.flush()
-        }
-
-        let stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = stderrBox.joined(separator: "\n")
-        return (process.terminationStatus, stdout, stderr)
+        defer { accumulator.flush() }
+        return try JobProcessRunner.run(
+            executable: resolveVzctl(), arguments: arguments,
+            environment: Self.jobEnvironment(stateDirectory: stateDirectory, overrides: environment),
+            timeout: limits.jobTimeout,
+            cancelled: { self.lock.withLock { self.cancelledJobs.contains(jobId) } },
+            onStderr: { accumulator.append($0) }
+        )
     }
 
     private func appendLog(_ id: String, lines: [String]) {
@@ -234,7 +218,8 @@ final class RestJobRunner: @unchecked Sendable {
         }
     }
 
-    static func ingestLogLine(_ job: inout RestJob, line: String) {
+    static func ingestLogLine(_ job: inout RestJob, line rawLine: String) {
+        let line = String(decoding: rawLine.utf8.prefix(maxLineBytes), as: UTF8.self)
         if let percent = progressPercent(in: line) {
             job.progressPercent = percent
             job.progressLabel = progressLabel(in: line)
@@ -284,10 +269,23 @@ final class RestJobRunner: @unchecked Sendable {
             guard var job = jobs[id] else { return }
             mutate(&job)
             jobs[id] = job
+            if job.status == .succeeded || job.status == .failed { cancelledJobs.remove(id) }
+            pruneLocked()
         }
     }
 
-    private func resolveVzctl() throws -> String {
+    private func pruneLocked() {
+        while jobs.count > max(1, limits.retainedJobs) {
+            guard let index = order.firstIndex(where: {
+                jobs[$0]?.status == .succeeded || jobs[$0]?.status == .failed
+            }) else { return }
+            let id = order.remove(at: index)
+            jobs.removeValue(forKey: id)
+            cancelledJobs.remove(id)
+        }
+    }
+
+    func resolveVzctl() throws -> String {
         if let override = vzctlPathOverride, FileManager.default.isExecutableFile(atPath: override) {
             return override
         }
@@ -353,7 +351,8 @@ final class RestJobRunner: @unchecked Sendable {
 /// shows live percent without overflowing the 500-line cap.
 final class LineAccumulator: @unchecked Sendable {
     private let lock = NSLock()
-    private var partial = ""
+    private var partial = Data()
+    private var lineTruncated = false
     private var lastProgressAt: Date?
     private var pendingProgress: String?
     private let progressMinInterval: TimeInterval
@@ -368,63 +367,41 @@ final class LineAccumulator: @unchecked Sendable {
     }
 
     func append(_ data: Data) {
-        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
         lock.withLock {
-            partial += text
-            drainLocked()
+            for byte in data {
+                if byte == 10 || byte == 13 {
+                    let line = takeLineLocked()
+                    if byte == 13 {
+                        if !line.isEmpty { emitProgressLocked(line) }
+                    } else {
+                        emitPendingProgressLocked()
+                        if !line.isEmpty { onLine(line) }
+                    }
+                } else if partial.count < RestJobRunner.maxLineBytes {
+                    partial.append(byte)
+                } else {
+                    lineTruncated = true
+                }
+            }
         }
     }
 
     func flush() {
         lock.withLock {
-            drainLocked()
             emitPendingProgressLocked()
-            let line = partial.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-            partial = ""
-            if !line.isEmpty {
-                onLine(line)
-            }
+            let line = takeLineLocked()
+            if !line.isEmpty { onLine(line) }
         }
     }
 
-    private func drainLocked() {
-        while let match = nextLineBreak(in: partial) {
-            let line = String(partial[..<match.start])
-            partial.removeSubrange(..<match.end)
-            if line.isEmpty {
-                continue
-            }
-            if match.kind == .cr {
-                emitProgressLocked(line)
-            } else {
-                emitPendingProgressLocked()
-                onLine(line)
-            }
-        }
-    }
-
-    private enum LineBreakKind {
-        case lf
-        case cr
-        case crlf
-    }
-
-    /// Split on scalars, not Swift `Character`s: CRLF is one grapheme cluster.
-    private func nextLineBreak(
-        in text: String
-    ) -> (start: String.Index, end: String.Index, kind: LineBreakKind)? {
-        let scalars = text.unicodeScalars
-        guard let start = scalars.firstIndex(where: { $0 == "\n" || $0 == "\r" }) else {
-            return nil
-        }
-        let after = scalars.index(after: start)
-        if scalars[start] == "\r" {
-            if after < scalars.endIndex, scalars[after] == "\n" {
-                return (start, scalars.index(after: after), .crlf)
-            }
-            return (start, after, .cr)
-        }
-        return (start, after, .lf)
+    private func takeLineLocked() -> String {
+        let marker = lineTruncated ? " [line truncated]" : ""
+        let line = String(
+            decoding: partial.prefix(RestJobRunner.maxLineBytes - marker.utf8.count), as: UTF8.self
+        ) + marker
+        partial.removeAll(keepingCapacity: true)
+        lineTruncated = false
+        return line
     }
 
     private func emitProgressLocked(_ line: String) {
@@ -451,7 +428,12 @@ final class StringBox: @unchecked Sendable {
     private var lines: [String] = []
 
     func append(_ line: String) {
-        lock.withLock { lines.append(line) }
+        lock.withLock {
+            lines.append(String(decoding: line.utf8.prefix(RestJobRunner.maxLineBytes), as: UTF8.self))
+            if lines.count > RestJobRunner.maxLogLines {
+                lines = Array(lines.suffix(RestJobRunner.maxLogLines))
+            }
+        }
     }
 
     func joined(separator: String) -> String {

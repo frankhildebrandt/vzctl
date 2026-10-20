@@ -18,7 +18,14 @@ import Testing
     #expect(script.contains("/etc/vzctl/vzctl.nft"))
     #expect(script.contains("delete table inet vzctl"))
     #expect(script.contains("cmp -s"))
-    #expect(!script.contains("iptables"))
+    // Migration may recognize the exact historical cloud-init line, but must
+    // never execute iptables or change another owner's global policy.
+    let legacyProvenance = #"expected = "'sh' '-c' 'command -v iptables >/dev/null && iptables -P FORWARD DROP || true'""#
+    let executableLines = script.split(separator: "\n").filter { line in
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return !trimmed.hasPrefix("#") && trimmed != legacyProvenance
+    }
+    #expect(!executableLines.joined(separator: "\n").contains("iptables"))
     #expect(!script.contains("ssh"))
     #expect(RouterGuestConfigurator.routerStatusScript.contains("nft list table inet vzctl"))
 }

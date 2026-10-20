@@ -14,12 +14,16 @@ fn example_directory() -> PathBuf {
 }
 
 fn state_directory() -> PathBuf {
+    static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let fixture = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = PathBuf::from("/private/tmp")
-        .join(format!("vzctl-edge-dmz-{}-{nonce}", std::process::id()));
+    let path = PathBuf::from("/private/tmp").join(format!(
+        "vzctl-edge-dmz-{fixture}-{}-{nonce}",
+        std::process::id()
+    ));
     fs::create_dir_all(&path).unwrap();
     path
 }
@@ -63,20 +67,24 @@ fn reference_environment_validates_and_plan_diff_are_read_only() {
     let socket = state.join("vz.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = String::new();
             BufReader::new(stream.try_clone().unwrap())
                 .read_line(&mut request)
                 .unwrap();
             let request: Value = serde_json::from_str(&request).unwrap();
-            assert_eq!(request["method"], "stack.inspect");
+            let result = match request["method"].as_str() {
+                Some("stack.inspect") => json!({"resources": [], "journal": null, "lease": null}),
+                Some("net.list") => json!({"networks": [], "attachments": []}),
+                _ => panic!("plan/diff issued a mutating or unexpected RPC: {request}"),
+            };
             writeln!(
                 stream,
                 "{}",
                 json!({
                     "jsonrpc": "2.0",
-                    "result": {"resources": [], "journal": null, "lease": null},
+                    "result": result,
                     "id": request["id"],
                 })
             )
@@ -97,7 +105,28 @@ fn reference_environment_validates_and_plan_diff_are_read_only() {
         let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(envelope["command"], command);
         assert_eq!(envelope["status"], "ok");
-        assert_eq!(envelope["summary"]["actions"], 15);
+        let actions = envelope["actions"].as_array().unwrap();
+        assert_eq!(envelope["summary"]["actions"], actions.len());
+        for kind in [
+            "vm",
+            "network",
+            "dns",
+            "image",
+            "route",
+            "policy",
+            "port",
+            "certs",
+            "ingress",
+            "oidc",
+            "resilience",
+            "observability",
+        ] {
+            assert!(
+                actions.iter().any(|action| action["kind"] == kind),
+                "missing {kind}"
+            );
+        }
+        assert!(actions.iter().all(|action| action["action"] == "create"));
     }
 
     server.join().unwrap();

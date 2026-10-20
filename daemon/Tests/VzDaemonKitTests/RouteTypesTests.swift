@@ -1,6 +1,79 @@
 import Testing
 @testable import VzDaemonKit
 
+@Test func routerPlansKeepSameNamedProjectNetworksSeparate() throws {
+    let networks = [
+        NetworkRecord(name: "lan", id: "a/lan", cidr: "10.80.0.0/24", project: "a"),
+        NetworkRecord(name: "dmz", id: "a/dmz", cidr: "10.81.0.0/24", project: "a"),
+        NetworkRecord(name: "lan", id: "b/lan", cidr: "10.90.0.0/24", project: "b"),
+    ]
+    let attachments = [
+        NetworkAttachmentRecord(
+            vmID: "a/router", networkName: "lan", networkID: "a/lan",
+            ip: "10.80.0.2", project: "a"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "a/router", networkName: "dmz", networkID: "a/dmz",
+            ip: "10.81.0.2", project: "a"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "b/router", networkName: "lan", networkID: "b/lan",
+            ip: "10.90.0.2", project: "b"
+        ),
+    ]
+    let plan = try RouterPlan(
+        vmID: "a/router", networkRecords: networks, attachments: attachments
+    )
+    #expect(Set(plan.networks.map(\.cidr)) == ["10.80.0.0/24", "10.81.0.0/24"])
+    #expect(Set(plan.networks.map(\.name)) == ["lan", "dmz"])
+    var mismatched = attachments
+    mismatched[0].networkID = "b/lan"
+    #expect(throws: RouteApplyError.self) {
+        try RouterPlan(vmID: "a/router", networkRecords: networks, attachments: mismatched)
+    }
+    #expect(throws: RouteApplyError.self) {
+        try RouterPlan(
+            vmID: "a/router", networkRecords: networks + [networks[0]],
+            attachments: attachments
+        )
+    }
+}
+
+@Test func dockerRoutesDoNotCrossSameNamedProjectParents() {
+    let networks = [
+        NetworkRecord(name: "lan", id: "a/lan", cidr: "10.80.0.0/24", project: "a"),
+        NetworkRecord(name: "lan", id: "b/lan", cidr: "10.90.0.0/24", project: "b"),
+        NetworkRecord(
+            name: "containers", id: "b/containers", cidr: "10.91.0.0/24",
+            backend: "docker", project: "b"
+        ),
+    ]
+    let attachments = [
+        NetworkAttachmentRecord(
+            vmID: "a/router", networkName: "lan", networkID: "a/lan",
+            ip: "10.80.0.2", project: "a"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "b/router", networkName: "lan", networkID: "b/lan",
+            ip: "10.90.0.2", project: "b"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "b/docker", networkName: "lan", networkID: "b/lan",
+            ip: "10.90.0.10", project: "b"
+        ),
+        NetworkAttachmentRecord(
+            vmID: "b/docker", networkName: "containers", networkID: "b/containers",
+            ip: "10.91.0.2", project: "b"
+        ),
+    ]
+    #expect(DockerBackendRoutes.staticRoutes(
+        forRouter: "a/router", networks: networks, attachments: attachments
+    ).isEmpty)
+    #expect(DockerBackendRoutes.staticRoutes(
+        forRouter: "b/router", networks: networks, attachments: attachments
+    ) == [StaticRoute(destination: "10.91.0.0/24", via: "10.90.0.10")])
+}
+
 @Test func routerPlanRequiresTwoDotTwoAttachments() throws {
     let networks = [
         NetworkRecord(name: "dmz", cidr: "10.80.0.0/24"),

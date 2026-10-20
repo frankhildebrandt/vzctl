@@ -55,6 +55,11 @@ final class EmbeddedProcessManager: @unchecked Sendable {
     private let lock = NSLock()
     private var managed: [String: Managed] = [:]
     private var stopped = false
+    private let validatorTimeout: TimeInterval
+
+    init(validatorTimeout: TimeInterval = 10) {
+        self.validatorTimeout = validatorTimeout
+    }
 
     func reconcile(_ desired: [Spec]) throws -> [[String: JSONValue]] {
         for spec in desired {
@@ -63,7 +68,8 @@ final class EmbeddedProcessManager: @unchecked Sendable {
             EmbeddedProcessReaper.reapStale(
                 binary: spec.binary,
                 workDir: spec.workDir,
-                pidFile: spec.pidFile
+                pidFile: spec.pidFile,
+                exceptPID: lock.withLock { managed[spec.name]?.process?.processIdentifier }
             )
         }
         let desiredNames = Set(desired.map(\.name))
@@ -125,14 +131,56 @@ final class EmbeddedProcessManager: @unchecked Sendable {
         validator.currentDirectoryURL = URL(fileURLWithPath: spec.workDir)
         validator.standardOutput = FileHandle.nullDevice
         let errorPipe = Pipe()
+        defer {
+            try? errorPipe.fileHandleForReading.close()
+            try? errorPipe.fileHandleForWriting.close()
+        }
         validator.standardError = errorPipe
         try validator.run()
+        try? errorPipe.fileHandleForWriting.close()
+        let data = try validatorOutput(
+            validator, descriptor: errorPipe.fileHandleForReading.fileDescriptor
+        )
         validator.waitUntilExit()
         guard validator.terminationStatus == 0 else {
-            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let hint = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             throw EmbeddedProcessError.invalid(hint?.isEmpty == false ? hint! : "invalid Caddyfile")
+        }
+    }
+
+    private func validatorOutput(_ process: Process, descriptor: Int32) throws -> Data {
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            terminate(process)
+            throw EmbeddedProcessError.invalid("cannot read caddy validation output")
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + validatorTimeout
+        var tail = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        var eof = false
+        while true {
+            // Bound memory and each drain pass so continuous output cannot starve the deadline.
+            for _ in 0..<16 where !eof {
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                if count > 0 {
+                    tail.append(contentsOf: buffer.prefix(count))
+                    if tail.count > 65536 { tail.removeFirst(tail.count - 65536) }
+                } else if count == 0 {
+                    eof = true
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    break
+                } else if errno != EINTR {
+                    terminate(process)
+                    throw EmbeddedProcessError.invalid("cannot read caddy validation output")
+                }
+            }
+            if eof && !process.isRunning { return tail }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                terminate(process)
+                throw EmbeddedProcessError.invalid("caddy validation timed out")
+            }
+            Thread.sleep(forTimeInterval: 0.01)
         }
     }
 
@@ -155,6 +203,7 @@ final class EmbeddedProcessManager: @unchecked Sendable {
         let logPath = (spec.workDir as NSString).appendingPathComponent("\(spec.name).log")
         FileManager.default.createFile(atPath: logPath, contents: nil)
         let logHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+        defer { try? logHandle.close() }
         try logHandle.seekToEnd()
         process.standardOutput = logHandle
         process.standardError = logHandle
@@ -162,20 +211,28 @@ final class EmbeddedProcessManager: @unchecked Sendable {
             self?.childExited(name: name, pid: child.processIdentifier, status: child.terminationStatus)
         }
         try process.run()
+        // The child owns its duplicated descriptors; the parent must release its copy.
+        try? logHandle.close()
         guard waitUntilReady(process: process, readiness: spec.readiness) else {
-            let hint = logTail(path: logPath) ?? "exit \(process.terminationStatus)"
-            if process.isRunning { process.terminate() }
+            let hint = logTail(path: logPath)
+                ?? (process.isRunning ? "readiness timed out" : "exit \(process.terminationStatus)")
+            terminate(process)
             item.lastError = hint
             managed[name] = item
             throw EmbeddedProcessError.exited(name, "readiness failed: \(hint)")
         }
+        do {
+            try "\(process.processIdentifier)\n".write(
+                toFile: spec.pidFile, atomically: true, encoding: .utf8
+            )
+        } catch {
+            terminate(process)
+            throw error
+        }
+        _ = chmod(spec.pidFile, 0o600)
         item.process = process
         item.restart = nil
         managed[name] = item
-        try "\(process.processIdentifier)\n".write(
-            toFile: spec.pidFile, atomically: true, encoding: .utf8
-        )
-        _ = chmod(spec.pidFile, 0o600)
     }
 
     private func childExited(name: String, pid: Int32, status: Int32) {
@@ -216,13 +273,20 @@ final class EmbeddedProcessManager: @unchecked Sendable {
     private func stopLocked(name: String) {
         guard let item = managed.removeValue(forKey: name) else { return }
         item.restart?.cancel()
-        if let process = item.process, process.isRunning {
+        if let process = item.process { terminate(process) }
+        try? FileManager.default.removeItem(atPath: item.spec.pidFile)
+    }
+
+    private func terminate(_ process: Process) {
+        // A deliberate stop must not enqueue an automatic restart.
+        process.terminationHandler = nil
+        if process.isRunning {
             process.terminate()
             let deadline = Date().addingTimeInterval(3)
             while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
         }
-        try? FileManager.default.removeItem(atPath: item.spec.pidFile)
+        process.waitUntilExit()
     }
 
     private func statusLocked(name: String) -> [String: JSONValue] {

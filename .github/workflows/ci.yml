@@ -17,7 +17,7 @@ jobs:
   build:
     name: Build and test
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -30,6 +30,13 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/vzctl-ui/package-lock.json
+
       - name: Tool versions
         run: |
           rustc --version
@@ -37,7 +44,17 @@ jobs:
           swift --version
           go version
 
+      - name: Prepare strict X.509 verification
+        run: |
+          brew install openssl@3
+          openssl_prefix="$(brew --prefix openssl@3)"
+          "${openssl_prefix}/bin/openssl" version
+          printf 'VZCTL_TEST_OPENSSL=%s/bin/openssl\n' "${openssl_prefix}" >> "$GITHUB_ENV"
+
       - name: CI
+        env:
+          RUSTFLAGS: "-D warnings"
+          SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
         run: make ci
 
       - name: Validate and diff edge-dmz reference environment

@@ -52,6 +52,20 @@ Details: [CLI Contract v1](cli-contract-v1.md#vzctl-stack-initvmnetvolumemount).
   1–64 `[A-Za-z0-9][A-Za-z0-9._-]*`)
 - VM: `from`, `disk`, mindestens ein `networks[]` mit `name` und `ip`
 
+Ein Image-Tag pinnt das registrierte, versiegelte Artefakt. Apply verwendet es
+mit vorhandenem Raw und Sealmarker unverändert, auch wenn dessen Guest-Toolkit
+älter ist oder keine Versionsangabe hat. `ensure_guest_utils` aktualisiert die
+Gäste nach dem Start; ein CLI-Update baut das gemeinsame Base-Image nicht neu.
+Ein ausdrücklich ausgeführtes `image bake … --tag …` bleibt möglich.
+Eine Raw-Datei ohne passenden registrierten Tag gilt nicht als vorhandener Pin.
+
+Netzwerk-Namen in YAML bleiben projektlokale kurze Keys, etwa `lan`.
+Runtime-Antworten ergänzen eine stabile `NetworkRecord.id` und
+`NetAttachment.network_id`; `name` beziehungsweise `network` bleiben kurz.
+Clients verbinden Attachments und Aktionen über diese IDs, damit gleichnamige
+Netze verschiedener Projekte getrennt bleiben. IDs werden aus den
+Runtime-Antworten übernommen und nicht aus dem Anzeigenamen erraten.
+
 `disk` ist die nutzbare Root-Kapazität der VM; der APFS Linked Clone wird vor
 dem ersten Boot sparse auf diese Größe erweitert. Alle VMs teilen unveränderte
 Blöcke des sealed Base-Images, erhalten aber eine isolierte COW-Schreibschicht.
@@ -82,6 +96,22 @@ blockieren ihn. Die aufgelöste Policy wird beim Apply in SQLite persistiert.
 `roles` akzeptiert nur `router` und `docker`. `cloudInit` ist ein relativer Pfad
 zur Stack-Config und wird beim Create mit dem System-NoCloud-Seed gemerged
 (System-Felder gewinnen bei Skalar-Konflikten; Listen werden angehängt).
+
+Router installieren `nftables` und `python3`. Ihr Bootstrap sperrt Forwarding
+in der eigenen Tabelle `inet vzctl`, bevor `ip_forward` aktiviert wird;
+der persistente Bootdefault bleibt `ip_forward=0`. Docker- und Agent-Start
+prüfen diesen Schutz ebenfalls. Apply installiert die Startschutz-Regeln auch
+auf bestehenden VMs: privilegierte systemd-Prestart-Schritte beziehungsweise
+OpenRC-`need`-Abhängigkeiten. Fremde oder mehrdeutige OpenRC-Servicekonfiguration
+blockiert diese Installation, statt sie zu überschreiben. Der Bootstrap ersetzt keine
+fremden Firewalltabellen. Alte, vom vzctl-Cloud-init erzeugte globale
+`ip/filter/FORWARD`-DROP-Chains werden nur bei nachgewiesener Herkunft und
+vollständig leerer Chain gemeinsam mit den neuen Regeln in einer atomaren
+nftables-Transaktion entfernt. Fremde Regeln oder unklare Herkunft stoppen
+Apply mit Fehler, ohne die Firewall zu ändern.
+Scheitert erst die nftables-Transaktion, bleiben vorhandene Firewall und
+gespeicherte Routen unverändert; bereits installierter eigener Bootschutz
+(`ip_forward=0`, Startschutz-Regeln) bleibt bestehen und wird im Fehler genannt.
 
 VM-Logs (journald, lazy on-demand — kein Apply-`ensure`):
 

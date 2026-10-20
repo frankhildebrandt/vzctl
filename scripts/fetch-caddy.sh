@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch a pinned Caddy binary into daemon/Vendor/caddy/ (+ Application Support bin/).
+# Fetch a pinned Caddy binary into daemon/Vendor/caddy/; never change a running installation.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # GitHub assets use "mac", not "darwin" (e.g. caddy_2.11.4_mac_arm64.tar.gz).
@@ -25,9 +25,10 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 install -m 755 "$BIN" "$DEST_DIR/caddy"
 echo "$VERSION" > "$DEST_DIR/VERSION"
+if [ -f "$TMP/LICENSE" ]; then
+  cp "$TMP/LICENSE" "$DEST_DIR/LICENSE"
+else
+  curl -fsSL "https://raw.githubusercontent.com/caddyserver/caddy/v${VERSION}/LICENSE" -o "$DEST_DIR/LICENSE"
+fi
 echo "installed $DEST_DIR/caddy ($VERSION)"
-RUNTIME_BIN="${HOME}/Library/Application Support/vzctl/bin"
-mkdir -p "$RUNTIME_BIN"
-install -m 755 "$DEST_DIR/caddy" "$RUNTIME_BIN/caddy"
-echo "copied to $RUNTIME_BIN/caddy"
 "$DEST_DIR/caddy" version

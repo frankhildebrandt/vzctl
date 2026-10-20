@@ -204,7 +204,7 @@ final class EdgeServer: @unchecked Sendable {
             }
             guard !nextDigest.isEmpty else { throw EdgeServerError.invalid("digest is required") }
             do {
-                try apply(nextDesired, generation: next)
+                try apply(nextDesired)
                 try persist(EdgeManifest(generation: next, digest: nextDigest, desired: nextDesired))
                 lock.withLock {
                     generation = next
@@ -216,15 +216,15 @@ final class EdgeServer: @unchecked Sendable {
                 return status()
             } catch {
                 lock.withLock { lastError = String(describing: error) }
-                if current.0 > 0 { try? apply(current.2, generation: current.0) }
+                if current.0 > 0 { try? apply(current.2) }
                 throw error
             }
         }
     }
 
-    private func apply(_ value: JSONValue, generation: Int64) throws {
+    private func apply(_ value: JSONValue) throws {
         let desired = try object(value)
-        let snapshot = try parseSnapshot(desired["network_snapshot"] ?? .object([:]))
+        let snapshot = try Self.parseSnapshot(desired["network_snapshot"] ?? .object([:]))
         let hostServices = try parseIngressHostServices(desired["host_services"] ?? .array([]))
         let dnsRecords = try array(desired["dns_records"] ?? .array([])).map(parseDNSRecord)
         let ports = try array(desired["port_forwards"] ?? .array([])).map(parsePort)
@@ -260,9 +260,9 @@ final class EdgeServer: @unchecked Sendable {
             let binary = try string("binary", params)
             try requireBinary(binary, basename: "caddy")
             let workDir = runtimeDirectory.appendingPathComponent("ingress/\(project)", isDirectory: true)
-            let configPath = try writeConfig(
+            let configPath = try EdgeServiceConfiguration.write(
                 caddyfile, directory: workDir,
-                name: "Caddyfile.\(generation)", mode: 0o600
+                prefix: "Caddyfile"
             )
             let backendHTTP = try port("backend_http_port", params, default: try port("http_port", params, default: 80))
             let http = try port("http_port", params, default: 80)
@@ -321,7 +321,7 @@ final class EdgeServer: @unchecked Sendable {
         }
         gatewayBindings = HostGatewayIngressProxy.uniqueBindings(gatewayBindings)
         serviceSpecs.append(
-            contentsOf: try makeCaddySpecs(intents: caddyIntents, generation: generation)
+            contentsOf: try makeCaddySpecs(intents: caddyIntents)
         )
         for raw in oidc {
             let params = try object(raw)
@@ -333,9 +333,9 @@ final class EdgeServer: @unchecked Sendable {
             let configName = try optionalString("configName", params) ?? (kind == "dex" ? "config.yaml" : "config.json")
             let ext = (configName as NSString).pathExtension
             let workDir = runtimeDirectory.appendingPathComponent("oidc/\(project)", isDirectory: true)
-            let configPath = try writeConfig(
+            let configPath = try EdgeServiceConfiguration.write(
                 try string("config", params), directory: workDir,
-                name: "config.\(generation)\(ext.isEmpty ? "" : ".\(ext)")", mode: 0o600
+                prefix: "config", suffix: ext.isEmpty ? "" : ".\(ext)"
             )
             let templates = try strings(params["arguments"] ?? .array([.string("serve"), .string("{config}")]))
             let arguments = templates.map { $0.replacingOccurrences(of: "{config}", with: configPath) }
@@ -426,7 +426,7 @@ final class EdgeServer: @unchecked Sendable {
             let manifest = try JSONDecoder().decode(
                 EdgeManifest.self, from: Data(contentsOf: manifestPath)
             )
-            try apply(manifest.desired, generation: manifest.generation)
+            try apply(manifest.desired)
             lock.withLock {
                 generation = manifest.generation
                 digest = manifest.digest
@@ -449,20 +449,9 @@ final class EdgeServer: @unchecked Sendable {
         try FileManager.default.moveItem(at: temporary, to: manifestPath)
     }
 
-    private func writeConfig(_ value: String, directory: URL, name: String,
-                             mode: mode_t) throws -> String {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        _ = chmod(directory.path, 0o700)
-        let target = directory.appendingPathComponent(name)
-        try Data(value.utf8).write(to: target, options: .atomic)
-        _ = chmod(target.path, mode)
-        return target.path
-    }
-
     /// One Caddy child when stacks share loopback ports; otherwise one child per project.
     private func makeCaddySpecs(
-        intents: [CaddyIntent],
-        generation: Int64
+        intents: [CaddyIntent]
     ) throws -> [EmbeddedProcessManager.Spec] {
         try CaddyProcessPlan.children(from: intents).map { child in
             for workDir in child.reapWorkDirs {
@@ -476,9 +465,9 @@ final class EdgeServer: @unchecked Sendable {
             let configPath: String
             if child.shared {
                 workDir = runtimeDirectory.appendingPathComponent("ingress", isDirectory: true)
-                configPath = try writeConfig(
+                configPath = try EdgeServiceConfiguration.write(
                     child.caddyfile, directory: workDir,
-                    name: "Caddyfile.\(generation)", mode: 0o600
+                    prefix: "Caddyfile"
                 )
             } else {
                 workDir = child.workDir
@@ -498,11 +487,11 @@ final class EdgeServer: @unchecked Sendable {
         }
     }
 
-    private func parseSnapshot(_ value: JSONValue) throws -> NetworkSnapshot {
+    static func parseSnapshot(_ value: JSONValue) throws -> NetworkSnapshot {
         let values = try object(value)
         let networks = try array(values["networks"] ?? .array([])).map { raw -> NetworkRecord in
             let item = try object(raw)
-            return NetworkRecord(
+            var record = NetworkRecord(
                 name: try string("name", item), cidr: try string("cidr", item),
                 mode: try optionalString("mode", item) ?? "shared",
                 natEgress: bool("nat_egress", item, default: true),
@@ -513,15 +502,44 @@ final class EdgeServer: @unchecked Sendable {
                 lastError: try optionalString("last_error", item),
                 updatedAt: try optionalString("updated_at", item) ?? ""
             )
+            record.id = try optionalString("id", item) ?? record.name
+            return record
+        }
+        var ids: Set<String> = []
+        var activeCIDRs: Set<String> = []
+        for network in networks {
+            guard !network.id.isEmpty, ids.insert(network.id).inserted else {
+                throw EdgeServerError.invalid("duplicate or empty network id")
+            }
+            // PF and host aliases refer to physical CIDRs. Two active owners
+            // cannot safely share that key, even when their IDs differ.
+            if network.runtimeState == "active", !network.isDockerBackend,
+               !activeCIDRs.insert(network.cidr).inserted {
+                throw EdgeServerError.invalid("duplicate active vmnet CIDR \(network.cidr)")
+            }
         }
         let attachments = try array(values["attachments"] ?? .array([])).map { raw -> NetworkAttachmentRecord in
             let item = try object(raw)
-            return NetworkAttachmentRecord(
+            var record = NetworkAttachmentRecord(
                 vmID: try string("vm_id", item), networkName: try string("network", item),
                 ip: try string("ip", item), labels: try labels(item["labels"]),
                 project: try optionalString("project", item), stack: try optionalString("stack", item),
                 updatedAt: try optionalString("updated_at", item) ?? ""
             )
+            if let id = try optionalString("network_id", item) {
+                record.networkID = id
+            } else {
+                // A legacy short name may also be another network's physical
+                // ID. Missing identity is safe only when the name is unique.
+                let candidates = networks.filter { $0.name == record.networkName }
+                guard candidates.count == 1, let network = candidates.first else {
+                    throw EdgeServerError.invalid(
+                        "ambiguous or missing network_id for attachment network \(record.networkName)"
+                    )
+                }
+                record.networkID = network.id
+            }
+            return record
         }
         return NetworkSnapshot(networks: networks, attachments: attachments)
     }

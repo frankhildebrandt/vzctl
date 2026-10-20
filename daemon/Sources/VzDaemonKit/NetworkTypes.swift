@@ -109,6 +109,8 @@ public enum NetworkValidationError: Error, CustomStringConvertible, Equatable {
 }
 
 public struct NetworkRecord: Equatable, Sendable {
+    /// Stable storage/runtime identity. Legacy networks retain their original key.
+    public var id: String
     public var name: String
     public var cidr: String
     public var mode: String
@@ -130,6 +132,7 @@ public struct NetworkRecord: Equatable, Sendable {
 
     public init(
         name: String,
+        id: String? = nil,
         cidr: String,
         mode: String = "shared",
         natEgress: Bool = true,
@@ -141,6 +144,7 @@ public struct NetworkRecord: Equatable, Sendable {
         lastError: String? = nil,
         updatedAt: String = ISO8601DateFormatter().string(from: Date())
     ) {
+        self.id = id ?? name
         self.name = name
         self.cidr = cidr
         self.mode = mode
@@ -161,6 +165,7 @@ public struct NetworkRecord: Equatable, Sendable {
 
     public var json: JSONValue {
         .object([
+            "id": .string(id),
             "name": .string(name),
             "cidr": .string(cidr),
             "mode": .string(mode),
@@ -183,6 +188,7 @@ public struct NetworkRecord: Equatable, Sendable {
 
 public struct NetworkAttachmentRecord: Equatable, Sendable {
     public var vmID: String
+    public var networkID: String
     public var networkName: String
     public var ip: String
     public var labels: [String: String]
@@ -193,6 +199,7 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
     public init(
         vmID: String,
         networkName: String,
+        networkID: String? = nil,
         ip: String,
         labels: [String: String] = [:],
         project: String? = nil,
@@ -200,6 +207,7 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
         updatedAt: String = ISO8601DateFormatter().string(from: Date())
     ) {
         self.vmID = vmID
+        self.networkID = networkID ?? networkName
         self.networkName = networkName
         self.ip = ip
         self.labels = labels
@@ -211,6 +219,7 @@ public struct NetworkAttachmentRecord: Equatable, Sendable {
     public var json: JSONValue {
         .object([
             "vm_id": .string(vmID),
+            "network_id": .string(networkID),
             "network": .string(networkName),
             "ip": .string(ip),
             "labels": .object(labels.mapValues(JSONValue.string)),
@@ -255,6 +264,8 @@ public struct DefaultNetworkRecord: Equatable, Sendable {
 
     public func json(network: NetworkRecord?) -> JSONValue {
         .object([
+            "id": .string(network?.id ?? name),
+            "project": network?.project.map(JSONValue.string) ?? .null,
             "name": .string(name),
             "cidr": .string(cidr),
             "mode": .string("shared"),

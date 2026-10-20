@@ -132,7 +132,7 @@ fn stack_vm_add_rejects_memory_below_supported_minimum() {
         .unwrap();
 
     assert_eq!(add.status.code(), Some(3));
-    let envelope: Value = serde_json::from_slice(&add.stderr).unwrap();
+    let envelope: Value = serde_json::from_slice(&add.stdout).unwrap();
     assert_eq!(envelope["command"], "stack.vm.add");
     assert!(envelope["errors"][0]["message"]
         .as_str()
