@@ -62,6 +62,7 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
           SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
         run: make test-daemon
 
       - name: Remaining CI contracts, builds and UI

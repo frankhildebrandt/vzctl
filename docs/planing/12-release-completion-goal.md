@@ -135,8 +135,16 @@ IQ-Store bleibt gestoppt. Der separate saubere macOS-26-PKG-Test bleibt offen.
 ## Aktueller Auslieferungsblocker
 
 PR #85 ist bereit. Zwei CI-Läufe bauten Swift erfolgreich, hingen danach
-über31 Minuten ohne Testausgabe; kontrolliert abgebrochen. Kein einzelner
-Test als Ursache belegt. Gezielter Aufruf mit `--disable-xctest
---enable-swift-testing` besteht lokal alle213 Tests. Die CI führt weiterhin
-alle bisherigen Ziele aus, mit getrennten Phasen und Swift-Zeitlimit5 Minuten.
+über31 Minuten ohne Testausgabe; kontrolliert abgebrochen. Nur den Runner
+umzustellen reichte nicht als Ursachenbeweis. Mit
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` lokal reproduziert: Der einzige
+kooperative Worker blockiert in `SupervisorReporter.send`/`read` innerhalb
+`runArgumentFailureIsReportedBeforeRunStarts`, während sein eigener
+Socket-Testserver als `Task.detached` auf denselben Worker wartet.
+Prozess-Sample: `/private/tmp/vzctl-swift-pool-strict.sample`.
+
+Beide blockierenden Socket-Testserver verwenden nun `DispatchQueue.global`.
+Alle213 Swift-Tests bestehen warningfrei auch mit nur einem kooperativen
+Worker; der CI-Schritt verwendet denselben Stressfall und ein5min-Limit.
+Die CI führt weiterhin alle bisherigen Ziele aus, mit getrennten Phasen.
 Remote-Nachweis ist vor Merge offen.
