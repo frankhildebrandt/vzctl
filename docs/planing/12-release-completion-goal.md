@@ -148,3 +148,10 @@ Alle213 Swift-Tests bestehen warningfrei auch mit nur einem kooperativen
 Worker; der CI-Schritt verwendet denselben Stressfall und ein5min-Limit.
 Die CI führt weiterhin alle bisherigen Ziele aus, mit getrennten Phasen.
 Remote-Nachweis ist vor Merge offen.
+
+Remote-Nachweis zum Deadlock: Run39485898385 führt alle213 Tests aus. Ein
+Deadline-Test beobachtet unter Last aber nach16,6s den regulären passiven
+Retry nach10s statt nur sein40ms-Recoverybudget. Test wartet nun auf den
+ersten Abschluss-Event; passive spätere Epochen sind für diesen fokussierten
+Fall deaktiviert. Alle ursprünglichen Assertions bleiben erhalten; kein
+Produktcode verändert.
