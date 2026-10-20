@@ -142,7 +142,7 @@ test-cli: ## Rust-Tests ausführen
 	$(CARGO) test --workspace
 
 test-daemon: build-cli ## Swift- und Daemon-Script-Tests mit echtem CLI-Vertrag ausführen
-	VZCTL_TEST_CLI="$(VZCTL_TEST_CLI)" $(SWIFT) test $(SWIFT_FLAGS) --package-path daemon
+	VZCTL_TEST_CLI="$(VZCTL_TEST_CLI)" $(SWIFT) test $(SWIFT_FLAGS) --disable-xctest --enable-swift-testing --package-path daemon
 	daemon/scripts/test-stop-vz-helpers.sh
 
 test-agent: ## Guest-Agent-Tests ausführen

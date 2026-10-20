@@ -131,3 +131,12 @@ Eigene Komponenten werden konsistent versioniert; Release-Pakete entstehen
 neu aus diesem Quellstand. Nach grünem PR/CI erfolgt Merge und Veröffentlichung;
 danach lokales Update mit Wiederherstellung der zuvor aktiven Stacks.
 IQ-Store bleibt gestoppt. Der separate saubere macOS-26-PKG-Test bleibt offen.
+
+## Aktueller Auslieferungsblocker
+
+PR #85 ist bereit. Zwei CI-Läufe bauten Swift erfolgreich, hingen danach
+über31 Minuten ohne Testausgabe; kontrolliert abgebrochen. Kein einzelner
+Test als Ursache belegt. Gezielter Aufruf mit `--disable-xctest
+--enable-swift-testing` besteht lokal alle213 Tests. Die CI führt weiterhin
+alle bisherigen Ziele aus, mit getrennten Phasen und Swift-Zeitlimit5 Minuten.
+Remote-Nachweis ist vor Merge offen.

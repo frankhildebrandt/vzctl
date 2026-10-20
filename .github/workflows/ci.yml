@@ -51,11 +51,25 @@ jobs:
           "${openssl_prefix}/bin/openssl" version
           printf 'VZCTL_TEST_OPENSSL=%s/bin/openssl\n' "${openssl_prefix}" >> "$GITHUB_ENV"
 
-      - name: CI
+      - name: Rust formatting and tests
+        timeout-minutes: 10
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: make fmt-check test-cli
+
+      - name: Swift and daemon script tests
+        timeout-minutes: 5
         env:
           RUSTFLAGS: "-D warnings"
           SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
-        run: make ci
+        run: make test-daemon
+
+      - name: Remaining CI contracts, builds and UI
+        timeout-minutes: 15
+        env:
+          RUSTFLAGS: "-D warnings"
+          SWIFT_FLAGS: "-Xswiftc -warnings-as-errors"
+        run: make test-agent test-packaging build validate ui-check
 
       - name: Validate and diff edge-dmz reference environment
         shell: bash
