@@ -2,7 +2,7 @@
 
 macOS Virtualization.framework–based **devstack supervisor**: Git-native multi-VM environments, custom networks, Hypervisor-DNS, linked clones, Docker context.
 
-> Status: **Alpha**. Deklarative VM-/Docker-Stacks, Ingress/OIDC und die native UI sind verfügbar. K3s und gemeinsame Dienst-Controller befinden sich in der Live-Abnahme; der aktuelle Arbeitsstand ist noch kein veröffentlichtes Release. Fortschritt und offene Kriterien: [`docs/planing/`](docs/planing/).
+> Status: **Alpha · 0.3.0-alpha4**. Deklarative VM-/Docker-/K3s-Stacks, die native UI und gemeinsame Controller für HTTPS-Ingress, OIDC/OAuth2, PostgreSQL und S3 sind implementiert und mit realen Anwendungen abgenommen. Pakete und Versionshinweise: [Releases](https://github.com/frankhildebrandt/vzctl/releases). Die saubere PKG-Erstinstallation und das PKG-Update auf einem separaten Mac mit macOS26 bleiben offen ([#76](https://github.com/frankhildebrandt/vzctl/issues/76)). Nachweise und Fortschritt: [`docs/planing/`](docs/planing/).
 
 ## Quick start
 
@@ -52,7 +52,7 @@ Für einen Installations-Test ohne launchd-Aktivierung:
 make install ACTIVATE=0
 ```
 
-v0.2 Ingress/OIDC-Vendor und UI:
+Ingress/OIDC-Vendor und UI:
 
 ```bash
 make vendor          # Caddy + Dex + qemu-img nach daemon/Vendor/
@@ -109,7 +109,7 @@ Aktueller Release: [Latest Release](https://github.com/frankhildebrandt/vzctl/re
 | [Event Stream v1](docs/specs/events-v1.md) | NDJSON-Envelope, Typen und Filter |
 | [Router und Policies](docs/routes.md) | nftables Forward-Policies, Plan und Status |
 | [Dienst-Controller und K3s](docs/specs/service-controllers-v1.md) | Deklarative Dienste, Kubernetes-Manifestreferenzen, Bindings und Agent-Verträge |
-| [Controller-Lab](docs/planing/07-controller-lab-acceptance.md) | Laufende Live-Abnahme und offene Releasekriterien |
+| [Controller-Lab](docs/planing/07-controller-lab-acceptance.md) | Live-Nachweise und offene Installerkriterien |
 
 ## License
 
